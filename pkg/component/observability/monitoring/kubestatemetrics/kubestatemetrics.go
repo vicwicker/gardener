@@ -115,6 +115,12 @@ func (k *kubeStateMetrics) Deploy(ctx context.Context) error {
 		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
 	}
 
+	if k.values.ClusterType == component.ClusterTypeSeed {
+		if err := registry2.Add(k.clusterRole()); err != nil {
+			return err
+		}
+	}
+
 	serializedResources, err := registry2.AddAllAndSerialize()
 	if err != nil {
 		return err
@@ -133,7 +139,7 @@ func (k *kubeStateMetrics) Deploy(ctx context.Context) error {
 
 	if k.values.ClusterType == component.ClusterTypeShoot {
 		registryTarget := managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
-		resourcesTarget, err := registryTarget.AddAllAndSerialize()
+		resourcesTarget, err := registryTarget.AddAllAndSerialize(k.clusterRole())
 		if err != nil {
 			return err
 		}
