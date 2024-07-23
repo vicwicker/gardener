@@ -78,6 +78,32 @@ type Values struct {
 	NameSuffix string
 }
 
+func (k *kubeStateMetrics) getResourcesForSeed() []client.Object {
+	var scrapeConfig *monitoringv1alpha1.ScrapeConfig
+	if k.values.NameSuffix == suffixSeed {
+		scrapeConfig = k.scrapeConfigSeed()
+	} else if k.values.NameSuffix == suffixRuntime {
+		scrapeConfig = k.scrapeConfigGarden()
+	}
+
+	clusterRole := k.clusterRole()
+	serviceAccount := k.serviceAccount()
+	customResourceStateConfigMap := k.customResourceStateConfigMap()
+	deployment := k.deployment(serviceAccount, "", nil, customResourceStateConfigMap.Name)
+	return []client.Object{
+		clusterRole,
+		serviceAccount,
+		k.clusterRoleBinding(clusterRole, serviceAccount),
+		deployment,
+		k.podDisruptionBudget(deployment),
+		k.scrapeConfigCache(),
+		scrapeConfig,
+		k.service(),
+		k.verticalPodAutoscaler(deployment),
+		customResourceStateConfigMap,
+	}
+}
+
 func (k *kubeStateMetrics) Deploy(ctx context.Context) error {
 	var (
 		genericTokenKubeconfigSecretName string
@@ -107,28 +133,7 @@ func (k *kubeStateMetrics) Deploy(ctx context.Context) error {
 	}
 
 	if k.values.ClusterType == component.ClusterTypeSeed {
-		var scrapeConfig *monitoringv1alpha1.ScrapeConfig
-		if k.values.NameSuffix == suffixSeed {
-			scrapeConfig = k.scrapeConfigSeed()
-		} else if k.values.NameSuffix == suffixRuntime {
-			scrapeConfig = k.scrapeConfigGarden()
-		}
-
-		clusterRole := k.clusterRole()
-		serviceAccount := k.serviceAccount()
-		deployment := k.deployment(serviceAccount, "", nil, customResourceStateConfigMap.Name)
-		if err := registry.Add(
-			clusterRole,
-			serviceAccount,
-			k.clusterRoleBinding(clusterRole, serviceAccount),
-			deployment,
-			k.podDisruptionBudget(deployment),
-			k.scrapeConfigCache(),
-			scrapeConfig,
-			k.service(),
-			k.verticalPodAutoscaler(deployment),
-			customResourceStateConfigMap,
-		); err != nil {
+		if err := registry.Add(k.getResourcesForSeed()...); err != nil {
 			return err
 		}
 	}
