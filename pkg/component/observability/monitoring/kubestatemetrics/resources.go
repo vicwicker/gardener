@@ -10,6 +10,8 @@ import (
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -667,6 +669,7 @@ func (k *kubeStateMetrics) prometheusRuleShoot() *monitoringv1.PrometheusRule {
 		},
 	}
 
+	rules = append(rules, k.getRecommendationCappedRules()...)
 	prometheusRule.Labels = monitoringutils.Labels(shoot.Label)
 	prometheusRule.Spec = monitoringv1.PrometheusRuleSpec{
 		Groups: []monitoringv1.RuleGroup{{
@@ -676,6 +679,45 @@ func (k *kubeStateMetrics) prometheusRuleShoot() *monitoringv1.PrometheusRule {
 	}
 
 	return prometheusRule
+}
+
+func (k *kubeStateMetrics) getRecommendationCappedRules() []monitoringv1.Rule {
+	exprTemplate := `
+    kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_%s
+  >
+    (kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_%s > 0)
+or
+    kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_%s
+  > ignoring (container) group_left ()
+    (
+        kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_%s{container="*"}
+      >
+        0
+    )`
+
+	titler := cases.Title(language.English)
+	var rules []monitoringv1.Rule
+	for _, resource := range []string{"cpu", "memory"} {
+		resourceTitle := titler.String(resource)
+		rules = append(rules, monitoringv1.Rule{
+			Alert: "Container" + resourceTitle + "RecommendationCapped",
+			Expr:  intstr.FromString(fmt.Sprintf(exprTemplate, resource, resource, resource, resource)),
+			Annotations: map[string]string{
+				"summary": "A VPA " + resource + " recommendation is capped by the container's limits.",
+				"description": "The {{ $labels.verticalpodautoscaler }} VPA in the {{ $labels.namespace }} namespace " +
+					"wants to recommend a " + resource + " target higher than the max allowed for the " +
+					"{{ $labels.container }} container ",
+			},
+			Labels: map[string]string{
+				"service":    "verticalpodautoscaler",
+				"severity":   "critical",
+				"type":       "seed",
+				"visibility": "operator",
+			},
+		})
+	}
+
+	return rules
 }
 
 func (k *kubeStateMetrics) getLabels() map[string]string {
