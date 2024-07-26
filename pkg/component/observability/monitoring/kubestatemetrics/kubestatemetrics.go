@@ -101,6 +101,7 @@ func (k *kubeStateMetrics) getResourcesForSeed() []client.Object {
 		k.service(),
 		k.verticalPodAutoscaler(deployment),
 		customResourceStateConfigMap,
+        k.prometheusRuleSeed(),
 	}
 }
 

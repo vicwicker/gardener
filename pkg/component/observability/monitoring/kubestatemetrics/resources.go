@@ -29,6 +29,7 @@ import (
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/aggregate"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/cache"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/garden"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/seed"
@@ -669,7 +670,7 @@ func (k *kubeStateMetrics) prometheusRuleShoot() *monitoringv1.PrometheusRule {
 		},
 	}
 
-	rules = append(rules, k.getRecommendationCappedRules()...)
+	rules = append(rules, k.getRecommendationCappedRules("Shoot")...)
 	prometheusRule.Labels = monitoringutils.Labels(shoot.Label)
 	prometheusRule.Spec = monitoringv1.PrometheusRuleSpec{
 		Groups: []monitoringv1.RuleGroup{{
@@ -681,7 +682,20 @@ func (k *kubeStateMetrics) prometheusRuleShoot() *monitoringv1.PrometheusRule {
 	return prometheusRule
 }
 
-func (k *kubeStateMetrics) getRecommendationCappedRules() []monitoringv1.Rule {
+func (k *kubeStateMetrics) prometheusRuleSeed() *monitoringv1.PrometheusRule {
+	prometheusRule := &monitoringv1.PrometheusRule{ObjectMeta: monitoringutils.ConfigObjectMeta("kube-state-metrics", k.namespace, aggregate.Label)}
+	prometheusRule.Labels = monitoringutils.Labels(aggregate.Label)
+	prometheusRule.Spec = monitoringv1.PrometheusRuleSpec{
+		Groups: []monitoringv1.RuleGroup{{
+			Name:  "kube-state-metrics.rules",
+			Rules: k.getRecommendationCappedRules("Seed"),
+		}},
+	}
+
+	return prometheusRule
+}
+
+func (k *kubeStateMetrics) getRecommendationCappedRules(suffix string) []monitoringv1.Rule {
 	exprTemplate := `
     kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_%s
   >
@@ -700,7 +714,7 @@ or
 	for _, resource := range []string{"cpu", "memory"} {
 		resourceTitle := titler.String(resource)
 		rules = append(rules, monitoringv1.Rule{
-			Alert: "Container" + resourceTitle + "RecommendationCapped",
+			Alert: "Container" + resourceTitle + "RecommendationCapped" + suffix,
 			Expr:  intstr.FromString(fmt.Sprintf(exprTemplate, resource, resource, resource, resource)),
 			Annotations: map[string]string{
 				"summary": "A VPA " + resource + " recommendation is capped by the container's limits.",
