@@ -1,0 +1,60 @@
+rule_files:
+- verticalpodautoscaler.prometheusrule.yaml
+
+tests:
+- interval: 1m
+  input_series:
+  - series: kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_cpu{verticalpodautoscaler = "vpa-test",
+                                                                                                                        namespace             = "namespace-test",
+                                                                                                                        container             = "container-test",
+                                                                                                                        unit                  = "core"}
+    values: "2"
+  - series: kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu{verticalpodautoscaler = "vpa-test",
+                                                                                                                namespace             = "namespace-test",
+                                                                                                                container             = "container-test",
+                                                                                                                unit                  = "core"}
+    values: "1"
+  - series: kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_cpu{verticalpodautoscaler = "vpa-test",
+                                                                                                                        namespace             = "namespace-test",
+                                                                                                                        container             = "container-test",
+                                                                                                                        unit                  = "byte"}
+    values: "2"
+  - series: kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu{verticalpodautoscaler = "vpa-test",
+                                                                                                                namespace             = "namespace-test",
+                                                                                                                container             = "container-test",
+                                                                                                                unit                  = "byte"}
+    values: "1"
+  external_labels:
+    cluster: cluster-test
+  alert_rule_test:
+  - eval_time: 0m # test the alert fires immediately
+    alertname: VerticalPodAutoscalerCappedRecommendation
+    exp_alerts:
+    - exp_labels:
+        verticalpodautoscaler: vpa-test
+        namespace: namespace-test
+        container: container-test
+        unit: core
+        type: shoot
+        visibility: operator
+        severity: warning
+      exp_annotations:
+        description: >-
+          The vpa-test VPA in the namespace-test namespace in the cluster-test cluster has a
+          CPU uncapped target recommendation larger than the regular target recommendation for
+          the container-test container.
+        summary: A VPA recommendation is capped.
+    - exp_labels:
+        verticalpodautoscaler: vpa-test
+        namespace: namespace-test
+        container: container-test
+        unit: byte
+        type: shoot
+        visibility: operator
+        severity: warning
+      exp_annotations:
+        description: >-
+          The vpa-test VPA in the namespace-test namespace in the cluster-test cluster has a
+          memory uncapped target recommendation larger than the regular target recommendation for
+          the container-test container.
+        summary: A VPA recommendation is capped.
