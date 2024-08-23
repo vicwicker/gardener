@@ -323,3 +323,22 @@ spec:
         description: >-
           The seed cluster {{$labels.name}} in {{$externalLabels.landscape}}
           has a failing condition: {{$labels.condition}}.
+
+    - alert: SeedVerticalPodAutoscalerCappedRecommendation
+      expr: |
+        ALERTS{alertname="VerticalPodAutoscalerCappedRecommendation", type="seed", alertstate="firing"}
+      annotations:
+        summary: >-
+          A VPA recommendation is capped.
+        description: >-
+          The {{ $labels.verticalpodautoscaler }} VPA
+          in the {{ $labels.namespace }} namespace
+          in the {{ $labels.seed }} seed
+          in the {{ $externalLabels.landscape }} landscape has a
+          {{ if eq .Labels.unit "core" -}}
+          CPU
+          {{- else if eq .Labels.unit "byte" -}}
+          memory
+          {{- end }}
+          uncapped target recommendation larger than the regular target
+          recommendation for the {{ $labels.container }} container.
