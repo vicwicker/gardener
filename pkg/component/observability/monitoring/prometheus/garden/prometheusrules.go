@@ -199,9 +199,9 @@ func gardenPrometheusRule(isGardenerDiscoveryServerEnabled bool) *monitoringv1.P
 		{
 			Alert: "VerticalPodAutoscalerCappedRecommendation",
 			Expr: intstr.FromString(`
-    ( {__name__=~"kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_.+"} > 0 )
+    {__name__=~"kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_.+"}
 >
-    ( {__name__=~"kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_.+"} > 0 )`),
+    {__name__=~"kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_.+"}`),
 			Labels: getLabels("warning"),
 			Annotations: map[string]string{
 				"summary": "A VPA recommendation is capped.",
