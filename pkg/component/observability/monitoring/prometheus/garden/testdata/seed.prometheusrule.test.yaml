@@ -164,8 +164,16 @@ tests:
                        verticalpodautoscaler = "vpa-unit-tests",
                        namespace             = "ns-unit-tests",
                        seed                  = "seed-unit-tests",
-                       landscape             = "landscape-unit-tests",
                        unit                  = "core",
+                       container             = "container-unit-tests"}
+        values: "1"
+      - series: ALERTS{alertname             = "VerticalPodAutoscalerCappedRecommendation",
+                       type                  = "seed",
+                       alertstate            = "firing",
+                       verticalpodautoscaler = "vpa-unit-tests",
+                       namespace             = "ns-unit-tests",
+                       seed                  = "seed-unit-tests",
+                       unit                  = "byte",
                        container             = "container-unit-tests"}
         values: "1"
     external_labels:
@@ -180,7 +188,6 @@ tests:
             verticalpodautoscaler: vpa-unit-tests
             namespace: ns-unit-tests
             seed: seed-unit-tests
-            landscape: landscape-unit-tests
             unit: core
             container: container-unit-tests
           exp_annotations:
@@ -192,4 +199,22 @@ tests:
               in the seed-unit-tests seed
               in the landscape-unit-tests landscape has a
               CPU uncapped target recommendation larger than the regular target
+              recommendation for the container-unit-tests container.
+        - exp_labels:
+            type: seed
+            alertstate: firing
+            verticalpodautoscaler: vpa-unit-tests
+            namespace: ns-unit-tests
+            seed: seed-unit-tests
+            unit: byte
+            container: container-unit-tests
+          exp_annotations:
+            summary: >-
+              A VPA recommendation is capped.
+            description: >-
+              The vpa-unit-tests VPA
+              in the ns-unit-tests namespace
+              in the seed-unit-tests seed
+              in the landscape-unit-tests landscape has a
+              memory uncapped target recommendation larger than the regular target
               recommendation for the container-unit-tests container.
