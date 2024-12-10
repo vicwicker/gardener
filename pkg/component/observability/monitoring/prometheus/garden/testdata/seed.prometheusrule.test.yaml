@@ -180,7 +180,7 @@ tests:
       landscape: landscape-unit-tests
     alert_rule_test:
     - alertname: SeedVerticalPodAutoscalerCappedRecommendation
-      eval_time: 1m
+      eval_time: 0m # test the alert fires immediately
       exp_alerts:
         - exp_labels:
             type: seed
