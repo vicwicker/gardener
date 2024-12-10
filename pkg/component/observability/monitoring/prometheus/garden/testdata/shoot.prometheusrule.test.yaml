@@ -1,0 +1,68 @@
+rule_files:
+- shoot.prometheusrule.yaml
+
+tests:
+
+  - name: ShootVerticalPodAutoscalerCappedRecommendation
+    interval: 1m
+    input_series:
+      - series: ALERTS{alertname             = "VerticalPodAutoscalerCappedRecommendation",
+                       type                  = "shoot",
+                       alertstate            = "firing",
+                       verticalpodautoscaler = "vpa-unit-tests",
+                       namespace             = "ns-unit-tests",
+                       cluster               = "cluster-unit-tests",
+                       unit                  = "core",
+                       container             = "container-unit-tests"}
+        values: "1"
+      - series: ALERTS{alertname             = "VerticalPodAutoscalerCappedRecommendation",
+                       type                  = "shoot",
+                       alertstate            = "firing",
+                       verticalpodautoscaler = "vpa-unit-tests",
+                       namespace             = "ns-unit-tests",
+                       cluster               = "cluster-unit-tests",
+                       unit                  = "byte",
+                       container             = "container-unit-tests"}
+        values: "1"
+    external_labels:
+      landscape: landscape-unit-tests
+    alert_rule_test:
+    - alertname: ShootVerticalPodAutoscalerCappedRecommendation
+      eval_time: 0m # test the alert fires immediately
+      exp_alerts:
+        - exp_labels:
+            type: shoot
+            alertstate: firing
+            verticalpodautoscaler: vpa-unit-tests
+            namespace: ns-unit-tests
+            cluster: cluster-unit-tests
+            unit: core
+            container: container-unit-tests
+          exp_annotations:
+            summary: >-
+              A VPA recommendation is capped.
+            description: >-
+              The vpa-unit-tests VPA
+              in the ns-unit-tests namespace
+              in the cluster-unit-tests cluster
+              in the landscape-unit-tests landscape has a
+              CPU uncapped target recommendation larger than the regular target
+              recommendation for the container-unit-tests container.
+        - exp_labels:
+            type: shoot
+            alertstate: firing
+            verticalpodautoscaler: vpa-unit-tests
+            namespace: ns-unit-tests
+            cluster: cluster-unit-tests
+            unit: byte
+            container: container-unit-tests
+          exp_annotations:
+            summary: >-
+              A VPA recommendation is capped.
+            description: >-
+              The vpa-unit-tests VPA
+              in the ns-unit-tests namespace
+              in the cluster-unit-tests cluster
+              in the landscape-unit-tests landscape has a
+              memory uncapped target recommendation larger than the regular target
+              recommendation for the container-unit-tests container.
