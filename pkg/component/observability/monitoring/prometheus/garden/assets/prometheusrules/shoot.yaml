@@ -114,19 +114,27 @@ spec:
 
     - alert: ShootVerticalPodAutoscalerCappedRecommendation
       expr: |
-        ALERTS{alertname="VerticalPodAutoscalerCappedRecommendation", type="shoot", alertstate="firing"}
+        sum by (alertname) (
+            ALERTS{alertname="VerticalPodAutoscalerCappedRecommendation", type="shoot", alertstate="firing"}
+        )
       annotations:
         summary: >-
-          A VPA recommendation is capped.
+          A VPA recommendation for a shoot is capped.
         description: >-
-          The {{ $labels.verticalpodautoscaler }} VPA
-          in the {{ $labels.namespace }} namespace
-          in the {{ $labels.cluster }} cluster
-          in the {{ $externalLabels.landscape }} landscape has a
-          {{ if eq .Labels.unit "core" -}}
-          CPU
-          {{- else if eq .Labels.unit "byte" -}}
-          memory
-          {{- end }}
-          uncapped target recommendation larger than the regular target
-          recommendation for the {{ $labels.container }} container.
+          In the {{$externalLabels.landscape}} landscape, the following shoots have VPA recommendations capped:
+
+          {{ range query `sum by (cluster, namespace) (ALERTS{alertname="VerticalPodAutoscalerCappedRecommendation", type="shoot", alertstate="firing"})` }}
+            - The {{ label "verticalpodautoscaler" }} VPA
+              in the {{ label "cluster" }} cluster and {{ label "namespace" }} namespace has a
+              {{ if eq .Labels.unit "core" -}}
+              CPU
+              {{- else if eq .Labels.unit "byte" -}}
+              memory
+              {{- end }}
+              uncapped target recommendation larger than the regular target
+              recommendation for the {{ label "container" }} container.
+          {{ end }}
+
+
+
+
