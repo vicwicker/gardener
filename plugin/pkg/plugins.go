@@ -92,6 +92,7 @@ func AllPluginNames() []string {
 		PluginNameManagedSeed,                       // ManagedSeed
 		PluginNameManagedSeedShoot,                  // ManagedSeedShoot
 		PluginNameBastion,                           // Bastion
+		"MutatingAdmissionPolicy",                   // MutatingAdmissionPolicy
 
 		// new admission plugins should generally be inserted above here
 		// webhook, and resourcequota plugins must go at the end
@@ -131,6 +132,7 @@ func DefaultOnPlugins() sets.Set[string] {
 		PluginNameManagedSeed,                     // ManagedSeed
 		PluginNameManagedSeedShoot,                // ManagedSeedShoot
 		PluginNameBastion,                         // Bastion
+		"MutatingAdmissionPolicy",                 // MutatingAdmissionPolicy
 		mutatingwebhook.PluginName,                // MutatingAdmissionWebhook
 		validatingwebhook.PluginName,              // ValidatingAdmissionWebhook
 		// TODO(ary1992): Ennable the plugin once our base clusters are updated to k8s >= 1.30
