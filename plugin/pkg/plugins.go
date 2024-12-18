@@ -7,6 +7,7 @@ package pkg
 import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle"
+	mutatingpolicy "k8s.io/apiserver/pkg/admission/plugin/policy/mutating"
 	"k8s.io/apiserver/pkg/admission/plugin/policy/validating"
 	"k8s.io/apiserver/pkg/admission/plugin/resourcequota"
 	mutatingwebhook "k8s.io/apiserver/pkg/admission/plugin/webhook/mutating"
@@ -96,6 +97,7 @@ func AllPluginNames() []string {
 		// new admission plugins should generally be inserted above here
 		// webhook, and resourcequota plugins must go at the end
 
+		mutatingpolicy.PluginName,    // MutatingAdmissionPolicy
 		mutatingwebhook.PluginName,   // MutatingAdmissionWebhook
 		validating.PluginName,        // ValidatingAdmissionPolicy
 		validatingwebhook.PluginName, // ValidatingAdmissionWebhook
@@ -131,6 +133,7 @@ func DefaultOnPlugins() sets.Set[string] {
 		PluginNameManagedSeed,                     // ManagedSeed
 		PluginNameManagedSeedShoot,                // ManagedSeedShoot
 		PluginNameBastion,                         // Bastion
+		mutatingpolicy.PluginName,                 // MutatingAdmissionPolicy
 		mutatingwebhook.PluginName,                // MutatingAdmissionWebhook
 		validatingwebhook.PluginName,              // ValidatingAdmissionWebhook
 		// TODO(ary1992): Ennable the plugin once our base clusters are updated to k8s >= 1.30
