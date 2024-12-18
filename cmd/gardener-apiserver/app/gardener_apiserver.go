@@ -309,11 +309,12 @@ func (o *Options) Run(ctx context.Context) error {
 	}
 
 	if err := server.GenericAPIServer.AddPostStartHook("start-gardener-apiserver-informers", func(context genericapiserver.PostStartHookContext) error {
-		o.CoreInformerFactory.Start(context.StopCh)
-		o.KubeInformerFactory.Start(context.StopCh)
-		o.SeedManagementInformerFactory.Start(context.StopCh)
-		o.SecurityInformerFactory.Start(context.StopCh)
-		o.SettingsInformerFactory.Start(context.StopCh)
+		stopCh := context.Done()
+		o.CoreInformerFactory.Start(stopCh)
+		o.KubeInformerFactory.Start(stopCh)
+		o.SeedManagementInformerFactory.Start(stopCh)
+		o.SecurityInformerFactory.Start(stopCh)
+		o.SettingsInformerFactory.Start(stopCh)
 		return nil
 	}); err != nil {
 		return err
