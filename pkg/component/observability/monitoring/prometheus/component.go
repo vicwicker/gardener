@@ -138,7 +138,7 @@ type Alertmanager struct {
 	// If not set, the namespace of the Prometheus instance is used.
 	Namespace *string
 	// AdditionalAlertRelabelConfigs contains additional alert relabel configurations.
-	AdditionalAlertRelabelConfigs []monitoringv1.RelabelConfig
+	AdditionalAlertRelabelConfigs []*monitoringv1.RelabelConfig
 }
 
 // RemoteWriteValues contains remote write configuration for this Prometheus instance.

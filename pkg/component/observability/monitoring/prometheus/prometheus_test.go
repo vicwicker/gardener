@@ -935,7 +935,7 @@ tls_config:
 
 				When("additional alert relabel configs are provided", func() {
 					BeforeEach(func() {
-						values.Alerting.Alertmanagers[0].AdditionalAlertRelabelConfigs = []monitoringv1.RelabelConfig{{
+						values.Alerting.Alertmanagers[0].AdditionalAlertRelabelConfigs = []*monitoringv1.RelabelConfig{{
 							SourceLabels: []monitoringv1.LabelName{"project", "name"},
 							Regex:        "(.+);(.+)",
 							Action:       "replace",

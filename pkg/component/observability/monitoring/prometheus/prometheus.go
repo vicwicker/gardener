@@ -108,6 +108,10 @@ func (p *prometheus) prometheus(cortexConfigMap *corev1.ConfigMap) *monitoringv1
 			obj.Spec.Alerting = &monitoringv1.AlertingSpec{}
 		}
 		for _, alertManager := range p.values.Alerting.Alertmanagers {
+			var alertRelabelConfigs []monitoringv1.RelabelConfig
+			for _, config := range alertManager.AdditionalAlertRelabelConfigs {
+				alertRelabelConfigs = append(alertRelabelConfigs, *config)
+			}
 			obj.Spec.Alerting.Alertmanagers = append(obj.Spec.Alerting.Alertmanagers, monitoringv1.AlertmanagerEndpoints{
 				Namespace: alertManager.Namespace,
 				Name:      alertManager.Name,
@@ -118,7 +122,7 @@ func (p *prometheus) prometheus(cortexConfigMap *corev1.ConfigMap) *monitoringv1
 						Regex:        `true`,
 						Action:       "drop",
 					}},
-					alertManager.AdditionalAlertRelabelConfigs...,
+					alertRelabelConfigs...,
 				),
 			})
 		}
