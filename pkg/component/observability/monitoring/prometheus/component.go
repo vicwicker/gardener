@@ -100,8 +100,6 @@ type Values struct {
 	// TargetCluster contains configuration in case Prometheus scrapes metrics from another kube-apiserver (e.g.,
 	// virtual garden, or shoot cluster) or other components running in this cluster.
 	TargetCluster *TargetClusterValues
-	// AdditionalAlertRelabelConfigs contains additional alert relabel configurations.
-	AdditionalAlertRelabelConfigs []monitoringv1.RelabelConfig
 	// RestrictToNamespace controls whether the Prometheus instance should only scrape its targets in its own namespace.
 	RestrictToNamespace bool
 	// ResourceRequests defines the initial resource requests
@@ -139,6 +137,8 @@ type Alertmanager struct {
 	// Namespace is the namespace of the alertmanager to which alerts should be sent.
 	// If not set, the namespace of the Prometheus instance is used.
 	Namespace *string
+	// AdditionalAlertRelabelConfigs contains additional alert relabel configurations.
+	AdditionalAlertRelabelConfigs []monitoringv1.RelabelConfig
 }
 
 // RemoteWriteValues contains remote write configuration for this Prometheus instance.
