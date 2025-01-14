@@ -82,6 +82,7 @@ import (
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
 	"github.com/gardener/gardener/pkg/utils/timewindow"
+	"github.com/gardener/gardener/third_party/gopkg.in/yaml.v2"
 )
 
 type components struct {
@@ -1192,6 +1193,22 @@ func (r *Reconciler) newAlertmanager(log logr.Logger, garden *operatorv1alpha1.G
 }
 
 func (r *Reconciler) newPrometheusGarden(log logr.Logger, garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface, ingressDomain string, wildcardCertSecretName *string) (prometheus.Interface, error) {
+	var relabelConfigs []monitoringv1.RelabelConfig
+	var configMap corev1.ConfigMap
+	if err := r.RuntimeClientSet.Client().Get(context.Background(), client.ObjectKey{Name: "additional-alert-relabel-config-prometheus-garden", Namespace: r.GardenNamespace}, &configMap); err != nil && !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+
+	err := yaml.Unmarshal([]byte(configMap.Data["alertmanager-garden"]), &relabelConfigs)
+	if err != nil {
+		return nil, err
+	}
+
+	var relabelConfigPtrs []*monitoringv1.RelabelConfig
+	for _, config := range relabelConfigs {
+		relabelConfigPtrs = append(relabelConfigPtrs, &config)
+	}
+
 	return sharedcomponent.NewPrometheus(log, r.RuntimeClientSet.Client(), r.GardenNamespace, prometheus.Values{
 		Name:              "garden",
 		PriorityClassName: v1beta1constants.PriorityClassNameGardenSystem100,
@@ -1216,7 +1233,7 @@ func (r *Reconciler) newPrometheusGarden(log logr.Logger, garden *operatorv1alph
 		Alerting: &prometheus.AlertingValues{
 			Alertmanagers: []*prometheus.Alertmanager{{
 				Name: "alertmanager-garden",
-				AdditionalAlertRelabelConfigs: []*monitoringv1.RelabelConfig{
+				AdditionalAlertRelabelConfigs: append([]*monitoringv1.RelabelConfig{
 					{
 						SourceLabels: []monitoringv1.LabelName{"project", "name"},
 						Regex:        "(.+);(.+)",
@@ -1231,8 +1248,8 @@ func (r *Reconciler) newPrometheusGarden(log logr.Logger, garden *operatorv1alph
 						Replacement:  ptr.To("https://dashboard." + ingressDomain + "/namespace/garden/shoots/$1"),
 						TargetLabel:  "shoot_dashboard_url",
 					},
-				}},
-			},
+				}, relabelConfigPtrs...),
+			}},
 		},
 		Ingress: &prometheus.IngressValues{
 			Host:                   "prometheus-garden." + ingressDomain,
