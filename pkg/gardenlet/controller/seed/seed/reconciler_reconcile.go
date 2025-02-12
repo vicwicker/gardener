@@ -461,6 +461,10 @@ func (r *Reconciler) runReconcileSeedFlow(
 			Fn:   c.aggregatePrometheus.Deploy,
 		})
 		_ = g.Add(flow.Task{
+			Name: "Deploying metering Prometheus",
+			Fn:   c.meteringPrometheus.Deploy,
+		})
+		_ = g.Add(flow.Task{
 			Name: "Deploying Alertmanager",
 			Fn:   c.alertManager.Deploy,
 		})

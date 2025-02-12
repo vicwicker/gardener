@@ -109,6 +109,7 @@ type components struct {
 	cachePrometheus               component.DeployWaiter
 	seedPrometheus                component.DeployWaiter
 	aggregatePrometheus           component.DeployWaiter
+	meteringPrometheus            component.DeployWaiter
 	alertManager                  component.DeployWaiter
 }
 
@@ -224,6 +225,10 @@ func (r *Reconciler) instantiateComponents(
 		return
 	}
 	c.aggregatePrometheus, err = r.newAggregatePrometheus(log, seed, seedIsGarden, secretsManager, globalMonitoringSecretSeed, wildCardCertSecret, alertingSMTPSecret)
+	if err != nil {
+		return
+	}
+	c.meteringPrometheus, err = r.newMeteringPrometheus(log, seed)
 	if err != nil {
 		return
 	}
@@ -615,6 +620,22 @@ func (r *Reconciler) newAggregatePrometheus(log logr.Logger, seed *seedpkg.Seed,
 
 	if alertingSMTPSecret != nil {
 		values.Alerting = &prometheus.AlertingValues{Alertmanagers: []*prometheus.Alertmanager{{Name: "alertmanager-seed"}}}
+	}
+
+	return sharedcomponent.NewPrometheus(log, r.SeedClientSet.Client(), r.GardenNamespace, values)
+}
+
+func (r *Reconciler) newMeteringPrometheus(log logr.Logger, seed *seedpkg.Seed) (component.DeployWaiter, error) {
+	values := prometheus.Values{
+		Name:              "metering",
+		PriorityClassName: v1beta1constants.PriorityClassNameSeedSystem600,
+		StorageCapacity:   resource.MustParse(seed.GetValidVolumeSize("100Gi")), // TODO(vicwicker): Use a running aggregate Prometheus to make a better estimate for storage capacity
+		Replicas:          1,                                                    // TODO(vicwicker): Introduce a second replica for HA
+		Retention:         ptr.To(monitoringv1.Duration("90d")),
+		RetentionSize:     "95GB",
+		ExternalLabels:    map[string]string{"seed": seed.GetInfo().Name},
+		// TODO(vicwicker): Add VPA minimum allowed resources
+		// TODO(vicwicker): Introduce ingress for the garden Prometheus to federate from the metering Prometheus
 	}
 
 	return sharedcomponent.NewPrometheus(log, r.SeedClientSet.Client(), r.GardenNamespace, values)
