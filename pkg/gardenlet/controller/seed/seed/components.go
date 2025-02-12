@@ -57,6 +57,7 @@ import (
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus"
 	aggregateprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/aggregate"
 	cacheprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/cache"
+	meteringprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/metering"
 	seedprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/seed"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheusoperator"
 	"github.com/gardener/gardener/pkg/component/observability/plutono"
@@ -634,6 +635,9 @@ func (r *Reconciler) newMeteringPrometheus(log logr.Logger, seed *seedpkg.Seed) 
 		Retention:         ptr.To(monitoringv1.Duration("90d")),
 		RetentionSize:     "95GB",
 		ExternalLabels:    map[string]string{"seed": seed.GetInfo().Name},
+		CentralConfigs: prometheus.CentralConfigs{
+			ScrapeConfigs: meteringprometheus.CentralScrapeConfigs(),
+		},
 		// TODO(vicwicker): Add VPA minimum allowed resources
 		// TODO(vicwicker): Introduce ingress for the garden Prometheus to federate from the metering Prometheus
 	}
