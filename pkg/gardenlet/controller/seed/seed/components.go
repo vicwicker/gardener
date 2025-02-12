@@ -638,6 +638,9 @@ func (r *Reconciler) newMeteringPrometheus(log logr.Logger, seed *seedpkg.Seed) 
 		CentralConfigs: prometheus.CentralConfigs{
 			ScrapeConfigs: meteringprometheus.CentralScrapeConfigs(),
 		},
+		AdditionalPodLabels: map[string]string{
+			"networking.resources.gardener.cloud/to-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets: v1beta1constants.LabelNetworkPolicyAllowed,
+		},
 		// TODO(vicwicker): Add VPA minimum allowed resources
 		// TODO(vicwicker): Introduce ingress for the garden Prometheus to federate from the metering Prometheus
 	}
