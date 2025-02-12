@@ -1147,6 +1147,8 @@ build:
             - pkg/component/observability/monitoring/prometheus/garden/assets/prometheusrules/seed.yaml
             - pkg/component/observability/monitoring/prometheus/garden/assets/prometheusrules/shoot.yaml
             - pkg/component/observability/monitoring/prometheus/garden/assets/scrapeconfigs/cadvisor.yaml
+            - pkg/component/observability/monitoring/prometheus/metering
+            - pkg/component/observability/monitoring/prometheus/metering/assets/prometheusrules/metering.rules.stateful.yaml
             - pkg/component/observability/monitoring/prometheus/seed
             - pkg/component/observability/monitoring/prometheus/shoot
             - pkg/component/observability/monitoring/prometheus/shoot/assets/prometheusrules/optional/alertmanager.yaml

@@ -636,7 +636,8 @@ func (r *Reconciler) newMeteringPrometheus(log logr.Logger, seed *seedpkg.Seed) 
 		RetentionSize:     "95GB",
 		ExternalLabels:    map[string]string{"seed": seed.GetInfo().Name},
 		CentralConfigs: prometheus.CentralConfigs{
-			ScrapeConfigs: meteringprometheus.CentralScrapeConfigs(),
+			PrometheusRules: meteringprometheus.CentralPrometheusRules(),
+			ScrapeConfigs:   meteringprometheus.CentralScrapeConfigs(),
 		},
 		AdditionalPodLabels: map[string]string{
 			"networking.resources.gardener.cloud/to-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets: v1beta1constants.LabelNetworkPolicyAllowed,
