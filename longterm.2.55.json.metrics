@@ -1,0 +1,352 @@
+apiserver_request_total{app=x, code=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, landscape=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_total{app=x, code=x, component=x, container=x, endpoint=x, instance=x, job=x, landscape=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_total{app=x, code=x, component=x, container=x, endpoint=x, instance=x, job=x, landscape=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_total{app=x, code=x, container=x, endpoint=x, instance=x, job=x, landscape=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, role=x, service=x, subresource=x, verb=x}
+cortex_build_info{branch=x, goarch=x, goos=x, goversion=x, instance=x, job=x, revision=x, tags=x, version=x}
+cortex_cache_fetched_keys_total{instance=x, job=x, name=x}
+cortex_cache_hits_total{instance=x, job=x, name=x}
+cortex_cache_value_size_bytes_bucket{instance=x, job=x, le=x, method=x, name=x}
+cortex_cache_value_size_bytes_count{instance=x, job=x, method=x, name=x}
+cortex_cache_value_size_bytes_sum{instance=x, job=x, method=x, name=x}
+cortex_config_hash{instance=x, job=x, sha256=x}
+cortex_distributor_ingester_clients{instance=x, job=x}
+cortex_experimental_features_in_use_total{instance=x, job=x}
+cortex_frontend_split_queries_total{instance=x, job=x}
+cortex_inflight_requests{instance=x, job=x, method=x, route=x}
+cortex_query_frontend_retries_bucket{instance=x, job=x, le=x}
+cortex_query_frontend_retries_count{instance=x, job=x}
+cortex_query_frontend_retries_sum{instance=x, job=x}
+cortex_request_duration_seconds_bucket{instance=x, job=x, le=x, method=x, route=x, status_code=x, ws=x}
+cortex_request_duration_seconds_count{instance=x, job=x, method=x, route=x, status_code=x, ws=x}
+cortex_request_duration_seconds_sum{instance=x, job=x, method=x, route=x, status_code=x, ws=x}
+cortex_request_message_bytes_bucket{instance=x, job=x, le=x, method=x, route=x}
+cortex_request_message_bytes_count{instance=x, job=x, method=x, route=x}
+cortex_request_message_bytes_sum{instance=x, job=x, method=x, route=x}
+cortex_response_message_bytes_bucket{instance=x, job=x, le=x, method=x, route=x}
+cortex_response_message_bytes_count{instance=x, job=x, method=x, route=x}
+cortex_response_message_bytes_sum{instance=x, job=x, method=x, route=x}
+cortex_tcp_connections_limit{instance=x, job=x, protocol=x}
+cortex_tcp_connections{instance=x, job=x, protocol=x}
+deprecated_flags_inuse_total{instance=x, job=x}
+etcdbr_snapshot_duration_seconds_count{container=x, endpoint=x, job=x, kind=x, landscape=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, role=x, service=x, succeeded=x}
+garden_seed_capacity{container=x, endpoint=x, iaas=x, instance=x, job=x, landscape=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, protected=x, region=x, resource=x, service=x, visible=x}
+garden_seed_condition{condition=x, container=x, endpoint=x, instance=x, job=x, landscape=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, service=x}
+garden_seed_info{container=x, endpoint=x, iaas=x, instance=x, job=x, landscape=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, protected=x, region=x, service=x, version=x, visible=x}
+garden_seed_usage{container=x, endpoint=x, iaas=x, instance=x, job=x, landscape=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, protected=x, region=x, resource=x, service=x, visible=x}
+garden_shoot_condition{condition=x, container=x, endpoint=x, has_user_errors=x, iaas=x, instance=x, is_compliant=x, is_seed=x, job=x, landscape=x, name=x, namespace=x, operation=x, pod=x, project=x, prometheus=x, prometheus_replica=x, purpose=x, seed=x, seed_iaas=x, seed_region=x, service=x, technical_id=x, uid=x}
+garden_shoot_info:timestamp:this_month{container=x, cost_object_owner=x, endpoint=x, gardener_version=x, iaas=x, instance=x, is_hibernated=x, is_seed=x, is_workerless=x, job=x, landscape=x, month=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, region=x, seed=x, seed_iaas=x, seed_region=x, service=x, shoot_uid=x, technical_id=x, timestamp=x, version=x, year=x}
+garden_shoot_info{container=x, cost_object_owner=x, endpoint=x, gardener_version=x, iaas=x, instance=x, is_hibernated=x, is_seed=x, is_workerless=x, job=x, landscape=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, region=x, seed=x, seed_iaas=x, seed_region=x, service=x, shoot_uid=x, technical_id=x, version=x}
+garden_shoot_node_info{architecture=x, container=x, cri=x, endpoint=x, image=x, instance=x, job=x, landscape=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, service=x, technical_id=x, version=x, worker_group=x}
+go_gc_cycles_automatic_gc_cycles_total{instance=x, job=x}
+go_gc_cycles_forced_gc_cycles_total{instance=x, job=x}
+go_gc_cycles_total_gc_cycles_total{instance=x, job=x}
+go_gc_duration_seconds_count{instance=x, job=x}
+go_gc_duration_seconds_sum{instance=x, job=x}
+go_gc_duration_seconds{instance=x, job=x, quantile=x}
+go_gc_gogc_percent{instance=x, job=x}
+go_gc_gomemlimit_bytes{instance=x, job=x}
+go_gc_heap_allocs_by_size_bytes_bucket{instance=x, job=x, le=x}
+go_gc_heap_allocs_by_size_bytes_count{instance=x, job=x}
+go_gc_heap_allocs_by_size_bytes_sum{instance=x, job=x}
+go_gc_heap_allocs_bytes_total{instance=x, job=x}
+go_gc_heap_allocs_objects_total{instance=x, job=x}
+go_gc_heap_frees_by_size_bytes_bucket{instance=x, job=x, le=x}
+go_gc_heap_frees_by_size_bytes_count{instance=x, job=x}
+go_gc_heap_frees_by_size_bytes_sum{instance=x, job=x}
+go_gc_heap_frees_bytes_total{instance=x, job=x}
+go_gc_heap_frees_objects_total{instance=x, job=x}
+go_gc_heap_goal_bytes{instance=x, job=x}
+go_gc_heap_live_bytes{instance=x, job=x}
+go_gc_heap_objects_objects{instance=x, job=x}
+go_gc_heap_tiny_allocs_objects_total{instance=x, job=x}
+go_gc_limiter_last_enabled_gc_cycle{instance=x, job=x}
+go_gc_pauses_seconds_bucket{instance=x, job=x, le=x}
+go_gc_pauses_seconds_count{instance=x, job=x}
+go_gc_pauses_seconds_sum{instance=x, job=x}
+go_gc_scan_globals_bytes{instance=x, job=x}
+go_gc_scan_heap_bytes{instance=x, job=x}
+go_gc_scan_stack_bytes{instance=x, job=x}
+go_gc_scan_total_bytes{instance=x, job=x}
+go_gc_stack_starting_size_bytes{instance=x, job=x}
+go_goroutines{instance=x, job=x}
+go_info{instance=x, job=x, version=x}
+go_memstats_alloc_bytes_total{instance=x, job=x}
+go_memstats_alloc_bytes{instance=x, job=x}
+go_memstats_buck_hash_sys_bytes{instance=x, job=x}
+go_memstats_frees_total{instance=x, job=x}
+go_memstats_gc_sys_bytes{instance=x, job=x}
+go_memstats_heap_alloc_bytes{instance=x, job=x}
+go_memstats_heap_idle_bytes{instance=x, job=x}
+go_memstats_heap_inuse_bytes{instance=x, job=x}
+go_memstats_heap_objects{instance=x, job=x}
+go_memstats_heap_released_bytes{instance=x, job=x}
+go_memstats_heap_sys_bytes{instance=x, job=x}
+go_memstats_last_gc_time_seconds{instance=x, job=x}
+go_memstats_lookups_total{instance=x, job=x}
+go_memstats_mallocs_total{instance=x, job=x}
+go_memstats_mcache_inuse_bytes{instance=x, job=x}
+go_memstats_mcache_sys_bytes{instance=x, job=x}
+go_memstats_mspan_inuse_bytes{instance=x, job=x}
+go_memstats_mspan_sys_bytes{instance=x, job=x}
+go_memstats_next_gc_bytes{instance=x, job=x}
+go_memstats_other_sys_bytes{instance=x, job=x}
+go_memstats_stack_inuse_bytes{instance=x, job=x}
+go_memstats_stack_sys_bytes{instance=x, job=x}
+go_memstats_sys_bytes{instance=x, job=x}
+go_sched_gomaxprocs_threads{instance=x, job=x}
+go_sched_goroutines_goroutines{instance=x, job=x}
+go_sched_latencies_seconds_bucket{instance=x, job=x, le=x}
+go_sched_latencies_seconds_count{instance=x, job=x}
+go_sched_latencies_seconds_sum{instance=x, job=x}
+go_sched_pauses_stopping_gc_seconds_bucket{instance=x, job=x, le=x}
+go_sched_pauses_stopping_gc_seconds_count{instance=x, job=x}
+go_sched_pauses_stopping_gc_seconds_sum{instance=x, job=x}
+go_sched_pauses_stopping_other_seconds_bucket{instance=x, job=x, le=x}
+go_sched_pauses_stopping_other_seconds_count{instance=x, job=x}
+go_sched_pauses_stopping_other_seconds_sum{instance=x, job=x}
+go_sched_pauses_total_gc_seconds_bucket{instance=x, job=x, le=x}
+go_sched_pauses_total_gc_seconds_count{instance=x, job=x}
+go_sched_pauses_total_gc_seconds_sum{instance=x, job=x}
+go_sched_pauses_total_other_seconds_bucket{instance=x, job=x, le=x}
+go_sched_pauses_total_other_seconds_count{instance=x, job=x}
+go_sched_pauses_total_other_seconds_sum{instance=x, job=x}
+go_threads{instance=x, job=x}
+iaas:info{iaas=x}
+jaeger_tracer_baggage_restrictions_updates_total{instance=x, job=x, result=x}
+jaeger_tracer_baggage_truncations_total{instance=x, job=x}
+jaeger_tracer_baggage_updates_total{instance=x, job=x, result=x}
+jaeger_tracer_finished_spans_total{instance=x, job=x, sampled=x}
+jaeger_tracer_reporter_queue_length{instance=x, job=x}
+jaeger_tracer_reporter_spans_total{instance=x, job=x, result=x}
+jaeger_tracer_sampler_queries_total{instance=x, job=x, result=x}
+jaeger_tracer_sampler_updates_total{instance=x, job=x, result=x}
+jaeger_tracer_span_context_decoding_errors_total{instance=x, job=x}
+jaeger_tracer_started_spans_total{instance=x, job=x, sampled=x}
+jaeger_tracer_throttled_debug_spans_total{instance=x, job=x}
+jaeger_tracer_throttler_updates_total{instance=x, job=x, result=x}
+jaeger_tracer_traces_total{instance=x, job=x, sampled=x, state=x}
+log_messages_total{instance=x, job=x, level=x}
+net_conntrack_dialer_conn_attempted_total{dialer_name=x, instance=x, job=x}
+net_conntrack_dialer_conn_closed_total{dialer_name=x, instance=x, job=x}
+net_conntrack_dialer_conn_established_total{dialer_name=x, instance=x, job=x}
+net_conntrack_dialer_conn_failed_total{dialer_name=x, instance=x, job=x, reason=x}
+net_conntrack_listener_conn_accepted_total{instance=x, job=x, listener_name=x}
+net_conntrack_listener_conn_closed_total{instance=x, job=x, listener_name=x}
+process_cpu_seconds_total{instance=x, job=x}
+process_max_fds{instance=x, job=x}
+process_memory_map_areas_limit{instance=x, job=x}
+process_memory_map_areas{instance=x, job=x}
+process_network_receive_bytes_total{instance=x, job=x}
+process_network_transmit_bytes_total{instance=x, job=x}
+process_open_fds{instance=x, job=x}
+process_resident_memory_bytes{instance=x, job=x}
+process_start_time_seconds{instance=x, job=x}
+process_virtual_memory_bytes{instance=x, job=x}
+process_virtual_memory_max_bytes{instance=x, job=x}
+project:info{project=x}
+prometheus_api_remote_read_queries{instance=x, job=x}
+prometheus_build_info{branch=x, goarch=x, goos=x, goversion=x, instance=x, job=x, revision=x, tags=x, version=x}
+prometheus_config_last_reload_success_timestamp_seconds{instance=x, job=x}
+prometheus_config_last_reload_successful{instance=x, job=x}
+prometheus_engine_queries_concurrent_max{instance=x, job=x}
+prometheus_engine_queries{instance=x, job=x}
+prometheus_engine_query_duration_seconds_count{instance=x, job=x, slice=x}
+prometheus_engine_query_duration_seconds_sum{instance=x, job=x, slice=x}
+prometheus_engine_query_duration_seconds{instance=x, job=x, quantile=x, slice=x}
+prometheus_engine_query_log_enabled{instance=x, job=x}
+prometheus_engine_query_log_failures_total{instance=x, job=x}
+prometheus_engine_query_samples_total{instance=x, job=x}
+prometheus_http_request_duration_seconds_bucket{handler=x, instance=x, job=x, le=x}
+prometheus_http_request_duration_seconds_count{handler=x, instance=x, job=x}
+prometheus_http_request_duration_seconds_sum{handler=x, instance=x, job=x}
+prometheus_http_requests_total{code=x, handler=x, instance=x, job=x}
+prometheus_http_response_size_bytes_bucket{handler=x, instance=x, job=x, le=x}
+prometheus_http_response_size_bytes_count{handler=x, instance=x, job=x}
+prometheus_http_response_size_bytes_sum{handler=x, instance=x, job=x}
+prometheus_notifications_alertmanagers_discovered{instance=x, job=x}
+prometheus_notifications_dropped_total{instance=x, job=x}
+prometheus_notifications_queue_capacity{instance=x, job=x}
+prometheus_notifications_queue_length{instance=x, job=x}
+prometheus_ready{instance=x, job=x}
+prometheus_remote_storage_exemplars_in_total{instance=x, job=x}
+prometheus_remote_storage_highest_timestamp_in_seconds{instance=x, job=x}
+prometheus_remote_storage_histograms_in_total{instance=x, job=x}
+prometheus_remote_storage_samples_in_total{instance=x, job=x}
+prometheus_remote_storage_string_interner_zero_reference_releases_total{instance=x, job=x}
+prometheus_rule_evaluation_duration_seconds_count{instance=x, job=x}
+prometheus_rule_evaluation_duration_seconds_sum{instance=x, job=x}
+prometheus_rule_evaluation_duration_seconds{instance=x, job=x, quantile=x}
+prometheus_rule_evaluation_failures_total{instance=x, job=x, rule_group=x}
+prometheus_rule_evaluations_total{instance=x, job=x, rule_group=x}
+prometheus_rule_group_duration_seconds_count{instance=x, job=x}
+prometheus_rule_group_duration_seconds_sum{instance=x, job=x}
+prometheus_rule_group_duration_seconds{instance=x, job=x, quantile=x}
+prometheus_rule_group_interval_seconds{instance=x, job=x, rule_group=x}
+prometheus_rule_group_iterations_missed_total{instance=x, job=x, rule_group=x}
+prometheus_rule_group_iterations_total{instance=x, job=x, rule_group=x}
+prometheus_rule_group_last_duration_seconds{instance=x, job=x, rule_group=x}
+prometheus_rule_group_last_evaluation_samples{instance=x, job=x, rule_group=x}
+prometheus_rule_group_last_evaluation_timestamp_seconds{instance=x, job=x, rule_group=x}
+prometheus_rule_group_last_restore_duration_seconds{instance=x, job=x, rule_group=x}
+prometheus_rule_group_rules{instance=x, job=x, rule_group=x}
+prometheus_sd_azure_cache_hit_total{instance=x, job=x}
+prometheus_sd_azure_failures_total{instance=x, job=x}
+prometheus_sd_consul_rpc_duration_seconds_count{call=x, endpoint=x, instance=x, job=x}
+prometheus_sd_consul_rpc_duration_seconds_sum{call=x, endpoint=x, instance=x, job=x}
+prometheus_sd_consul_rpc_duration_seconds{call=x, endpoint=x, instance=x, job=x, quantile=x}
+prometheus_sd_consul_rpc_failures_total{instance=x, job=x}
+prometheus_sd_discovered_targets{config=x, instance=x, job=x, name=x}
+prometheus_sd_dns_lookup_failures_total{instance=x, job=x}
+prometheus_sd_dns_lookups_total{instance=x, job=x}
+prometheus_sd_failed_configs{instance=x, job=x, name=x}
+prometheus_sd_file_read_errors_total{instance=x, job=x}
+prometheus_sd_file_scan_duration_seconds_count{instance=x, job=x}
+prometheus_sd_file_scan_duration_seconds_sum{instance=x, job=x}
+prometheus_sd_file_scan_duration_seconds{instance=x, job=x, quantile=x}
+prometheus_sd_file_watcher_errors_total{instance=x, job=x}
+prometheus_sd_http_failures_total{instance=x, job=x}
+prometheus_sd_kubernetes_events_total{event=x, instance=x, job=x, role=x}
+prometheus_sd_kubernetes_failures_total{instance=x, job=x}
+prometheus_sd_kuma_fetch_duration_seconds_count{instance=x, job=x}
+prometheus_sd_kuma_fetch_duration_seconds_sum{instance=x, job=x}
+prometheus_sd_kuma_fetch_duration_seconds{instance=x, job=x, quantile=x}
+prometheus_sd_kuma_fetch_failures_total{instance=x, job=x}
+prometheus_sd_kuma_fetch_skipped_updates_total{instance=x, job=x}
+prometheus_sd_linode_failures_total{instance=x, job=x}
+prometheus_sd_nomad_failures_total{instance=x, job=x}
+prometheus_sd_received_updates_total{instance=x, job=x, name=x}
+prometheus_sd_updates_delayed_total{instance=x, job=x, name=x}
+prometheus_sd_updates_total{instance=x, job=x, name=x}
+prometheus_target_interval_length_seconds_count{instance=x, interval=x, job=x}
+prometheus_target_interval_length_seconds_sum{instance=x, interval=x, job=x}
+prometheus_target_interval_length_seconds{instance=x, interval=x, job=x, quantile=x}
+prometheus_target_metadata_cache_bytes{instance=x, job=x, scrape_job=x}
+prometheus_target_metadata_cache_entries{instance=x, job=x, scrape_job=x}
+prometheus_target_scrape_pool_exceeded_label_limits_total{instance=x, job=x}
+prometheus_target_scrape_pool_exceeded_target_limit_total{instance=x, job=x}
+prometheus_target_scrape_pool_reloads_failed_total{instance=x, job=x}
+prometheus_target_scrape_pool_reloads_total{instance=x, job=x}
+prometheus_target_scrape_pool_symboltable_items{instance=x, job=x, scrape_job=x}
+prometheus_target_scrape_pool_sync_total{instance=x, job=x, scrape_job=x}
+prometheus_target_scrape_pool_target_limit{instance=x, job=x, scrape_job=x}
+prometheus_target_scrape_pool_targets{instance=x, job=x, scrape_job=x}
+prometheus_target_scrape_pools_failed_total{instance=x, job=x}
+prometheus_target_scrape_pools_total{instance=x, job=x}
+prometheus_target_scrapes_cache_flush_forced_total{instance=x, job=x}
+prometheus_target_scrapes_exceeded_body_size_limit_total{instance=x, job=x}
+prometheus_target_scrapes_exceeded_native_histogram_bucket_limit_total{instance=x, job=x}
+prometheus_target_scrapes_exceeded_sample_limit_total{instance=x, job=x}
+prometheus_target_scrapes_exemplar_out_of_order_total{instance=x, job=x}
+prometheus_target_scrapes_sample_duplicate_timestamp_total{instance=x, job=x}
+prometheus_target_scrapes_sample_out_of_bounds_total{instance=x, job=x}
+prometheus_target_scrapes_sample_out_of_order_total{instance=x, job=x}
+prometheus_target_sync_failed_total{instance=x, job=x, scrape_job=x}
+prometheus_target_sync_length_seconds_count{instance=x, job=x, scrape_job=x}
+prometheus_target_sync_length_seconds_sum{instance=x, job=x, scrape_job=x}
+prometheus_target_sync_length_seconds{instance=x, job=x, quantile=x, scrape_job=x}
+prometheus_template_text_expansion_failures_total{instance=x, job=x}
+prometheus_template_text_expansions_total{instance=x, job=x}
+prometheus_treecache_watcher_goroutines{instance=x, job=x}
+prometheus_treecache_zookeeper_failures_total{instance=x, job=x}
+prometheus_tsdb_blocks_loaded{instance=x, job=x}
+prometheus_tsdb_checkpoint_creations_failed_total{instance=x, job=x}
+prometheus_tsdb_checkpoint_creations_total{instance=x, job=x}
+prometheus_tsdb_checkpoint_deletions_failed_total{instance=x, job=x}
+prometheus_tsdb_checkpoint_deletions_total{instance=x, job=x}
+prometheus_tsdb_clean_start{instance=x, job=x}
+prometheus_tsdb_compaction_chunk_range_seconds_bucket{instance=x, job=x, le=x}
+prometheus_tsdb_compaction_chunk_range_seconds_count{instance=x, job=x}
+prometheus_tsdb_compaction_chunk_range_seconds_sum{instance=x, job=x}
+prometheus_tsdb_compaction_chunk_samples_bucket{instance=x, job=x, le=x}
+prometheus_tsdb_compaction_chunk_samples_count{instance=x, job=x}
+prometheus_tsdb_compaction_chunk_samples_sum{instance=x, job=x}
+prometheus_tsdb_compaction_chunk_size_bytes_bucket{instance=x, job=x, le=x}
+prometheus_tsdb_compaction_chunk_size_bytes_count{instance=x, job=x}
+prometheus_tsdb_compaction_chunk_size_bytes_sum{instance=x, job=x}
+prometheus_tsdb_compaction_duration_seconds_bucket{instance=x, job=x, le=x}
+prometheus_tsdb_compaction_duration_seconds_count{instance=x, job=x}
+prometheus_tsdb_compaction_duration_seconds_sum{instance=x, job=x}
+prometheus_tsdb_compaction_populating_block{instance=x, job=x}
+prometheus_tsdb_compactions_failed_total{instance=x, job=x}
+prometheus_tsdb_compactions_skipped_total{instance=x, job=x}
+prometheus_tsdb_compactions_total{instance=x, job=x}
+prometheus_tsdb_compactions_triggered_total{instance=x, job=x}
+prometheus_tsdb_data_replay_duration_seconds{instance=x, job=x}
+prometheus_tsdb_exemplar_exemplars_appended_total{instance=x, job=x}
+prometheus_tsdb_exemplar_exemplars_in_storage{instance=x, job=x}
+prometheus_tsdb_exemplar_last_exemplars_timestamp_seconds{instance=x, job=x}
+prometheus_tsdb_exemplar_max_exemplars{instance=x, job=x}
+prometheus_tsdb_exemplar_out_of_order_exemplars_total{instance=x, job=x}
+prometheus_tsdb_exemplar_series_with_exemplars_in_storage{instance=x, job=x}
+prometheus_tsdb_head_active_appenders{instance=x, job=x}
+prometheus_tsdb_head_chunks_created_total{instance=x, job=x}
+prometheus_tsdb_head_chunks_removed_total{instance=x, job=x}
+prometheus_tsdb_head_chunks_storage_size_bytes{instance=x, job=x}
+prometheus_tsdb_head_chunks{instance=x, job=x}
+prometheus_tsdb_head_gc_duration_seconds_count{instance=x, job=x}
+prometheus_tsdb_head_gc_duration_seconds_sum{instance=x, job=x}
+prometheus_tsdb_head_max_time_seconds{instance=x, job=x}
+prometheus_tsdb_head_max_time{instance=x, job=x}
+prometheus_tsdb_head_min_time_seconds{instance=x, job=x}
+prometheus_tsdb_head_min_time{instance=x, job=x}
+prometheus_tsdb_head_out_of_order_samples_appended_total{instance=x, job=x, type=x}
+prometheus_tsdb_head_samples_appended_total{instance=x, job=x, type=x}
+prometheus_tsdb_head_series_created_total{instance=x, job=x}
+prometheus_tsdb_head_series_not_found_total{instance=x, job=x}
+prometheus_tsdb_head_series_removed_total{instance=x, job=x}
+prometheus_tsdb_head_series{instance=x, job=x}
+prometheus_tsdb_head_truncations_failed_total{instance=x, job=x}
+prometheus_tsdb_head_truncations_total{instance=x, job=x}
+prometheus_tsdb_isolation_high_watermark{instance=x, job=x}
+prometheus_tsdb_isolation_low_watermark{instance=x, job=x}
+prometheus_tsdb_lowest_timestamp_seconds{instance=x, job=x}
+prometheus_tsdb_lowest_timestamp{instance=x, job=x}
+prometheus_tsdb_mmap_chunk_corruptions_total{instance=x, job=x}
+prometheus_tsdb_mmap_chunks_total{instance=x, job=x}
+prometheus_tsdb_out_of_bound_samples_total{instance=x, job=x, type=x}
+prometheus_tsdb_out_of_order_samples_total{instance=x, job=x, type=x}
+prometheus_tsdb_reloads_failures_total{instance=x, job=x}
+prometheus_tsdb_reloads_total{instance=x, job=x}
+prometheus_tsdb_retention_limit_bytes{instance=x, job=x}
+prometheus_tsdb_retention_limit_seconds{instance=x, job=x}
+prometheus_tsdb_size_retentions_total{instance=x, job=x}
+prometheus_tsdb_snapshot_replay_error_total{instance=x, job=x}
+prometheus_tsdb_storage_blocks_bytes{instance=x, job=x}
+prometheus_tsdb_symbol_table_size_bytes{instance=x, job=x}
+prometheus_tsdb_time_retentions_total{instance=x, job=x}
+prometheus_tsdb_tombstone_cleanup_seconds_bucket{instance=x, job=x, le=x}
+prometheus_tsdb_tombstone_cleanup_seconds_count{instance=x, job=x}
+prometheus_tsdb_tombstone_cleanup_seconds_sum{instance=x, job=x}
+prometheus_tsdb_too_old_samples_total{instance=x, job=x, type=x}
+prometheus_tsdb_vertical_compactions_total{instance=x, job=x}
+prometheus_tsdb_wal_completed_pages_total{instance=x, job=x}
+prometheus_tsdb_wal_corruptions_total{instance=x, job=x}
+prometheus_tsdb_wal_fsync_duration_seconds_count{instance=x, job=x}
+prometheus_tsdb_wal_fsync_duration_seconds_sum{instance=x, job=x}
+prometheus_tsdb_wal_fsync_duration_seconds{instance=x, job=x, quantile=x}
+prometheus_tsdb_wal_page_flushes_total{instance=x, job=x}
+prometheus_tsdb_wal_segment_current{instance=x, job=x}
+prometheus_tsdb_wal_storage_size_bytes{instance=x, job=x}
+prometheus_tsdb_wal_truncate_duration_seconds_count{instance=x, job=x}
+prometheus_tsdb_wal_truncate_duration_seconds_sum{instance=x, job=x}
+prometheus_tsdb_wal_truncations_failed_total{instance=x, job=x}
+prometheus_tsdb_wal_truncations_total{instance=x, job=x}
+prometheus_tsdb_wal_writes_failed_total{instance=x, job=x}
+prometheus_web_federation_errors_total{instance=x, job=x}
+prometheus_web_federation_warnings_total{instance=x, job=x}
+promhttp_metric_handler_requests_in_flight{instance=x, job=x}
+promhttp_metric_handler_requests_total{code=x, instance=x, job=x}
+purpose:info{purpose=x}
+querier_cache_added_new_total{cache=x, instance=x, job=x}
+querier_cache_added_total{cache=x, instance=x, job=x}
+querier_cache_entries{cache=x, instance=x, job=x}
+querier_cache_evicted_total{cache=x, instance=x, job=x}
+querier_cache_gets_total{cache=x, instance=x, job=x}
+querier_cache_memory_bytes{cache=x, instance=x, job=x}
+querier_cache_misses_total{cache=x, instance=x, job=x}
+querier_cache_stale_gets_total{cache=x, instance=x, job=x}
+scrape_duration_seconds{instance=x, job=x}
+scrape_samples_post_metric_relabeling{instance=x, job=x}
+scrape_samples_scraped{instance=x, job=x}
+scrape_series_added{instance=x, job=x}
+up{instance=x, job=x}

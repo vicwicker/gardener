@@ -1,0 +1,361 @@
+ALERTS_FOR_STATE{alertname=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, phase=x, pod=x, prometheus=x, prometheus_replica=x, severity=x, type=x, uid=x, visibility=x}
+ALERTS{alertname=x, alertstate=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, phase=x, pod=x, prometheus=x, prometheus_replica=x, severity=x, type=x, uid=x, visibility=x}
+_year_month2{month=x, year=x}
+container_cpu_usage_seconds_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, cpu=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_fs_reads_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, device=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_fs_writes_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, device=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_last_seen{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_cache{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_mapped_file{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_rss{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_usage_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_working_set_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_network_receive_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, exported_instance=x, exported_job=x, image=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_network_transmit_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, exported_instance=x, exported_job=x, image=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_oom_events_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+envoy_cluster_upstream_cx_active{cluster_name=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+envoy_cluster_upstream_cx_connect_fail{cluster_name=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+envoy_cluster_upstream_cx_total{cluster_name=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+envoy_cluster_upstream_cx_tx_bytes_total{cluster_name=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+envoy_server_hot_restart_epoch{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+fluentbit_filter_add_records_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_filter_drop_records_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_input_bytes_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_input_records_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_output_errors_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_output_proc_bytes_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_output_proc_records_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_output_retries_failed_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_output_retries_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_vali_gardener_forwarded_logs_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, host=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_vali_gardener_incoming_logs_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, host=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+fluentbit_vali_gardener_incoming_logs_with_endpoint_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, host=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+galley_validation_passed{endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, service=x, version=x}
+go_goroutines{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_alloc_bytes{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_alloc_bytes{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_inuse_bytes{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_sys_bytes{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_stack_inuse_bytes{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+istio_build{component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x, tag=x}
+istio_build{component=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x, tag=x}
+istio_request_bytes_bucket{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_code=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_request_bytes_sum{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_code=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_request_duration_milliseconds_bucket{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_code=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_requests_total{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_code=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_response_bytes_bucket{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_code=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_response_bytes_sum{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_code=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_tcp_connections_closed_total{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_tcp_connections_opened_total{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_tcp_received_bytes_total{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+istio_tcp_sent_bytes_total{connection_security_policy=x, container=x, destination_app=x, destination_canonical_revision=x, destination_canonical_service=x, destination_cluster=x, destination_principal=x, destination_service=x, destination_service_name=x, destination_service_namespace=x, destination_version=x, destination_workload=x, destination_workload_namespace=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, reporter=x, request_protocol=x, response_flags=x, service=x, source_app=x, source_canonical_revision=x, source_canonical_service=x, source_cluster=x, source_principal=x, source_workload=x, source_workload_namespace=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_cpu{customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_memory{customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_cpu{customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_memory{customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_updatepolicy_updatemode{customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, update_mode=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_deployment_metadata_generation{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_spec_replicas{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_observed_generation{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_replicas_available{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_replicas_unavailable{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_replicas_updated{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_replicas{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_horizontalpodautoscaler_spec_max_replicas{exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_horizontalpodautoscaler_spec_min_replicas{exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_horizontalpodautoscaler_status_condition{condition=x, exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, status=x, type=x}
+kube_horizontalpodautoscaler_status_current_replicas{exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_horizontalpodautoscaler_status_desired_replicas{exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_namespace_annotations{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_node_info{container_runtime_version=x, exported_instance=x, exported_job=x, instance=x, internal_ip=x, job=x, kernel_version=x, kubelet_version=x, kubeproxy_version=x, node=x, os_image=x, pod_cidr=x, prometheus=x, prometheus_replica=x, provider_id=x, system_uuid=x, type=x}
+kube_node_labels{exported_instance=x, exported_job=x, instance=x, job=x, label_beta_kubernetes_io_arch=x, label_beta_kubernetes_io_os=x, label_kubernetes_io_arch=x, label_kubernetes_io_hostname=x, label_kubernetes_io_os=x, label_topology_kubernetes_io_zone=x, node=x, prometheus=x, prometheus_replica=x, type=x}
+kube_node_spec_unschedulable{exported_instance=x, exported_job=x, instance=x, job=x, node=x, prometheus=x, prometheus_replica=x, type=x}
+kube_node_status_allocatable{exported_instance=x, exported_job=x, instance=x, job=x, node=x, prometheus=x, prometheus_replica=x, resource=x, type=x, unit=x}
+kube_node_status_capacity{exported_instance=x, exported_job=x, instance=x, job=x, node=x, prometheus=x, prometheus_replica=x, resource=x, type=x, unit=x}
+kube_node_status_condition{condition=x, exported_instance=x, exported_job=x, instance=x, job=x, node=x, prometheus=x, prometheus_replica=x, status=x, type=x}
+kube_persistentvolumeclaim_resource_requests_storage_bytes{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, persistentvolumeclaim=x, prometheus=x, prometheus_replica=x, type=x}
+kube_pod_container_info{container=x, container_id=x, exported_instance=x, exported_job=x, image=x, image_id=x, image_spec=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_container_resource_limits{container=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, node=x, pod=x, prometheus=x, prometheus_replica=x, resource=x, type=x, uid=x, unit=x}
+kube_pod_container_resource_requests{container=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, node=x, pod=x, prometheus=x, prometheus_replica=x, resource=x, type=x, uid=x, unit=x}
+kube_pod_container_status_restarts_total{container=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_info{created_by_kind=x, created_by_name=x, exported_instance=x, exported_job=x, host_ip=x, host_network=x, instance=x, job=x, namespace=x, node=x, pod=x, pod_ip=x, priority_class=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_labels{exported_instance=x, exported_job=x, instance=x, job=x, label_origin=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_labels{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_owner{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, owner_is_controller=x, owner_kind=x, owner_name=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_spec_volumes_persistentvolumeclaims_info{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, persistentvolumeclaim=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x, volume=x}
+kube_pod_status_phase{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, phase=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_status_ready{condition=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_replicaset_owner{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, owner_is_controller=x, owner_kind=x, owner_name=x, prometheus=x, prometheus_replica=x, replicaset=x, type=x}
+kube_statefulset_metadata_generation{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_replicas{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_observed_generation{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_current{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_ready{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_updated{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_replicas{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kubeproxy_network_latency:quantile{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, quantile=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+kubeproxy_sync_proxy:quantile{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, quantile=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:cpu_requests:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:cpu_requests:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:cpu_requests:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:cpu_requests:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:cpu_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:cpu_usage:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:cpu_usage:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:cpu_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:disk_usage_seconds:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:disk_usage_seconds:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:disk_usage_seconds{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:disk_usage_seconds{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_requests:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_requests:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:memory_requests:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:memory_requests:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_usage:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:memory_usage:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:memory_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_usage_seconds:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage_seconds:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:memory_usage_seconds{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage_seconds{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:network_receive:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:network_receive:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:network_receive:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:network_receive:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:network_transmit:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:network_transmit:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:network_transmit:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:network_transmit:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:persistent_volume_claims:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:persistent_volume_claims:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:persistent_volume_usage:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:persistent_volume_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:working_set_memory:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+metering:working_set_memory:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:working_set_memory:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x}
+metering:working_set_memory:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, year=x}
+pilot_conflict_inbound_listener{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+pilot_conflict_outbound_listener_tcp_over_current_tcp{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+pilot_k8s_cfg_events{endpoint=x, event=x, instance=x, job=x, namespace=x, pod=x, service=x, type=x}
+pilot_proxy_convergence_time_bucket{endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+pilot_services{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+pilot_virt_services{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+pilot_xds_pushes{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x, type=x}
+pilot_xds{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x, version=x}
+process_cpu_seconds_total{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_open_fds{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_resident_memory_bytes{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_virtual_memory_bytes{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+prometheus_target_scrapes_sample_out_of_order_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+prometheus_tsdb_lowest_timestamp{cluster=x, container=x, endpoint=x, ignoreAlerts=x, instance=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+prometheus_tsdb_storage_blocks_bytes{cluster=x, container=x, endpoint=x, ignoreAlerts=x, instance=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+scrape_duration_seconds{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+scrape_duration_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+scrape_duration_seconds{container=x, endpoint=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, service=x}
+scrape_duration_seconds{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_duration_seconds{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_duration_seconds{exported_instance=x, exported_job=x, instance=x, job=x, prometheus=x, prometheus_replica=x, type=x}
+scrape_duration_seconds{instance=x, job=x}
+scrape_samples_post_metric_relabeling{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+scrape_samples_post_metric_relabeling{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+scrape_samples_post_metric_relabeling{container=x, endpoint=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, service=x}
+scrape_samples_post_metric_relabeling{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_samples_post_metric_relabeling{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_samples_post_metric_relabeling{exported_instance=x, exported_job=x, instance=x, job=x, prometheus=x, prometheus_replica=x, type=x}
+scrape_samples_post_metric_relabeling{instance=x, job=x}
+scrape_samples_scraped{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+scrape_samples_scraped{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+scrape_samples_scraped{container=x, endpoint=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, service=x}
+scrape_samples_scraped{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_samples_scraped{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_samples_scraped{exported_instance=x, exported_job=x, instance=x, job=x, prometheus=x, prometheus_replica=x, type=x}
+scrape_samples_scraped{instance=x, job=x}
+scrape_series_added{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+scrape_series_added{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+scrape_series_added{container=x, endpoint=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, service=x}
+scrape_series_added{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_series_added{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_series_added{exported_instance=x, exported_job=x, instance=x, job=x, prometheus=x, prometheus_replica=x, type=x}
+scrape_series_added{instance=x, job=x}
+seed:active_shoots_total:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:all_shoots_total:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:apiserver_containers_over_cpu_scaling_threshold_total:count_by_container{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_cpu_usage_seconds_total:sum_by_container{container=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_cpu_usage_seconds_total:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_cpu_usage_seconds_total:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_memory_working_set_bytes:sum_by_container{container=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_memory_working_set_bytes:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_memory_working_set_bytes:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_network_receive_bytes_total:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_network_receive_bytes_total:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_network_transmit_bytes_total:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:container_network_transmit_bytes_total:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:containers_below_memory_limiting_threshold_total:count_by_container{container=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:images:count{container=x, image=x, image_id=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_spec_replicas:sum_by_deployment{deployment=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_spec_replicas:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_spec_replicas:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_status_replicas:sum_by_deployment{deployment=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_status_replicas:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_status_replicas:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_status_replicas_available:sum_by_deployment{deployment=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_status_replicas_available:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_deployment_status_replicas_available:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_node_info:count{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_node_status_allocatable_cpu_cores:max{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_node_status_allocatable_cpu_cores:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_node_status_allocatable_memory_bytes:max{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_node_status_allocatable_memory_bytes:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_node_status_allocatable_pods:max{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_node_status_allocatable_pods:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_node_status_condition:sum_by_condition{condition=x, instance=x, job=x, prometheus=x, prometheus_replica=x, status=x}
+seed:kube_pod_container_info:count_by_container{container=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_info:count_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_info:count{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_limits_memory_bytes:sum_by_container{container=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_limits_memory_bytes:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_limits_memory_bytes:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_requests_cpu_cores:sum_by_container{container=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_requests_cpu_cores:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_requests_cpu_cores:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_requests_memory_bytes:sum_by_container{container=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_requests_memory_bytes:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_resource_requests_memory_bytes:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_status_restarts_total:max_by_namespace{instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_status_restarts_total:sum_by_container{container=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_status_restarts_total:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_container_status_restarts_total:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_info:count_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_info:count{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_status_phase:sum_by_phase{instance=x, job=x, phase=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_status_phase:sum_cp_by_phase{instance=x, job=x, phase=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_status_ready:sum_by_condition{condition=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_pod_status_ready:sum_cp_by_condition{condition=x, instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_statefulset_replicas:sum_by_statefulset{instance=x, job=x, prometheus=x, prometheus_replica=x, statefulset=x}
+seed:kube_statefulset_replicas:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_statefulset_replicas:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_statefulset_status_replicas:sum_by_statefulset{instance=x, job=x, prometheus=x, prometheus_replica=x, statefulset=x}
+seed:kube_statefulset_status_replicas:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_statefulset_status_replicas:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_statefulset_status_replicas_ready:sum_by_statefulset{instance=x, job=x, prometheus=x, prometheus_replica=x, statefulset=x}
+seed:kube_statefulset_status_replicas_ready:sum_cp{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:kube_statefulset_status_replicas_ready:sum{instance=x, job=x, prometheus=x, prometheus_replica=x}
+seed:persistentvolume:inconsistent_size{instance=x, job=x, namespace=x, persistentvolumeclaim=x, prometheus=x, prometheus_replica=x}
+shoot:apiserver_audit_event_total:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:apiserver_latency:percentage{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:apiserver_storage_objects:sum_by_resource{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, resource=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:apiserver_watch_duration:quantile{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, quantile=x, resource=x, scope=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:availability{cluster=x, container=x, endpoint=x, ignoreAlerts=x, instance=x, job=x, kind=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x, type=x}
+shoot:container_network_receive_bytes_total_apiserver:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:container_network_receive_bytes_total_vpn:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:container_network_transmit_bytes_total_apiserver:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:container_network_transmit_bytes_total_vpn:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:kube_apiserver:sum_by_pod{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:kube_node_info:count{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:kube_node_status_capacity_cpu_cores:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:kube_node_status_capacity_memory_bytes:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:machine_types:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, name=x, namespace=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+shoot:node_operating_system:sum{cluster=x, container=x, endpoint=x, ignoreAlerts=x, job=x, kernel_version=x, name=x, namespace=x, os_image=x, pod=x, project=x, prometheus=x, prometheus_replica=x, seed_api=x, seed_provider=x, seed_region=x, service=x, shoot_infra=x, shoot_name=x}
+up{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+up{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+up{container=x, endpoint=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, service=x}
+up{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+up{endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+up{exported_instance=x, exported_job=x, instance=x, job=x, prometheus=x, prometheus_replica=x, type=x}
+up{instance=x, job=x}
+vali_ingester_blocks_per_chunk_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_blocks_per_chunk_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_age_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_age_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_bounds_hours_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_bounds_hours_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_compression_ratio_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_compression_ratio_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_encode_time_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_encode_time_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_entries_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_entries_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_size_bytes_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_size_bytes_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_utilization_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_chunk_utilization_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_memory_chunks{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_received_chunks{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_samples_per_chunk_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_samples_per_chunk_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_ingester_sent_chunks{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_logql_querystats_duplicates_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_logql_querystats_ingester_sent_lines_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+vali_panic_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, service=x}
+valitail_dropped_entries_total{app=x, container=x, controller_revision_hash=x, endpoint=x, gardener_cloud_role=x, host=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_gardener_cloud_to_runtime_apiserver=x, networking_resources_gardener_cloud_to_all_shoots_logging_tcp_3100=x, networking_resources_gardener_cloud_to_logging_tcp_3100=x, pod=x, pod_template_generation=x, resources_gardener_cloud_managed_by=x, role=x, service=x}

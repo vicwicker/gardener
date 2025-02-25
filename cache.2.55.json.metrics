@@ -1,0 +1,274 @@
+_namespace_to_shoot_uid_and_date{month=x, namespace=x, shoot_uid=x, year=x}
+_namespace_to_shoot_uid_and_date{month=x, namespace=x, year=x}
+_namespace_to_shoot_uid{namespace=x, shoot_uid=x}
+_namespace_to_shoot_uid{namespace=x}
+_pod_to_daemonset{namespace=x, owner_name=x, pod=x}
+_pod_to_deployment{namespace=x, owner_name=x, pod=x}
+_pod_to_other{namespace=x, owner_name=x, pod=x}
+_pod_to_owner{namespace=x, owner=x, pod=x}
+_pod_to_replicaset{namespace=x, pod=x, replicaset=x}
+_pod_to_statefulset{namespace=x, owner_name=x, pod=x}
+_replicaset_to_deployment{namespace=x, owner_name=x, replicaset=x}
+_year_month2{month=x, year=x}
+_year_month{month=x, year=x}
+container_cpu_usage_seconds_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, cpu=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_cpu_usage_seconds_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, cpu=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_fs_reads_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, device=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_fs_reads_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, device=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_fs_writes_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, device=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_fs_writes_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, device=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_last_seen{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_last_seen{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_cache{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_cache{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_mapped_file{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_mapped_file{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_rss{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_rss{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_usage_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_usage_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_working_set_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_working_set_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+container_network_receive_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, host_network=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, topology_kubernetes_io_zone=x, type=x}
+container_network_receive_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, image=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_network_transmit_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, host_network=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, topology_kubernetes_io_zone=x, type=x}
+container_network_transmit_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, image=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_oom_events_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, topology_kubernetes_io_zone=x, type=x}
+container_oom_events_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, systemd_service_name=x, topology_kubernetes_io_zone=x, type=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_cpu{customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_memory{customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_cpu{customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_memory{customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_updatepolicy_updatemode{customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, update_mode=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_deployment_metadata_generation{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_spec_replicas{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_observed_generation{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_replicas_available{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_replicas_unavailable{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_replicas_updated{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_replicas{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=x, instance=x, job=x, namespace=x, type=x}
+kube_horizontalpodautoscaler_spec_min_replicas{horizontalpodautoscaler=x, instance=x, job=x, namespace=x, type=x}
+kube_horizontalpodautoscaler_status_condition{condition=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, status=x, type=x}
+kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=x, instance=x, job=x, namespace=x, type=x}
+kube_horizontalpodautoscaler_status_desired_replicas{horizontalpodautoscaler=x, instance=x, job=x, namespace=x, type=x}
+kube_namespace_annotations{annotation_shoot_gardener_cloud_uid=x, instance=x, job=x, namespace=x, type=x}
+kube_namespace_annotations{instance=x, job=x, namespace=x, type=x}
+kube_node_info{container_runtime_version=x, instance=x, internal_ip=x, job=x, kernel_version=x, kubelet_version=x, kubeproxy_version=x, node=x, os_image=x, pod_cidr=x, provider_id=x, system_uuid=x, type=x}
+kube_node_labels{instance=x, job=x, label_beta_kubernetes_io_arch=x, label_beta_kubernetes_io_os=x, label_kubernetes_io_arch=x, label_kubernetes_io_hostname=x, label_kubernetes_io_os=x, label_topology_kubernetes_io_zone=x, node=x, type=x}
+kube_node_spec_unschedulable{instance=x, job=x, node=x, type=x}
+kube_node_status_allocatable{instance=x, job=x, node=x, resource=x, type=x, unit=x}
+kube_node_status_capacity{instance=x, job=x, node=x, resource=x, type=x, unit=x}
+kube_node_status_condition{condition=x, instance=x, job=x, node=x, status=x, type=x}
+kube_persistentvolumeclaim_resource_requests_storage_bytes{instance=x, job=x, namespace=x, persistentvolumeclaim=x, type=x}
+kube_pod_container_info{container=x, container_id=x, image=x, image_id=x, image_spec=x, instance=x, job=x, namespace=x, pod=x, type=x, uid=x}
+kube_pod_container_resource_limits{container=x, instance=x, job=x, namespace=x, node=x, pod=x, resource=x, type=x, uid=x, unit=x}
+kube_pod_container_resource_requests{container=x, instance=x, job=x, namespace=x, node=x, pod=x, resource=x, type=x, uid=x, unit=x}
+kube_pod_container_status_restarts_total{container=x, instance=x, job=x, namespace=x, pod=x, type=x, uid=x}
+kube_pod_info{created_by_kind=x, created_by_name=x, host_ip=x, host_network=x, instance=x, job=x, namespace=x, node=x, pod=x, pod_ip=x, priority_class=x, type=x, uid=x}
+kube_pod_info{created_by_kind=x, created_by_name=x, host_ip=x, host_network=x, instance=x, job=x, namespace=x, node=x, pod=x, pod_ip=x, type=x, uid=x}
+kube_pod_labels{instance=x, job=x, label_origin=x, namespace=x, pod=x, type=x, uid=x}
+kube_pod_labels{instance=x, job=x, namespace=x, pod=x, type=x, uid=x}
+kube_pod_owner{instance=x, job=x, namespace=x, owner_is_controller=x, owner_kind=x, owner_name=x, pod=x, type=x, uid=x}
+kube_pod_spec_volumes_persistentvolumeclaims_info{instance=x, job=x, namespace=x, persistentvolumeclaim=x, pod=x, type=x, uid=x, volume=x}
+kube_pod_status_phase{instance=x, job=x, namespace=x, phase=x, pod=x, type=x, uid=x}
+kube_pod_status_ready{condition=x, instance=x, job=x, namespace=x, pod=x, type=x, uid=x}
+kube_replicaset_owner{instance=x, job=x, namespace=x, owner_is_controller=x, owner_kind=x, owner_name=x, replicaset=x, type=x}
+kube_statefulset_metadata_generation{instance=x, job=x, namespace=x, statefulset=x, type=x}
+kube_statefulset_replicas{instance=x, job=x, namespace=x, statefulset=x, type=x}
+kube_statefulset_status_observed_generation{instance=x, job=x, namespace=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_current{instance=x, job=x, namespace=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_ready{instance=x, job=x, namespace=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_updated{instance=x, job=x, namespace=x, statefulset=x, type=x}
+kube_statefulset_status_replicas{instance=x, job=x, namespace=x, statefulset=x, type=x}
+kubelet_volume_stats_available_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, namespace=x, persistentvolumeclaim=x, topology_kubernetes_io_zone=x, type=x}
+kubelet_volume_stats_capacity_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, namespace=x, persistentvolumeclaim=x, topology_kubernetes_io_zone=x, type=x}
+kubelet_volume_stats_used_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, namespace=x, persistentvolumeclaim=x, topology_kubernetes_io_zone=x, type=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:cpu_requests:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:cpu_requests:sum_by_namespace_owner_container{container=x, namespace=x, owner=x, shoot_uid=x}
+metering:cpu_requests:sum_by_namespace_owner_container{container=x, namespace=x, owner=x}
+metering:cpu_requests:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace{month=x, namespace=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:cpu_usage:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:cpu_usage:sum_by_namespace_owner_container{container=x, namespace=x, owner=x, shoot_uid=x}
+metering:cpu_usage:sum_by_namespace_owner_container{container=x, namespace=x, owner=x}
+metering:cpu_usage:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace{month=x, namespace=x, year=x}
+metering:disk_usage_seconds:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:disk_usage_seconds:this_month{month=x, namespace=x, year=x}
+metering:disk_usage_seconds{month=x, namespace=x, shoot_uid=x, year=x}
+metering:disk_usage_seconds{month=x, namespace=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:memory_requests:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:memory_requests:sum_by_namespace_owner_container{container=x, namespace=x, owner=x, shoot_uid=x}
+metering:memory_requests:sum_by_namespace_owner_container{container=x, namespace=x, owner=x}
+metering:memory_requests:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace{month=x, namespace=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:memory_usage:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:memory_usage:sum_by_namespace_owner_container{container=x, namespace=x, owner=x, shoot_uid=x}
+metering:memory_usage:sum_by_namespace_owner_container{container=x, namespace=x, owner=x}
+metering:memory_usage:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace{month=x, namespace=x, year=x}
+metering:memory_usage_seconds:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_usage_seconds:this_month{month=x, namespace=x, year=x}
+metering:memory_usage_seconds{month=x, namespace=x, shoot_uid=x, year=x}
+metering:memory_usage_seconds{month=x, namespace=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:network_receive:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:network_receive:sum_by_namespace_owner{namespace=x, owner=x, shoot_uid=x}
+metering:network_receive:sum_by_namespace_owner{namespace=x, owner=x}
+metering:network_receive:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace{month=x, namespace=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:network_transmit:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:network_transmit:sum_by_namespace_owner{namespace=x, owner=x, shoot_uid=x}
+metering:network_transmit:sum_by_namespace_owner{namespace=x, owner=x}
+metering:network_transmit:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace{month=x, namespace=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace_owner{namespace=x, owner=x, shoot_uid=x}
+metering:persistent_volume_claims:sum_by_namespace_owner{namespace=x, owner=x}
+metering:persistent_volume_claims:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace{month=x, namespace=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace_owner{namespace=x, owner=x, shoot_uid=x}
+metering:persistent_volume_usage:sum_by_namespace_owner{namespace=x, owner=x}
+metering:persistent_volume_usage:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace{month=x, namespace=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time:this_month{month=x, namespace=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time{month=x, namespace=x, year=x}
+metering:working_set_memory:sum_by_namespace:sum_over_time{month=x, namespace=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:sum_over_time{month=x, namespace=x, year=x}
+metering:working_set_memory:sum_by_namespace_owner_container{container=x, namespace=x, owner=x, shoot_uid=x}
+metering:working_set_memory:sum_by_namespace_owner_container{container=x, namespace=x, owner=x}
+metering:working_set_memory:sum_by_namespace{month=x, namespace=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace{month=x, namespace=x, year=x}
+scrape_duration_seconds{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, topology_kubernetes_io_zone=x, type=x}
+scrape_duration_seconds{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_duration_seconds{instance=x, job=x, type=x}
+scrape_samples_post_metric_relabeling{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, topology_kubernetes_io_zone=x, type=x}
+scrape_samples_post_metric_relabeling{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_samples_post_metric_relabeling{instance=x, job=x, type=x}
+scrape_samples_scraped{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, topology_kubernetes_io_zone=x, type=x}
+scrape_samples_scraped{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_samples_scraped{instance=x, job=x, type=x}
+scrape_series_added{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, topology_kubernetes_io_zone=x, type=x}
+scrape_series_added{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_series_added{instance=x, job=x, type=x}
+seed:active_shoots_total:sum{}
+seed:all_shoots_total:sum{}
+seed:container_cpu_usage_seconds_total:sum_by_container{container=x}
+seed:container_cpu_usage_seconds_total:sum_cp{}
+seed:container_cpu_usage_seconds_total:sum{}
+seed:container_memory_working_set_bytes:sum_by_container{container=x}
+seed:container_memory_working_set_bytes:sum_cp{}
+seed:container_memory_working_set_bytes:sum{}
+seed:container_network_receive_bytes_total:sum_cp{}
+seed:container_network_receive_bytes_total:sum{}
+seed:container_network_transmit_bytes_total:sum_cp{}
+seed:container_network_transmit_bytes_total:sum{}
+seed:containers_below_memory_limiting_threshold_total:count_by_container{container=x}
+seed:images:count{container=x, image=x, image_id=x}
+seed:kube_deployment_spec_replicas:sum_by_deployment{deployment=x}
+seed:kube_deployment_spec_replicas:sum_cp{}
+seed:kube_deployment_spec_replicas:sum{}
+seed:kube_deployment_status_replicas:sum_by_deployment{deployment=x}
+seed:kube_deployment_status_replicas:sum_cp{}
+seed:kube_deployment_status_replicas:sum{}
+seed:kube_deployment_status_replicas_available:sum_by_deployment{deployment=x}
+seed:kube_deployment_status_replicas_available:sum_cp{}
+seed:kube_deployment_status_replicas_available:sum{}
+seed:kube_node_info:count{}
+seed:kube_node_status_allocatable_cpu_cores:max{}
+seed:kube_node_status_allocatable_cpu_cores:sum{}
+seed:kube_node_status_allocatable_memory_bytes:max{}
+seed:kube_node_status_allocatable_memory_bytes:sum{}
+seed:kube_node_status_allocatable_pods:max{}
+seed:kube_node_status_allocatable_pods:sum{}
+seed:kube_node_status_condition:sum_by_condition{condition=x, status=x}
+seed:kube_pod_container_info:count_by_container{container=x}
+seed:kube_pod_container_info:count_cp{}
+seed:kube_pod_container_info:count{}
+seed:kube_pod_container_resource_limits_memory_bytes:sum_by_container{container=x}
+seed:kube_pod_container_resource_limits_memory_bytes:sum_cp{}
+seed:kube_pod_container_resource_limits_memory_bytes:sum{}
+seed:kube_pod_container_resource_requests_cpu_cores:sum_by_container{container=x}
+seed:kube_pod_container_resource_requests_cpu_cores:sum_cp{}
+seed:kube_pod_container_resource_requests_cpu_cores:sum{}
+seed:kube_pod_container_resource_requests_memory_bytes:sum_by_container{container=x}
+seed:kube_pod_container_resource_requests_memory_bytes:sum_cp{}
+seed:kube_pod_container_resource_requests_memory_bytes:sum{}
+seed:kube_pod_container_status_restarts_total:max_by_namespace{namespace=x}
+seed:kube_pod_container_status_restarts_total:sum_by_container{container=x}
+seed:kube_pod_container_status_restarts_total:sum_cp{}
+seed:kube_pod_container_status_restarts_total:sum{}
+seed:kube_pod_info:count_cp{}
+seed:kube_pod_info:count{}
+seed:kube_pod_status_phase:sum_by_phase{phase=x}
+seed:kube_pod_status_phase:sum_cp_by_phase{phase=x}
+seed:kube_pod_status_ready:sum_by_condition{condition=x}
+seed:kube_pod_status_ready:sum_cp_by_condition{condition=x}
+seed:kube_statefulset_replicas:sum_by_statefulset{statefulset=x}
+seed:kube_statefulset_replicas:sum_cp{}
+seed:kube_statefulset_replicas:sum{}
+seed:kube_statefulset_status_replicas:sum_by_statefulset{statefulset=x}
+seed:kube_statefulset_status_replicas:sum_cp{}
+seed:kube_statefulset_status_replicas:sum{}
+seed:kube_statefulset_status_replicas_ready:sum_by_statefulset{statefulset=x}
+seed:kube_statefulset_status_replicas_ready:sum_cp{}
+seed:kube_statefulset_status_replicas_ready:sum{}
+seed:persistentvolume:inconsistent_size{namespace=x, persistentvolumeclaim=x}
+up{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, topology_kubernetes_io_zone=x, type=x}
+up{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, service=x}
+up{instance=x, job=x, type=x}

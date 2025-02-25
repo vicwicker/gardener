@@ -1,0 +1,1184 @@
+apiserver_admission_controller_admission_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, name=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_controller_admission_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_controller_admission_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_step_admission_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_step_admission_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_step_admission_duration_seconds_summary_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_step_admission_duration_seconds_summary_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_step_admission_duration_seconds_summary{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, operation=x, pod=x, quantile=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_step_admission_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_webhook_admission_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, name=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_webhook_admission_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_webhook_admission_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_admission_webhook_request_total{app=x, code=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, operation=x, pod=x, rejected=x, role=x, service=x, type=x}
+apiserver_audit_event_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+apiserver_audit_requests_rejected_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+apiserver_cache_list_fetched_objects_total{app=x, container=x, endpoint=x, index=x, instance=x, job=x, namespace=x, pod=x, resource_prefix=x, role=x, service=x}
+apiserver_cache_list_fetched_objects_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource_prefix=x, role=x, service=x}
+apiserver_cache_list_returned_objects_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource_prefix=x, role=x, service=x}
+apiserver_cache_list_total{app=x, container=x, endpoint=x, index=x, instance=x, job=x, namespace=x, pod=x, resource_prefix=x, role=x, service=x}
+apiserver_cache_list_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource_prefix=x, role=x, service=x}
+apiserver_current_inflight_requests{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, request_kind=x, role=x, service=x}
+apiserver_current_inqueue_requests{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, request_kind=x, role=x, service=x}
+apiserver_init_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+apiserver_longrunning_requests{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_longrunning_requests{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_longrunning_requests{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_duration_seconds_bucket{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, le=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_request_duration_seconds_bucket{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, le=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_duration_seconds_bucket{app=x, component=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_request_duration_seconds_bucket{app=x, component=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_duration_seconds_bucket{app=x, component=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_duration_seconds_count{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_request_duration_seconds_count{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_duration_seconds_count{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_request_duration_seconds_count{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_duration_seconds_count{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_duration_seconds_sum{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_request_duration_seconds_sum{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_duration_seconds_sum{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_request_duration_seconds_sum{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_duration_seconds_sum{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_terminations_total{app=x, code=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_terminations_total{app=x, code=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_total{app=x, code=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_request_total{app=x, code=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_total{app=x, code=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_request_total{app=x, code=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_request_total{app=x, code=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_request_total{app=x, code=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_response_sizes_bucket{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, le=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_response_sizes_bucket{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, le=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_response_sizes_bucket{app=x, component=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_response_sizes_bucket{app=x, component=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_response_sizes_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_response_sizes_count{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_response_sizes_count{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_response_sizes_count{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_response_sizes_count{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_response_sizes_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_response_sizes_sum{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+apiserver_response_sizes_sum{app=x, component=x, container=x, endpoint=x, group=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_response_sizes_sum{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+apiserver_response_sizes_sum{app=x, component=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_response_sizes_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, subresource=x, verb=x}
+apiserver_storage_list_evaluated_objects_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+apiserver_storage_list_fetched_objects_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+apiserver_storage_list_returned_objects_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+apiserver_storage_list_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+apiserver_storage_objects{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+apiserver_storage_size_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, storage_cluster_id=x}
+apiserver_storage_transformation_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, transformation_type=x, transformer_prefix=x}
+apiserver_storage_transformation_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, transformation_type=x, transformer_prefix=x}
+apiserver_storage_transformation_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, transformation_type=x, transformer_prefix=x}
+apiserver_storage_transformation_operations_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x, status=x, transformation_type=x, transformer_prefix=x}
+apiserver_watch_events_sizes_bucket{app=x, container=x, endpoint=x, group=x, instance=x, job=x, kind=x, le=x, namespace=x, pod=x, role=x, service=x, version=x}
+apiserver_watch_events_sizes_bucket{app=x, container=x, endpoint=x, instance=x, job=x, kind=x, le=x, namespace=x, pod=x, role=x, service=x, version=x}
+apiserver_watch_events_sizes_count{app=x, container=x, endpoint=x, group=x, instance=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, version=x}
+apiserver_watch_events_sizes_count{app=x, container=x, endpoint=x, instance=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, version=x}
+apiserver_watch_events_sizes_sum{app=x, container=x, endpoint=x, group=x, instance=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, version=x}
+apiserver_watch_events_sizes_sum{app=x, container=x, endpoint=x, instance=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, version=x}
+apiserver_watch_events_total{app=x, container=x, endpoint=x, group=x, instance=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, version=x}
+apiserver_watch_events_total{app=x, container=x, endpoint=x, instance=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, version=x}
+certwatcher_read_certificate_errors_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+certwatcher_read_certificate_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+cluster:scheduler_scheduling_algorithm_duration_seconds:quantile{quantile=x}
+cluster_autoscaler_cluster_cpu_current_cores{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_cluster_memory_current_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_cluster_safe_to_autoscale{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_cpu_limits_cores{app=x, container=x, direction=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_last_activity{activity=x, app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_max_nodes_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_memory_limits_bytes{app=x, container=x, direction=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_node_groups_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, node_group_type=x, pod=x, role=x, service=x}
+cluster_autoscaler_nodes_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, state=x}
+cluster_autoscaler_old_unregistered_nodes_removed_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_scaled_up_nodes_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_unneeded_nodes_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+cluster_autoscaler_unschedulable_pods_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, type=x}
+container_cpu_usage_seconds_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, cpu=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_cpu_usage_seconds_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, cpu=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, pod=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_cpu_usage_seconds_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, cpu=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, systemd_service_name=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_fs_reads_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, device=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_fs_writes_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, device=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_last_seen{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_last_seen{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, pod=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_last_seen{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, systemd_service_name=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_memory_cache{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_mapped_file{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_rss{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_usage_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_working_set_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_memory_working_set_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, pod=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_memory_working_set_bytes{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, systemd_service_name=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_network_receive_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, exported_instance=x, exported_job=x, image=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_network_receive_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, host_network=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_network_receive_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, image=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, pod=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_network_transmit_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, exported_instance=x, exported_job=x, image=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+container_network_transmit_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, host_network=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_network_transmit_bytes_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, image=x, instance=x, interface=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, pod=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+container_oom_events_total{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, container=x, exported_instance=x, exported_job=x, image=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, name=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, topology_kubernetes_io_zone=x, type=x}
+controller_runtime_active_workers{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+controller_runtime_max_concurrent_reconciles{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+controller_runtime_reconcile_errors_total{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+controller_runtime_reconcile_panics_total{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+controller_runtime_reconcile_time_seconds_bucket{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+controller_runtime_reconcile_time_seconds_count{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+controller_runtime_reconcile_time_seconds_sum{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+controller_runtime_reconcile_total{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, result=x, service=x}
+controller_runtime_terminal_reconcile_errors_total{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+controller_runtime_webhook_latency_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x, webhook=x}
+controller_runtime_webhook_latency_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x, webhook=x}
+controller_runtime_webhook_latency_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x, webhook=x}
+controller_runtime_webhook_panics_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+controller_runtime_webhook_requests_in_flight{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x, webhook=x}
+controller_runtime_webhook_requests_total{app=x, code=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x, webhook=x}
+coredns_build_info{goversion=x, instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, revision=x, shoot_gardener_cloud_no_cleanup=x, type=x, version=x}
+coredns_cache_entries{exported_type=x, instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, server=x, shoot_gardener_cloud_no_cleanup=x, type=x, zones=x}
+coredns_cache_misses_total{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, server=x, shoot_gardener_cloud_no_cleanup=x, type=x, zones=x}
+coredns_dns_request_duration_seconds_bucket{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, le=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, server=x, shoot_gardener_cloud_no_cleanup=x, type=x, zone=x}
+coredns_dns_request_duration_seconds_count{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, server=x, shoot_gardener_cloud_no_cleanup=x, type=x, zone=x}
+coredns_dns_requests_total{exported_type=x, family=x, instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, proto=x, resources_gardener_cloud_managed_by=x, server=x, shoot_gardener_cloud_no_cleanup=x, type=x, zone=x}
+coredns_dns_responses_total{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, plugin=x, pod=x, rcode=x, resources_gardener_cloud_managed_by=x, server=x, shoot_gardener_cloud_no_cleanup=x, type=x, zone=x}
+coredns_kubernetes_dns_programming_duration_seconds_bucket{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, le=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, service_kind=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+coredns_kubernetes_dns_programming_duration_seconds_count{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, service_kind=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+coredns_kubernetes_dns_programming_duration_seconds_sum{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, service_kind=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+coredns_proxy_request_duration_seconds_count{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, proxy_name=x, rcode=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, to=x, type=x}
+envoy_cluster_bind_errors{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_external_upstream_rq_completed{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_external_upstream_rq_xx{envoy_cluster_name=x, envoy_response_code_class=x, instance=x, job=x}
+envoy_cluster_external_upstream_rq{envoy_cluster_name=x, envoy_response_code=x, instance=x, job=x}
+envoy_cluster_lb_healthy_panic{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_lb_healthy_panic{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_original_dst_host_invalid{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_update_attempt{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_update_failure{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_upstream_cx_active{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_connect_attempts_exceeded{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_connect_fail{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_connect_ms_bucket{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, le=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_upstream_cx_connect_ms_bucket{envoy_cluster_name=x, instance=x, job=x, le=x}
+envoy_cluster_upstream_cx_connect_ms_sum{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_connect_timeout{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_length_ms_bucket{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, le=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_upstream_cx_length_ms_bucket{envoy_cluster_name=x, instance=x, job=x, le=x}
+envoy_cluster_upstream_cx_length_ms_sum{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_max_requests{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_none_healthy{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_upstream_cx_none_healthy{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_overflow{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_pool_overflow{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_protocol_error{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_rx_bytes_total{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_upstream_cx_rx_bytes_total{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_total{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_cx_tx_bytes_total{app=x, envoy_cluster_name=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_cluster_upstream_cx_tx_bytes_total{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_completed{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_max_duration_reached{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_pending_overflow{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_per_try_timeout{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_retry_limit_exceeded{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_retry_overflow{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_retry{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_rx_reset{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_timeout{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_total{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_tx_reset{envoy_cluster_name=x, instance=x, job=x}
+envoy_cluster_upstream_rq_xx{envoy_cluster_name=x, envoy_response_code_class=x, instance=x, job=x}
+envoy_cluster_upstream_rq{envoy_cluster_name=x, envoy_response_code=x, instance=x, job=x}
+envoy_dns_cache_dynamic_forward_proxy_cache_config_dns_query_attempt{instance=x, job=x}
+envoy_dns_cache_dynamic_forward_proxy_cache_config_dns_query_failure{instance=x, job=x}
+envoy_dns_cache_dynamic_forward_proxy_cache_config_dns_query_success{instance=x, job=x}
+envoy_dns_cache_dynamic_forward_proxy_cache_config_host_overflow{instance=x, job=x}
+envoy_dns_cache_dynamic_forward_proxy_cache_config_num_hosts{instance=x, job=x}
+envoy_http_downstream_cx_length_ms_bucket{envoy_http_conn_manager_prefix=x, instance=x, job=x, le=x}
+envoy_http_downstream_cx_length_ms_sum{envoy_http_conn_manager_prefix=x, instance=x, job=x}
+envoy_http_downstream_cx_rx_bytes_total{envoy_http_conn_manager_prefix=x, instance=x, job=x}
+envoy_http_downstream_cx_total{envoy_http_conn_manager_prefix=x, instance=x, job=x}
+envoy_http_downstream_cx_tx_bytes_total{envoy_http_conn_manager_prefix=x, instance=x, job=x}
+envoy_http_downstream_rq_xx{envoy_http_conn_manager_prefix=x, envoy_response_code_class=x, instance=x, job=x}
+envoy_http_no_route{envoy_http_conn_manager_prefix=x, instance=x, job=x}
+envoy_http_rq_total{envoy_http_conn_manager_prefix=x, instance=x, job=x}
+envoy_listener_downstream_cx_destroy{app=x, envoy_listener_address=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_listener_downstream_cx_length_ms_bucket{app=x, envoy_listener_address=x, gardener_cloud_role=x, instance=x, job=x, le=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_listener_downstream_cx_overflow{app=x, envoy_listener_address=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_listener_downstream_cx_total{app=x, envoy_listener_address=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_listener_http_downstream_rq_xx{envoy_http_conn_manager_prefix=x, envoy_listener_address=x, envoy_response_code_class=x, instance=x, job=x}
+envoy_server_memory_allocated{instance=x, job=x}
+envoy_server_memory_heap_size{instance=x, job=x}
+envoy_server_memory_physical_size{instance=x, job=x}
+envoy_tcp_downstream_cx_no_route{app=x, envoy_tcp_prefix=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_tcp_downstream_cx_rx_bytes_total{app=x, envoy_tcp_prefix=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_tcp_downstream_cx_total{app=x, envoy_tcp_prefix=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+envoy_tcp_downstream_cx_tx_bytes_total{app=x, envoy_tcp_prefix=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+etcd_cluster_version{cluster_version=x, container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_auth_revision{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_rebalance_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_rebalance_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_rebalance_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_spill_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_spill_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_spill_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_write_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_write_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_disk_backend_commit_write_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_lease_granted_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_lease_renewed_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_lease_revoked_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_lease_ttl_total_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_lease_ttl_total_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_lease_ttl_total_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_compact_revision{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_current_revision{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_db_compaction_keys_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_db_compaction_pause_duration_milliseconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_db_compaction_pause_duration_milliseconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_db_compaction_pause_duration_milliseconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_db_compaction_total_duration_milliseconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_db_compaction_total_duration_milliseconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_db_compaction_total_duration_milliseconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_db_total_size_in_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_delete_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_events_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_index_compaction_pause_duration_milliseconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_index_compaction_pause_duration_milliseconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_index_compaction_pause_duration_milliseconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_keys_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_pending_events_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_put_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_range_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_slow_watcher_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_total_put_size_in_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_txn_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_watch_stream_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_mvcc_watcher_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_server_lease_expired_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_snap_save_marshalling_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_snap_save_marshalling_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_snap_save_marshalling_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_snap_save_total_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_snap_save_total_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_snap_save_total_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_store_expires_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_store_reads_total{action=x, container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_store_watch_requests_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_store_watchers{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_debugging_store_writes_total{action=x, container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_commit_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_commit_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_commit_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_defrag_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_defrag_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_defrag_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_snapshot_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_snapshot_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_backend_snapshot_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_defrag_inflight{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_wal_fsync_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_wal_fsync_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_wal_fsync_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_disk_wal_write_bytes_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_db_open_read_transactions{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_db_total_size_in_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_db_total_size_in_use_in_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_delete_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_hash_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_hash_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_hash_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_hash_rev_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_hash_rev_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_hash_rev_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_put_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_range_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_mvcc_txn_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_network_client_grpc_received_bytes_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_network_client_grpc_sent_bytes_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_request_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, operation=x, pod=x, role=x, service=x, type=x}
+etcd_request_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, operation=x, pod=x, role=x, service=x, type=x}
+etcd_request_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, operation=x, pod=x, role=x, service=x, type=x}
+etcd_server_client_requests_total{client_api_version=x, container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, type=x}
+etcd_server_go_version{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, server_go_version=x, service=x}
+etcd_server_has_leader{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_health_failures{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_health_success{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_heartbeat_send_failures_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_id{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, server_id=x, service=x}
+etcd_server_is_leader{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_is_learner{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_leader_changes_seen_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_learner_promote_successes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_proposals_applied_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_proposals_committed_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_proposals_failed_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_proposals_pending{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_quota_backend_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_read_indexes_failed_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_slow_apply_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_slow_read_indexes_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_snapshot_apply_in_progress_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_server_version{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, server_version=x, service=x}
+etcd_snap_db_fsync_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_snap_db_fsync_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_snap_db_fsync_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_snap_db_save_total_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_snap_db_save_total_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_snap_db_save_total_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_snap_fsync_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+etcd_snap_fsync_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcd_snap_fsync_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_add_learner_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_add_learner_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_cluster_size{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_defragmentation_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_defragmentation_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_defragmentation_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_is_learner_count_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_is_learner{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_member_promote_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_member_promote_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_member_remove_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_member_remove_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_network_received_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_network_transmitted_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_restoration_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, restore=x, role=x, service=x, succeeded=x}
+etcdbr_restoration_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, restore=x, role=x, service=x, succeeded=x}
+etcdbr_restoration_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, restore=x, role=x, service=x, succeeded=x}
+etcdbr_snapshot_duration_seconds_bucket{container=x, endpoint=x, job=x, kind=x, le=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_snapshot_duration_seconds_count{container=x, endpoint=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_snapshot_duration_seconds_sum{container=x, endpoint=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_snapshot_gc_total{container=x, endpoint=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_snapshot_latest_revision{container=x, endpoint=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_snapshot_latest_timestamp{container=x, endpoint=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_snapshot_required{container=x, endpoint=x, job=x, kind=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_snapshotter_failure{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+etcdbr_validation_duration_seconds_bucket{container=x, endpoint=x, job=x, le=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_validation_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+etcdbr_validation_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, succeeded=x}
+go_cgo_go_to_c_calls_calls_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cgo_go_to_c_calls_calls_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_gc_mark_assist_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_gc_mark_assist_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_gc_mark_dedicated_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_gc_mark_dedicated_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_gc_mark_idle_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_gc_mark_idle_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_gc_pause_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_gc_pause_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_gc_total_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_gc_total_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_idle_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_idle_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_scavenge_assist_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_scavenge_assist_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_scavenge_background_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_scavenge_background_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_scavenge_total_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_scavenge_total_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_total_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_total_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_cpu_classes_user_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_cpu_classes_user_cpu_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_cycles_automatic_gc_cycles_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_cycles_automatic_gc_cycles_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_cycles_forced_gc_cycles_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_cycles_forced_gc_cycles_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_cycles_total_gc_cycles_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_cycles_total_gc_cycles_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_duration_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_gc_duration_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_duration_seconds_count{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_duration_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_gc_duration_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_duration_seconds_sum{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_duration_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, quantile=x, service=x}
+go_gc_duration_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, quantile=x, service=x}
+go_gc_duration_seconds{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, quantile=x, role=x, service=x}
+go_gc_duration_seconds{container=x, endpoint=x, job=x, namespace=x, pod=x, quantile=x, role=x, service=x}
+go_gc_gogc_percent{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_gogc_percent{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_gomemlimit_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_gomemlimit_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_allocs_by_size_bytes_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+go_gc_heap_allocs_by_size_bytes_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_allocs_by_size_bytes_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_allocs_by_size_bytes_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_allocs_by_size_bytes_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_allocs_by_size_bytes_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_allocs_bytes_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_allocs_bytes_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_allocs_objects_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_allocs_objects_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_frees_by_size_bytes_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+go_gc_heap_frees_by_size_bytes_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_frees_by_size_bytes_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_frees_by_size_bytes_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_frees_by_size_bytes_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_frees_by_size_bytes_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_frees_bytes_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_frees_bytes_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_frees_objects_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_frees_objects_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_goal_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_goal_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_live_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_live_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_objects_objects{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_objects_objects{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_heap_tiny_allocs_objects_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_heap_tiny_allocs_objects_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_limiter_last_enabled_gc_cycle{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_limiter_last_enabled_gc_cycle{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_pauses_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+go_gc_pauses_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+go_gc_pauses_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_pauses_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_pauses_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_pauses_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_scan_globals_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_scan_globals_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_scan_heap_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_scan_heap_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_scan_stack_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_scan_stack_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_scan_total_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_scan_total_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_gc_stack_starting_size_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_gc_stack_starting_size_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_asynctimerchan_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_asynctimerchan_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_execerrdot_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_execerrdot_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_gocachehash_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_gocachehash_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_gocachetest_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_gocachetest_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_gocacheverify_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_gocacheverify_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_gotestjsonbuildtext_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_gotypesalias_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_gotypesalias_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_http2client_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_http2client_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_http2server_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_http2server_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_httplaxcontentlength_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_httplaxcontentlength_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_httpmuxgo121_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_httpmuxgo121_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_httpservecontentkeepheaders_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_httpservecontentkeepheaders_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_installgoroot_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_installgoroot_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_multipartmaxheaders_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_multipartmaxheaders_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_multipartmaxparts_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_multipartmaxparts_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_multipathtcp_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_multipathtcp_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_netedns0_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_netedns0_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_panicnil_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_panicnil_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_randautoseed_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_randautoseed_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_randseednop_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_rsa1024min_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_tarinsecurepath_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_tarinsecurepath_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_tls10server_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_tls10server_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_tls3des_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_tls3des_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_tlsmaxrsasize_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_tlsmaxrsasize_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_tlsrsakex_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_tlsrsakex_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_tlsunsafeekm_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_tlsunsafeekm_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_winreadlinkvolume_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_winreadlinkvolume_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_winsymlink_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_winsymlink_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_x509keypairleaf_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_x509keypairleaf_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_x509negativeserial_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_x509negativeserial_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_x509rsacrt_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_x509sha1_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_x509usefallbackroots_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_x509usefallbackroots_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_x509usepolicies_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_x509usepolicies_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_godebug_non_default_behavior_zipinsecurepath_events_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_godebug_non_default_behavior_zipinsecurepath_events_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_goroutines{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_goroutines{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_goroutines{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_goroutines{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_info{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, version=x}
+go_info{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x, version=x}
+go_info{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x, version=x}
+go_info{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x, version=x}
+go_memory_classes_heap_free_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_heap_free_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_heap_objects_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_heap_objects_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_heap_released_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_heap_released_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_heap_stacks_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_heap_stacks_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_heap_unused_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_heap_unused_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_metadata_mcache_free_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_metadata_mcache_free_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_metadata_mcache_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_metadata_mcache_inuse_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_metadata_mspan_free_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_metadata_mspan_free_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_metadata_mspan_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_metadata_mspan_inuse_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_metadata_other_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_metadata_other_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_os_stacks_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_os_stacks_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_other_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_other_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_profiling_buckets_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_profiling_buckets_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memory_classes_total_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memory_classes_total_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_alloc_bytes_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_alloc_bytes_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_alloc_bytes_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_alloc_bytes_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_alloc_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_alloc_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_alloc_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_alloc_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_buck_hash_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_buck_hash_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_buck_hash_sys_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_buck_hash_sys_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_frees_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_frees_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_frees_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_frees_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_gc_cpu_fraction{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_gc_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_gc_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_gc_sys_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_gc_sys_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_alloc_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_heap_alloc_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_alloc_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_alloc_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_idle_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_heap_idle_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_idle_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_idle_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_heap_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_inuse_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_inuse_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_objects{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_heap_objects{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_objects{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_objects{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_released_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_heap_released_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_released_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_released_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_heap_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_heap_sys_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_heap_sys_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_last_gc_time_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_last_gc_time_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_last_gc_time_seconds{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_last_gc_time_seconds{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_lookups_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_lookups_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_lookups_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mallocs_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_mallocs_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_mallocs_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mallocs_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mcache_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_mcache_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_mcache_inuse_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mcache_inuse_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mcache_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_mcache_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_mcache_sys_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mcache_sys_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mspan_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_mspan_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_mspan_inuse_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mspan_inuse_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mspan_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_mspan_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_mspan_sys_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_mspan_sys_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_next_gc_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_next_gc_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_next_gc_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_next_gc_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_other_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_other_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_other_sys_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_other_sys_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_stack_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_stack_inuse_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_stack_inuse_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_stack_inuse_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_stack_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_stack_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_stack_sys_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_stack_sys_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_memstats_sys_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_memstats_sys_bytes{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_memstats_sys_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_gomaxprocs_threads{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_gomaxprocs_threads{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_goroutines_goroutines{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_goroutines_goroutines{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_latencies_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+go_sched_latencies_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+go_sched_latencies_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_latencies_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_latencies_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_latencies_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_stopping_gc_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+go_sched_pauses_stopping_gc_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_stopping_gc_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_pauses_stopping_gc_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_stopping_gc_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_pauses_stopping_gc_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_stopping_other_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+go_sched_pauses_stopping_other_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_stopping_other_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_pauses_stopping_other_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_stopping_other_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_pauses_stopping_other_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_total_gc_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+go_sched_pauses_total_gc_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_total_gc_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_pauses_total_gc_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_total_gc_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_pauses_total_gc_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_total_other_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, pod=x, service=x}
+go_sched_pauses_total_other_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_total_other_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_pauses_total_other_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sched_pauses_total_other_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sched_pauses_total_other_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_sync_mutex_wait_total_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_sync_mutex_wait_total_seconds_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_threads{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+go_threads{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+go_threads{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+go_threads{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+grpc_server_handled_total{container=x, endpoint=x, grpc_code=x, grpc_method=x, grpc_service=x, grpc_type=x, job=x, namespace=x, pod=x, role=x, service=x}
+grpc_server_handling_seconds_bucket{container=x, endpoint=x, grpc_method=x, grpc_service=x, grpc_type=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+grpc_server_handling_seconds_count{container=x, endpoint=x, grpc_method=x, grpc_service=x, grpc_type=x, job=x, namespace=x, pod=x, role=x, service=x}
+grpc_server_handling_seconds_sum{container=x, endpoint=x, grpc_method=x, grpc_service=x, grpc_type=x, job=x, namespace=x, pod=x, role=x, service=x}
+grpc_server_msg_received_total{container=x, endpoint=x, grpc_method=x, grpc_service=x, grpc_type=x, job=x, namespace=x, pod=x, role=x, service=x}
+grpc_server_msg_sent_total{container=x, endpoint=x, grpc_method=x, grpc_service=x, grpc_type=x, job=x, namespace=x, pod=x, role=x, service=x}
+grpc_server_started_total{container=x, endpoint=x, grpc_method=x, grpc_service=x, grpc_type=x, job=x, namespace=x, pod=x, role=x, service=x}
+instance:conntrack_entries_usage:percent{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_minallowed_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_updatepolicy_updatemode{customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, update_mode=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_spec_updatepolicy_updatemode{customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, update_mode=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_cpu{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_memory{container=x, customresource_group=x, customresource_kind=x, customresource_version=x, instance=x, job=x, namespace=x, target_api_version=x, target_kind=x, target_name=x, type=x, unit=x, verticalpodautoscaler=x}
+kube_daemonset_metadata_generation{daemonset=x, instance=x, job=x, namespace=x, type=x}
+kube_daemonset_status_current_number_scheduled{daemonset=x, instance=x, job=x, namespace=x, type=x}
+kube_daemonset_status_desired_number_scheduled{daemonset=x, instance=x, job=x, namespace=x, type=x}
+kube_daemonset_status_number_available{daemonset=x, instance=x, job=x, namespace=x, type=x}
+kube_daemonset_status_number_unavailable{daemonset=x, instance=x, job=x, namespace=x, type=x}
+kube_daemonset_status_updated_number_scheduled{daemonset=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_metadata_generation{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_metadata_generation{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_spec_replicas{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_spec_replicas{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_observed_generation{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_observed_generation{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_replicas_available{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_replicas_available{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_replicas_unavailable{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_replicas_unavailable{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_replicas_updated{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_replicas_updated{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_deployment_status_replicas{deployment=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_deployment_status_replicas{deployment=x, instance=x, job=x, namespace=x, type=x}
+kube_horizontalpodautoscaler_spec_max_replicas{exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_horizontalpodautoscaler_spec_min_replicas{exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_horizontalpodautoscaler_status_condition{condition=x, exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, status=x, type=x}
+kube_horizontalpodautoscaler_status_current_replicas{exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_horizontalpodautoscaler_status_desired_replicas{exported_instance=x, exported_job=x, horizontalpodautoscaler=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_namespace_annotations{annotation_shoot_gardener_cloud_uid=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, type=x}
+kube_node_info{container_runtime_version=x, instance=x, internal_ip=x, job=x, kernel_version=x, kubelet_version=x, kubeproxy_version=x, node=x, os_image=x, pod_cidr=x, system_uuid=x, type=x}
+kube_node_labels{instance=x, job=x, label_beta_kubernetes_io_arch=x, label_beta_kubernetes_io_os=x, label_kubernetes_io_arch=x, label_kubernetes_io_hostname=x, label_kubernetes_io_os=x, label_networking_gardener_cloud_node_local_dns_enabled=x, label_node_gardener_cloud_machine_name=x, label_node_kubernetes_io_role=x, label_worker_garden_sapcloud_io_group=x, label_worker_gardener_cloud_cri_name=x, label_worker_gardener_cloud_gardener_node_agent_secret_name=x, label_worker_gardener_cloud_kubernetes_version=x, label_worker_gardener_cloud_pool=x, label_worker_gardener_cloud_system_components=x, node=x, type=x}
+kube_node_spec_unschedulable{instance=x, job=x, node=x, type=x}
+kube_node_status_allocatable{instance=x, job=x, node=x, resource=x, type=x, unit=x}
+kube_node_status_capacity{instance=x, job=x, node=x, resource=x, type=x, unit=x}
+kube_node_status_condition{condition=x, instance=x, job=x, node=x, status=x, type=x}
+kube_persistentvolumeclaim_resource_requests_storage_bytes{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, persistentvolumeclaim=x, prometheus=x, prometheus_replica=x, type=x}
+kube_pod_container_info{container=x, container_id=x, exported_instance=x, exported_job=x, image=x, image_id=x, image_spec=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_container_info{container=x, container_id=x, image=x, image_id=x, image_spec=x, instance=x, job=x, namespace=x, pod=x, type=x, uid=x}
+kube_pod_container_resource_limits{container=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, node=x, pod=x, prometheus=x, prometheus_replica=x, resource=x, type=x, uid=x, unit=x}
+kube_pod_container_resource_limits{container=x, instance=x, job=x, namespace=x, node=x, pod=x, resource=x, type=x, uid=x, unit=x}
+kube_pod_container_resource_requests{container=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, node=x, pod=x, prometheus=x, prometheus_replica=x, resource=x, type=x, uid=x, unit=x}
+kube_pod_container_resource_requests{container=x, instance=x, job=x, namespace=x, node=x, pod=x, resource=x, type=x, uid=x, unit=x}
+kube_pod_container_status_restarts_total{container=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_container_status_restarts_total{container=x, instance=x, job=x, namespace=x, pod=x, type=x, uid=x}
+kube_pod_info{created_by_kind=x, created_by_name=x, exported_instance=x, exported_job=x, host_ip=x, host_network=x, instance=x, job=x, namespace=x, node=x, pod=x, pod_ip=x, priority_class=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_info{created_by_kind=x, created_by_name=x, exported_instance=x, exported_job=x, host_ip=x, host_network=x, instance=x, job=x, namespace=x, node=x, pod=x, pod_ip=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_info{created_by_kind=x, created_by_name=x, host_ip=x, host_network=x, instance=x, job=x, namespace=x, node=x, pod=x, pod_ip=x, priority_class=x, type=x, uid=x}
+kube_pod_labels{exported_instance=x, exported_job=x, instance=x, job=x, label_origin=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_labels{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_labels{instance=x, job=x, label_origin=x, namespace=x, pod=x, type=x, uid=x}
+kube_pod_labels{instance=x, job=x, namespace=x, pod=x, type=x, uid=x}
+kube_pod_owner{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, owner_is_controller=x, owner_kind=x, owner_name=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_spec_volumes_persistentvolumeclaims_info{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, persistentvolumeclaim=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x, volume=x}
+kube_pod_status_phase{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, phase=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_status_phase{instance=x, job=x, namespace=x, phase=x, pod=x, type=x, uid=x}
+kube_pod_status_ready{condition=x, exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, pod=x, prometheus=x, prometheus_replica=x, type=x, uid=x}
+kube_pod_status_ready{condition=x, instance=x, job=x, namespace=x, pod=x, type=x, uid=x}
+kube_replicaset_metadata_generation{instance=x, job=x, namespace=x, replicaset=x, type=x}
+kube_replicaset_owner{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, owner_is_controller=x, owner_kind=x, owner_name=x, prometheus=x, prometheus_replica=x, replicaset=x, type=x}
+kube_replicaset_owner{instance=x, job=x, namespace=x, owner_is_controller=x, owner_kind=x, owner_name=x, replicaset=x, type=x}
+kube_replicaset_spec_replicas{instance=x, job=x, namespace=x, replicaset=x, type=x}
+kube_replicaset_status_observed_generation{instance=x, job=x, namespace=x, replicaset=x, type=x}
+kube_replicaset_status_ready_replicas{instance=x, job=x, namespace=x, replicaset=x, type=x}
+kube_replicaset_status_replicas{instance=x, job=x, namespace=x, replicaset=x, type=x}
+kube_statefulset_metadata_generation{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_replicas{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_observed_generation{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_current{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_ready{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_replicas_updated{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kube_statefulset_status_replicas{exported_instance=x, exported_job=x, instance=x, job=x, namespace=x, prometheus=x, prometheus_replica=x, statefulset=x, type=x}
+kubelet_image_pull_duration_seconds_bucket{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, image_size_in_bytes=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, le=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+kubelet_image_pull_duration_seconds_count{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, image_size_in_bytes=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+kubelet_image_pull_duration_seconds_sum{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, image_size_in_bytes=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+kubelet_running_pods{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+kubeproxy_network_latency:quantile{quantile=x}
+kubeproxy_network_programming_duration_seconds_bucket{app=x, instance=x, job=x, le=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+kubeproxy_network_programming_duration_seconds_count{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+kubeproxy_network_programming_duration_seconds_sum{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+kubeproxy_sync_proxy:quantile{quantile=x}
+kubeproxy_sync_proxy_rules_duration_seconds_bucket{app=x, instance=x, job=x, le=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+kubeproxy_sync_proxy_rules_duration_seconds_count{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+kubeproxy_sync_proxy_rules_duration_seconds_sum{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+leader_election_master_status{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+mcm_machine_controller_frozen{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_current_status_phase{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_info_spec_min_ready_seconds{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_info_spec_paused{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_info_spec_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_info_spec_rolling_update_max_surge{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_info_spec_rolling_update_max_unavailable{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_info{app=x, container=x, createdAt=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x, spec_strategy_type=x}
+mcm_machine_deployment_items_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_status_available_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_status_condition{app=x, condition=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_status_ready_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_status_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_status_unavailable_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_deployment_status_updated_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_info{app=x, container=x, createdAt=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x, spec_class_kind=x, spec_class_name=x, spec_provider_id=x}
+mcm_machine_items_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_set_info_spec_min_ready_seconds{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_set_info_spec_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_set_info{app=x, container=x, createdAt=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_set_items_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_set_status_available_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_set_status_fully_labelled_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_set_status_ready_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_set_status_replicas{app=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_stale_machines_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+mcm_machine_status_condition{app=x, condition=x, container=x, endpoint=x, exported_namespace=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_adds_total{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_depth{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_longest_running_processor_seconds{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_queue_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_queue_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_queue_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_retries_total{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_unfinished_work_seconds{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_work_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_work_duration_seconds_count{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+mcm_workqueue_work_duration_seconds_sum{app=x, container=x, endpoint=x, instance=x, job=x, name=x, namespace=x, pod=x, role=x, service=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_requests:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:cpu_requests:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:cpu_usage:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:cpu_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:disk_usage_seconds:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:disk_usage_seconds{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_requests:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:memory_requests:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:memory_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage_seconds:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:memory_usage_seconds{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_receive:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:network_receive:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:network_transmit:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:network_transmit:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_claims:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:persistent_volume_claims:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:persistent_volume_usage:sum_by_namespace_owner{instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:persistent_volume_usage:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time:this_month{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:avg_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace:sum_over_time{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+metering:working_set_memory:sum_by_namespace_owner_container{container=x, instance=x, job=x, namespace=x, owner=x, prometheus=x, prometheus_replica=x, shoot_uid=x}
+metering:working_set_memory:sum_by_namespace{instance=x, job=x, month=x, namespace=x, prometheus=x, prometheus_replica=x, shoot_uid=x, year=x}
+node_boot_time_seconds{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_cpu_seconds_total{component=x, cpu=x, instance=x, job=x, mode=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_disk_io_time_seconds_total{component=x, device=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_disk_io_time_weighted_seconds_total{component=x, device=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_disk_read_bytes_total{component=x, device=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_disk_read_time_seconds_total{component=x, device=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_disk_reads_completed_total{component=x, device=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_disk_write_time_seconds_total{component=x, device=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_disk_writes_completed_total{component=x, device=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_disk_written_bytes_total{component=x, device=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_filesystem_avail_bytes{component=x, device=x, fstype=x, instance=x, job=x, mountpoint=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_filesystem_files_free{component=x, device=x, fstype=x, instance=x, job=x, mountpoint=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_filesystem_files{component=x, device=x, fstype=x, instance=x, job=x, mountpoint=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_filesystem_free_bytes{component=x, device=x, fstype=x, instance=x, job=x, mountpoint=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_filesystem_readonly{component=x, device=x, fstype=x, instance=x, job=x, mountpoint=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_filesystem_size_bytes{component=x, device=x, fstype=x, instance=x, job=x, mountpoint=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_load15{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_load1{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_load5{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Active_anon_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Active_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Active_file_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_AnonHugePages_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_AnonPages_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Bounce_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Buffers_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Cached_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_CommitLimit_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Committed_AS_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_DirectMap1G_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_DirectMap2M_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_DirectMap4k_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Dirty_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_FileHugePages_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_FilePmdMapped_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_HardwareCorrupted_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_HugePages_Free{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_HugePages_Rsvd{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_HugePages_Surp{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_HugePages_Total{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Hugepagesize_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Hugetlb_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Inactive_anon_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Inactive_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Inactive_file_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_KReclaimable_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_KernelStack_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Mapped_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_MemAvailable_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_MemFree_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_MemTotal_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Mlocked_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_NFS_Unstable_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_PageTables_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Percpu_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_SReclaimable_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_SUnreclaim_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_SecPageTables_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_ShmemHugePages_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_ShmemPmdMapped_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Shmem_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Slab_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_SwapCached_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_SwapFree_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_SwapTotal_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Unaccepted_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Unevictable_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_VmallocChunk_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_VmallocTotal_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_VmallocUsed_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_WritebackTmp_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_memory_Writeback_bytes{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_entries_limit{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_entries{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_stat_drop{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_stat_early_drop{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_stat_found{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_stat_ignore{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_stat_insert_failed{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_stat_insert{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_stat_invalid{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_nf_conntrack_stat_search_restart{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_scrape_collector_duration_seconds{collector=x, component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+node_scrape_collector_success{collector=x, component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+os_fd_limit{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+os_fd_used{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+probe_dns_lookup_time_seconds{instance=x, job=x, type=x}
+probe_duration_seconds{instance=x, job=x, type=x}
+probe_failed_due_to_regex{instance=x, job=x, type=x}
+probe_http_content_length{instance=x, job=x, type=x}
+probe_http_duration_seconds{instance=x, job=x, phase=x, type=x}
+probe_http_redirects{instance=x, job=x, type=x}
+probe_http_ssl{instance=x, job=x, type=x}
+probe_http_status_code{instance=x, job=x, type=x}
+probe_http_uncompressed_body_length{instance=x, job=x, type=x}
+probe_http_version{instance=x, job=x, type=x}
+probe_ip_addr_hash{instance=x, job=x, type=x}
+probe_ip_protocol{instance=x, job=x, type=x}
+probe_ssl_earliest_cert_expiry{instance=x, job=x, type=x}
+probe_ssl_last_chain_expiry_timestamp_seconds{instance=x, job=x, type=x}
+probe_ssl_last_chain_info{fingerprint_sha256=x, instance=x, issuer=x, job=x, subject=x, subjectalternative=x, type=x}
+probe_success{instance=x, job=x, type=x}
+probe_tls_version_info{instance=x, job=x, type=x, version=x}
+process_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+process_cpu_seconds_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_cpu_seconds_total{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+process_max_fds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+process_max_fds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_max_fds{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+process_max_fds{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+process_max_fds{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+process_max_fds{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+process_max_fds{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+process_max_fds{instance=x, job=x}
+process_network_receive_bytes_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_network_transmit_bytes_total{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_open_fds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+process_open_fds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_open_fds{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+process_open_fds{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+process_open_fds{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+process_open_fds{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+process_open_fds{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+process_open_fds{instance=x, job=x}
+process_resident_memory_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+process_resident_memory_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_resident_memory_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+process_resident_memory_bytes{instance=x, job=x}
+process_start_time_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+process_start_time_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_start_time_seconds{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+process_virtual_memory_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+process_virtual_memory_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_virtual_memory_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+process_virtual_memory_bytes{instance=x, job=x}
+process_virtual_memory_max_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+process_virtual_memory_max_bytes{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+process_virtual_memory_max_bytes{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+prometheus_config_last_reload_successful{instance=x, job=x}
+prometheus_engine_query_duration_seconds{instance=x, job=x, quantile=x, slice=x}
+prometheus_rule_group_duration_seconds{instance=x, job=x, quantile=x}
+prometheus_rule_group_iterations_missed_total{instance=x, job=x, rule_group=x}
+prometheus_rule_group_iterations_total{instance=x, job=x, rule_group=x}
+prometheus_tsdb_blocks_loaded{instance=x, job=x}
+prometheus_tsdb_compactions_failed_total{instance=x, job=x}
+prometheus_tsdb_compactions_total{instance=x, job=x}
+prometheus_tsdb_compactions_triggered_total{instance=x, job=x}
+prometheus_tsdb_head_active_appenders{instance=x, job=x}
+prometheus_tsdb_head_chunks{instance=x, job=x}
+prometheus_tsdb_head_gc_duration_seconds_count{instance=x, job=x}
+prometheus_tsdb_head_samples_appended_total{instance=x, job=x, type=x}
+prometheus_tsdb_head_series{instance=x, job=x}
+prometheus_tsdb_lowest_timestamp{instance=x, job=x}
+prometheus_tsdb_reloads_failures_total{instance=x, job=x}
+prometheus_tsdb_reloads_total{instance=x, job=x}
+prometheus_tsdb_storage_blocks_bytes{instance=x, job=x}
+prometheus_tsdb_wal_corruptions_total{instance=x, job=x}
+promhttp_metric_handler_requests_in_flight{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+promhttp_metric_handler_requests_in_flight{container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+promhttp_metric_handler_requests_total{app=x, code=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+promhttp_metric_handler_requests_total{code=x, container=x, endpoint=x, job=x, namespace=x, pod=x, role=x, service=x}
+rest_client_requests_total{app=x, code=x, container=x, endpoint=x, gardener_cloud_role=x, host=x, instance=x, job=x, method=x, namespace=x, pod=x, service=x}
+rest_client_requests_total{app=x, code=x, container=x, endpoint=x, host=x, instance=x, job=x, method=x, namespace=x, pod=x, role=x, service=x}
+scheduler_scheduling_algorithm_duration_seconds_bucket{app=x, container=x, endpoint=x, instance=x, job=x, le=x, namespace=x, pod=x, role=x, service=x}
+scrape_duration_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+scrape_duration_seconds{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_duration_seconds{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+scrape_duration_seconds{app=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_duration_seconds{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_duration_seconds{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+scrape_duration_seconds{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_duration_seconds{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+scrape_duration_seconds{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_duration_seconds{instance=x, job=x, type=x}
+scrape_duration_seconds{instance=x, job=x}
+scrape_samples_post_metric_relabeling{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+scrape_samples_post_metric_relabeling{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_samples_post_metric_relabeling{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+scrape_samples_post_metric_relabeling{app=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_samples_post_metric_relabeling{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_samples_post_metric_relabeling{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+scrape_samples_post_metric_relabeling{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_samples_post_metric_relabeling{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+scrape_samples_post_metric_relabeling{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_samples_post_metric_relabeling{instance=x, job=x, type=x}
+scrape_samples_post_metric_relabeling{instance=x, job=x}
+scrape_samples_scraped{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+scrape_samples_scraped{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_samples_scraped{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+scrape_samples_scraped{app=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_samples_scraped{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_samples_scraped{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+scrape_samples_scraped{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_samples_scraped{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+scrape_samples_scraped{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_samples_scraped{instance=x, job=x, type=x}
+scrape_samples_scraped{instance=x, job=x}
+scrape_series_added{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+scrape_series_added{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+scrape_series_added{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+scrape_series_added{app=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_series_added{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_series_added{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+scrape_series_added{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_series_added{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+scrape_series_added{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+scrape_series_added{instance=x, job=x, type=x}
+scrape_series_added{instance=x, job=x}
+shoot:apiserver_audit_event_total:sum{}
+shoot:apiserver_latency:percentage{}
+shoot:apiserver_latency_seconds:quantile{app=x, component=x, container=x, endpoint=x, group=x, job=x, namespace=x, quantile=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+shoot:apiserver_latency_seconds:quantile{app=x, component=x, container=x, endpoint=x, group=x, job=x, namespace=x, quantile=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+shoot:apiserver_latency_seconds:quantile{app=x, component=x, container=x, endpoint=x, job=x, namespace=x, quantile=x, resource=x, role=x, scope=x, service=x, subresource=x, verb=x, version=x}
+shoot:apiserver_latency_seconds:quantile{app=x, component=x, container=x, endpoint=x, job=x, namespace=x, quantile=x, resource=x, role=x, scope=x, service=x, verb=x, version=x}
+shoot:apiserver_latency_seconds:quantile{app=x, component=x, container=x, endpoint=x, job=x, namespace=x, quantile=x, role=x, service=x, subresource=x, verb=x}
+shoot:apiserver_latency_seconds:quantile{app=x, container=x, endpoint=x, job=x, namespace=x, quantile=x, role=x, service=x, subresource=x, verb=x}
+shoot:apiserver_storage_objects:sum_by_resource{resource=x}
+shoot:apiserver_watch_duration:quantile{quantile=x, resource=x, scope=x}
+shoot:availability{instance=x, job=x, kind=x, type=x}
+shoot:container_network_receive_bytes_total_apiserver:sum{}
+shoot:container_network_receive_bytes_total_vpn:sum{}
+shoot:container_network_transmit_bytes_total_apiserver:sum{}
+shoot:container_network_transmit_bytes_total_vpn:sum{}
+shoot:kube_apiserver:sum_by_pod{pod=x}
+shoot:kube_node_info:count{}
+shoot:kube_node_status_capacity_cpu_cores:sum{}
+shoot:kube_node_status_capacity_memory_bytes:sum{}
+shoot:machine_types:sum{}
+shoot:node_operating_system:sum{kernel_version=x, os_image=x}
+up{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+up{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, pod=x, service=x}
+up{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+up{app=x, gardener_cloud_role=x, instance=x, job=x, node=x, origin=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+up{app=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, role=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+up{beta_kubernetes_io_arch=x, beta_kubernetes_io_os=x, instance=x, job=x, kubernetes_io_arch=x, kubernetes_io_hostname=x, kubernetes_io_os=x, networking_gardener_cloud_node_local_dns_enabled=x, node_gardener_cloud_machine_name=x, node_kubernetes_io_role=x, type=x, worker_garden_sapcloud_io_group=x, worker_gardener_cloud_cri_name=x, worker_gardener_cloud_gardener_node_agent_secret_name=x, worker_gardener_cloud_kubernetes_version=x, worker_gardener_cloud_pool=x, worker_gardener_cloud_system_components=x}
+up{component=x, instance=x, job=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+up{container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, role=x, service=x}
+up{instance=x, job=x, k8s_app=x, kubernetes_io_cluster_service=x, kubernetes_io_name=x, node=x, pod=x, resources_gardener_cloud_managed_by=x, shoot_gardener_cloud_no_cleanup=x, type=x}
+up{instance=x, job=x, type=x}
+up{instance=x, job=x}
+vpa_admission_controller_admission_latency_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, status=x}
+vpa_admission_controller_admission_latency_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, status=x}
+vpa_admission_controller_admission_latency_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, status=x}
+vpa_admission_controller_admission_pods_total{app=x, applied=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+vpa_admission_controller_execution_latency_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, step=x}
+vpa_admission_controller_execution_latency_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, step=x}
+vpa_admission_controller_execution_latency_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, step=x}
+vpa_quality_cpu_recommendation_lower_equal_usage_diffs_cores_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_cpu_recommendation_lower_equal_usage_diffs_cores_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_cpu_recommendation_lower_equal_usage_diffs_cores_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_cpu_recommendation_over_usage_diffs_cores_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_cpu_recommendation_over_usage_diffs_cores_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_cpu_recommendation_over_usage_diffs_cores_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_cpu_recommendations_cores_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, update_mode=x}
+vpa_quality_cpu_recommendations_cores_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, update_mode=x}
+vpa_quality_cpu_recommendations_cores_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, update_mode=x}
+vpa_quality_mem_recommendation_lower_equal_usage_diffs_bytes_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_mem_recommendation_lower_equal_usage_diffs_bytes_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_mem_recommendation_lower_equal_usage_diffs_bytes_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_mem_recommendation_over_usage_diffs_bytes_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_mem_recommendation_over_usage_diffs_bytes_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_mem_recommendation_over_usage_diffs_bytes_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, recommendation_missing=x, service=x, update_mode=x}
+vpa_quality_mem_recommendations_bytes_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, update_mode=x}
+vpa_quality_mem_recommendations_bytes_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, update_mode=x}
+vpa_quality_mem_recommendations_bytes_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, update_mode=x}
+vpa_quality_relative_recommendation_changes_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, update_mode=x, vpa_size_log2=x}
+vpa_quality_relative_recommendation_changes_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, update_mode=x, vpa_size_log2=x}
+vpa_quality_relative_recommendation_changes_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, update_mode=x, vpa_size_log2=x}
+vpa_quality_usage_recommendation_relative_diffs_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, update_mode=x}
+vpa_quality_usage_recommendation_relative_diffs_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, update_mode=x}
+vpa_quality_usage_recommendation_relative_diffs_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, update_mode=x}
+vpa_quality_usage_sample_missing_recommendation_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_oom=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, resource=x, service=x, update_mode=x}
+vpa_recommender_aggregate_container_states_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+vpa_recommender_execution_latency_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, step=x}
+vpa_recommender_execution_latency_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, step=x}
+vpa_recommender_execution_latency_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, step=x}
+vpa_recommender_metric_server_responses{app=x, client_name=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, is_error=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+vpa_recommender_recommendation_latency_seconds_bucket{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+vpa_recommender_recommendation_latency_seconds_count{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+vpa_recommender_recommendation_latency_seconds_sum{app=x, container=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x}
+vpa_recommender_vpa_objects_count{api=x, app=x, container=x, endpoint=x, gardener_cloud_role=x, has_recommendation=x, instance=x, job=x, matches_pods=x, namespace=x, networking_gardener_cloud_to_dns=x, networking_resources_gardener_cloud_to_kube_apiserver_tcp_443=x, pod=x, pod_template_hash=x, service=x, unsupported_config=x, update_mode=x}
+watch_cache_capacity_decrease_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+watch_cache_capacity_increase_total{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+watch_cache_capacity{app=x, container=x, endpoint=x, instance=x, job=x, namespace=x, pod=x, resource=x, role=x, service=x}
+workqueue_adds_total{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+workqueue_depth{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+workqueue_longest_running_processor_seconds{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+workqueue_queue_duration_seconds_bucket{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, name=x, namespace=x, pod=x, service=x}
+workqueue_queue_duration_seconds_count{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+workqueue_queue_duration_seconds_sum{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+workqueue_retries_total{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+workqueue_unfinished_work_seconds{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+workqueue_work_duration_seconds_bucket{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, le=x, name=x, namespace=x, pod=x, service=x}
+workqueue_work_duration_seconds_count{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
+workqueue_work_duration_seconds_sum{app=x, container=x, controller=x, endpoint=x, gardener_cloud_role=x, instance=x, job=x, name=x, namespace=x, pod=x, service=x}
