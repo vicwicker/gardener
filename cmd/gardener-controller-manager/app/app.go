@@ -233,30 +233,27 @@ func run(ctx context.Context, log logr.Logger, cfg *controllermanagerconfigv1alp
 
 				mgr.GetLogger().Info("Check the seed name label for itself", "gvk", gvk, "objectKey", client.ObjectKeyFromObject(obj))
 				label := v1beta1constants.LabelPrefixSeedName + obj.GetName()
-				if v, ok := obj.GetLabels()[label]; ok && v == "true" {
-					mgr.GetLogger().Info("Label is present, do nothing", "gvk", gvk, "objectKey", client.ObjectKeyFromObject(obj), "label", label)
-					return nil
-				}
-				mgr.GetLogger().Info("Label is missing, send an empty patch to the ManagedSeed so that the mutating webhook can add the missing seed name label", "gvk", gvk, "objectKey", client.ObjectKeyFromObject(obj), "label", label)
-				emptyPatch := client.MergeFrom(obj)
-				if err := mgr.GetClient().Patch(ctx, obj, emptyPatch); err != nil {
-					return fmt.Errorf("failed to patch managed seed %s: %w", client.ObjectKeyFromObject(obj), err)
-				}
+				if v, ok := obj.GetLabels()[label]; !ok || v != "true" {
+					mgr.GetLogger().Info("Label is missing, send an empty patch to the ManagedSeed so that the mutating webhook can add the missing seed name label", "gvk", gvk, "objectKey", client.ObjectKeyFromObject(obj), "label", label)
+					emptyPatch := client.MergeFrom(obj)
+					if err := mgr.GetClient().Patch(ctx, obj, emptyPatch); err != nil {
+						return fmt.Errorf("failed to patch managed seed %s: %w", client.ObjectKeyFromObject(obj), err)
+					}
 
-				// assert the mutating webhook runs on the correct version
-				managedSeed := &seedmanagementv1alpha1.ManagedSeed{}
-				if err := mgr.GetClient().Get(ctx, client.ObjectKey{Name: obj.GetName()}, managedSeed); err != nil {
-					return fmt.Errorf("failed to get managed seed %s: %w", client.ObjectKeyFromObject(obj), err)
-				} else if v, ok := managedSeed.GetLabels()[label]; !ok || v != "true" {
-					return fmt.Errorf("failed to get the label %s from the managed seed %s, the mutating webhook is running in an older version", label, client.ObjectKeyFromObject(obj))
+					// assert the mutating webhook runs on the correct version
+					managedSeed := &seedmanagementv1alpha1.ManagedSeed{}
+					if err := mgr.GetClient().Get(ctx, client.ObjectKey{Name: obj.GetName()}, managedSeed); err != nil {
+						return fmt.Errorf("failed to get managed seed %s: %w", client.ObjectKeyFromObject(obj), err)
+					} else if v, ok := managedSeed.GetLabels()[label]; !ok || v != "true" {
+						return fmt.Errorf("failed to get the label %s from the managed seed %s, the mutating webhook is running in an older version", label, client.ObjectKeyFromObject(obj))
+					}
+
+					mgr.GetLogger().Info("Waiting for 30 seconds to let the gardenlet observe the change on the managed seed resource", "gvk", gvk, "objectKey", client.ObjectKeyFromObject(obj))
+					// without this wait, the gardenlet might see the change on the seed resource before the change on the managed seed resource
+					// the wait is performed in parallel for all the managed seeds via the flow.Parallel function call below
+					time.Sleep(30 * time.Second)
 				}
-
-				mgr.GetLogger().Info("Waiting for 30 seconds to let the gardenlet observe the change on the managed seed resource", "gvk", gvk, "objectKey", client.ObjectKeyFromObject(obj))
-				// without this wait, the gardenlet might see the change on the seed resource before the change on the managed seed resource
-				// the wait is performed in parallel for all the managed seeds via the flow.Parallel function call below
-				time.Sleep(30 * time.Second)
-				mgr.GetLogger().Info("Waiting done, now trigger a reconciliation on the seed resource", "gvk", gvk, "objectKey", client.ObjectKeyFromObject(obj))
-
+				mgr.GetLogger().Info("Trigger a reconciliation on the seed resource", "gvk", gvk, "objectKey", client.ObjectKeyFromObject(obj))
 				seed := &gardencorev1beta1.Seed{}
 				if err := mgr.GetClient().Get(ctx, client.ObjectKey{Name: obj.GetName()}, seed); err != nil {
 					if apierrors.IsNotFound(err) {
