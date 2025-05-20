@@ -527,13 +527,11 @@ func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanage
 		authSecretName,
 		seed.GetIngressFQDN("g-seed"),
 		v1beta1constants.PriorityClassNameSeedSystem600,
-		true,
 		false,
-		false,
-		false,
-		true,
-		v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings),
 		wildcardCertName,
+		plutono.DashboardValues{
+			ExcludeVPAInstallationDashboards: !v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings),
+		},
 	)
 }
 

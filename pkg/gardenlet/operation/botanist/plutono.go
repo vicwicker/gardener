@@ -17,6 +17,23 @@ import (
 
 // DefaultPlutono returns a deployer for Plutono.
 func (b *Botanist) DefaultPlutono() (plutono.Interface, error) {
+	// TODO(vicwicker): Think about making isWorkerless override all the other directly
+	dashboards := plutono.DashboardValues{
+		IsWorkerless:                       b.Shoot.IsWorkerless,
+		VPNHighAvailabilityEnabled:         b.Shoot.VPNHighAvailabilityEnabled,
+		ExcludeIstioDashboards:             !b.ShootUsesDNS(),
+		ExcludeVPACustomResourceDashboards: !b.Shoot.WantsVerticalPodAutoscaler,
+		ExcludeVPAInstallationDashboards:   !b.Shoot.WantsVerticalPodAutoscaler,
+	}
+
+	if b.Shoot.IsWorkerless {
+		dashboards.VPNHighAvailabilityEnabled = false
+		dashboards.ExcludeIstioDashboards = true
+		dashboards.ExcludeVPACustomResourceDashboards = true
+		dashboards.ExcludeVPAInstallationDashboards = true
+		dashboards.VPNHighAvailabilityEnabled = true
+	}
+
 	return shared.NewPlutono(
 		b.SeedClientSet.Client(),
 		b.Shoot.ControlPlaneNamespace,
@@ -26,13 +43,9 @@ func (b *Botanist) DefaultPlutono() (plutono.Interface, error) {
 		"",
 		b.ComputePlutonoHost(),
 		v1beta1constants.PriorityClassNameShootControlPlane100,
-		b.ShootUsesDNS(),
-		b.Shoot.IsWorkerless,
 		false,
-		b.Shoot.VPNHighAvailabilityEnabled,
-		b.Shoot.WantsVerticalPodAutoscaler,
-		b.Shoot.WantsVerticalPodAutoscaler,
 		nil,
+		dashboards,
 	)
 }
 

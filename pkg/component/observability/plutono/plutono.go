@@ -76,12 +76,13 @@ var (
 	//go:embed dashboards/common
 	commonDashboards embed.FS
 
-	gardenDashboardsPath         = filepath.Join("dashboards", "garden")
-	seedDashboardsPath           = filepath.Join("dashboards", "seed")
-	shootDashboardsPath          = filepath.Join("dashboards", "shoot")
-	gardenAndShootDashboardsPath = filepath.Join("dashboards", "garden-shoot")
-	commonDashboardsPath         = filepath.Join("dashboards", "common")
-	commonVpaDashboardsPath      = filepath.Join(commonDashboardsPath, "vpa")
+	gardenDashboardsPath                  = filepath.Join("dashboards", "garden")
+	seedDashboardsPath                    = filepath.Join("dashboards", "seed")
+	shootDashboardsPath                   = filepath.Join("dashboards", "shoot")
+	gardenAndShootDashboardsPath          = filepath.Join("dashboards", "garden-shoot")
+	commonDashboardsPath                  = filepath.Join("dashboards", "common")
+	commonVPACustomResourceDashboardsPath = filepath.Join(commonDashboardsPath, "vpa-customresource")
+	commonVPAInstallationDashboardsPath   = filepath.Join(commonDashboardsPath, "vpa-installation")
 )
 
 // Interface contains functions for a Plutono Deployer
@@ -103,25 +104,30 @@ type Values struct {
 	ImageDashboardRefresher string
 	// IngressHost is the host name of plutono.
 	IngressHost string
-	// IncludeIstioDashboards specifies whether to include istio dashboard.
-	IncludeIstioDashboards bool
-	// IsWorkerless specifies whether the cluster managed by this API server has worker nodes.
-	IsWorkerless bool
 	// IsGardenCluster specifies whether the cluster is garden cluster.
 	IsGardenCluster bool
 	// PriorityClassName is the name of the priority class.
 	PriorityClassName string
 	// Replicas is the number of pod replicas for the plutono.
 	Replicas int32
-	// VPACustomResourceMetricsAvailable states whether VerticalPodAutoscaler is enabled.
-	VPACustomResourceMetricsAvailable bool
-	// VPAInstallationMetricsAvailable states whether the VPA installation metrics are available.
-	// If so, we can show dashboards about the VPA internal components, like the recommender and the VPA admission controller.
-	VpaInstallationMetricsAvailable bool
-	// VPNHighAvailabilityEnabled specifies whether the cluster is configured with HA VPN.
-	VPNHighAvailabilityEnabled bool
 	// WildcardCertName is name of wildcard TLS certificate which is issued for the seed's ingress domain.
 	WildcardCertName *string
+	// DashboardConfigs is a set of configuration values for the plutono dashboards.
+	Dashboards DashboardValues
+}
+
+// TODO(vicwicker): Revisit this
+type DashboardValues struct {
+	// IsWorkerless specifies whether the cluster managed by this API server has worker nodes.
+	IsWorkerless bool
+	// VPNHighAvailabilityEnabled specifies whether the cluster is configured with HA VPN.
+	VPNHighAvailabilityEnabled bool
+	// ExcludeIstioDashboards specifies whether to exclude istio dashboard.
+	ExcludeIstioDashboards bool
+	// ExcludeVPACustomResourceDashboards specifies whether to exclude VPA custom resource dashboards.
+	ExcludeVPACustomResourceDashboards bool
+	// ExcludeVPAInstallationDashboards specifies whether to exclude VPA installation dashboards.
+	ExcludeVPAInstallationDashboards bool
 }
 
 // New creates a new instance of DeployWaiter for plutono.
@@ -389,47 +395,40 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	configMap.Labels = utils.MergeStringMaps(getLabels(), map[string]string{p.dashboardLabel(): dashboardLabelValue})
 
 	if p.values.IsGardenCluster {
-		requiredDashboards = map[string]embed.FS{gardenDashboardsPath: gardenDashboards, gardenAndShootDashboardsPath: gardenAndShootDashboards}
-		if p.values.VPACustomResourceMetricsAvailable {
-			requiredDashboards[commonVpaDashboardsPath] = commonDashboards // ?
+		requiredDashboards = map[string]embed.FS{
+			gardenDashboardsPath:                  gardenDashboards,
+			gardenAndShootDashboardsPath:          gardenAndShootDashboards,
+			commonVPACustomResourceDashboardsPath: commonDashboards,
+			commonVPAInstallationDashboardsPath:   commonDashboards,
 		}
 	} else if p.values.ClusterType == component.ClusterTypeSeed {
 		requiredDashboards = map[string]embed.FS{seedDashboardsPath: seedDashboards, commonDashboardsPath: commonDashboards}
-		if !p.values.IncludeIstioDashboards {
-			ignorePaths.Insert("istio")
-		}
-		if !p.values.VPACustomResourceMetricsAvailable {
-			ignorePaths.Insert("vpa")
-		}
-		if !p.values.VpaInstallationMetricsAvailable {
-			ignorePaths.Insert("vpa-installation")
-		}
 	} else if p.values.ClusterType == component.ClusterTypeShoot {
 		requiredDashboards = map[string]embed.FS{
 			shootDashboardsPath:          shootDashboards,
 			gardenAndShootDashboardsPath: gardenAndShootDashboards,
 			commonDashboardsPath:         commonDashboards,
 		}
+	}
 
-		if !p.values.VPACustomResourceMetricsAvailable {
-			ignorePaths.Insert("vpa")
-		}
-		if !p.values.VpaInstallationMetricsAvailable {
-			ignorePaths.Insert("vpa-installation")
-		}
-		if p.values.IsWorkerless {
-			ignorePaths.Insert("worker")
-		} else {
-			ignorePaths.Insert("workerless")
-			if !p.values.IncludeIstioDashboards {
-				ignorePaths.Insert("istio")
-			}
-			if p.values.VPNHighAvailabilityEnabled {
-				ignorePaths.Insert("envoy-proxy")
-			} else {
-				ignorePaths.Insert("ha-vpn")
-			}
-		}
+	if p.values.Dashboards.ExcludeVPAInstallationDashboards {
+		ignorePaths.Insert("vpa-installation")
+	}
+	if p.values.Dashboards.ExcludeVPACustomResourceDashboards {
+		ignorePaths.Insert("vpa-customresource")
+	}
+	if p.values.Dashboards.IsWorkerless {
+		ignorePaths.Insert("worker")
+	} else {
+		ignorePaths.Insert("workerless")
+	}
+	if p.values.Dashboards.ExcludeIstioDashboards {
+		ignorePaths.Insert("istio")
+	}
+	if p.values.Dashboards.VPNHighAvailabilityEnabled {
+		ignorePaths.Insert("envoy-proxy")
+	} else {
+		ignorePaths.Insert("ha-vpn")
 	}
 
 	for dashboardPath, dashboardEmbed := range requiredDashboards {
@@ -438,7 +437,8 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 				return err
 			}
 
-			normalizedPath := strings.TrimPrefix(strings.TrimPrefix(path, dashboardPath), "/")
+			// Review: Keep the dashboardPath so that we can use it to filter out based on ignorePaths
+			normalizedPath := strings.TrimPrefix(path, "/")
 			if normalizedPath == "" {
 				// No need to process top level.
 				return nil

@@ -645,25 +645,27 @@ status:
 			BeforeEach(func() {
 				values.ClusterType = comp.ClusterTypeSeed
 				values.IngressHost = "seed.example.com"
+				values.Dashboards = DashboardValues{}
 			})
 
 			Context("Cluster is not garden cluster", func() {
 				BeforeEach(func() {
 					values.AuthSecretName = "global-monitoring-secret"
-					values.IncludeIstioDashboards = true
 				})
 
+				// Review: Originally we had 21 dashboards. Now we have +2 (installation) +1 (custom resource) = 24
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards", 21)
+					checkDeployedResources("plutono-dashboards", 24)
 				})
 
-				Context("w/ enabled vpa", func() {
+				// Review: Originally we had 21 dashboards. Now we have +1 (custom resource) = 22
+				Context("without VPA installation", func() {
 					BeforeEach(func() {
-						values.VPACustomResourceMetricsAvailable = true
+						values.Dashboards.ExcludeVPAInstallationDashboards = true
 					})
 
 					It("should successfully deploy all resources", func() {
-						checkDeployedResources("plutono-dashboards", 24)
+						checkDeployedResources("plutono-dashboards", 22)
 					})
 				})
 			})
@@ -673,18 +675,20 @@ status:
 					values.IsGardenCluster = true
 				})
 
-				Context("with VPAEnabled=true", func() {
+				// Review: Originally we had 23 dashboards. Now we have +1 (custom resource) = 24
+				Context("without VPA installation", func() {
 					BeforeEach(func() {
-						values.VPACustomResourceMetricsAvailable = true
+						values.Dashboards.ExcludeVPAInstallationDashboards = true
 					})
 
 					It("should successfully deploy all resources", func() {
-						checkDeployedResources("plutono-dashboards-garden", 26)
+						checkDeployedResources("plutono-dashboards-garden", 24)
 					})
 				})
 
+				// Review: Originally we had 23 dashboards. Now we have +2 (installation) +1 (custom resource) = 26
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards-garden", 23)
+					checkDeployedResources("plutono-dashboards-garden", 26)
 				})
 			})
 		})
@@ -693,27 +697,33 @@ status:
 			BeforeEach(func() {
 				values.ClusterType = comp.ClusterTypeShoot
 				values.IngressHost = "shoot.example.com"
+				values.Dashboards = DashboardValues{}
 			})
 
 			It("should successfully deploy all resources", func() {
-				checkDeployedResources("plutono-dashboards", 33)
+				checkDeployedResources("plutono-dashboards", 37)
 			})
 
-			Context("w/ include istio, mcm, ha-vpn, vpa", func() {
+			Context("without istio, ha-vpn, vpa", func() {
 				BeforeEach(func() {
-					values.IncludeIstioDashboards = true
-					values.VPNHighAvailabilityEnabled = true
-					values.VPACustomResourceMetricsAvailable = true
+					values.Dashboards.ExcludeIstioDashboards = true
+					values.Dashboards.VPNHighAvailabilityEnabled = true
+					values.Dashboards.ExcludeVPACustomResourceDashboards = true
+					values.Dashboards.ExcludeVPAInstallationDashboards = true
 				})
 
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards", 37)
+					checkDeployedResources("plutono-dashboards", 33)
 				})
 			})
 
 			Context("shoot is workerless", func() {
 				BeforeEach(func() {
-					values.IsWorkerless = true
+					values.Dashboards.IsWorkerless = true
+					values.Dashboards.VPNHighAvailabilityEnabled = false
+					values.Dashboards.ExcludeIstioDashboards = true
+					values.Dashboards.ExcludeVPACustomResourceDashboards = true
+					values.Dashboards.ExcludeVPAInstallationDashboards = true
 				})
 
 				It("should successfully deploy all resources", func() {
