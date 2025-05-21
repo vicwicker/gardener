@@ -1007,11 +1007,12 @@ func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager 
 		"",
 		"plutono-garden."+ingressDomain,
 		v1beta1constants.PriorityClassNameGardenSystem100,
+		false,
+		false,
 		true,
+		false,
+		vpaEnabled(garden.Spec.RuntimeCluster.Settings),
 		wildcardCertSecretName,
-		plutono.DashboardValues{
-			ExcludeVPAInstallationDashboards: !vpaEnabled(garden.Spec.RuntimeCluster.Settings),
-		},
 	)
 }
 
