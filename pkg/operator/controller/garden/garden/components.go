@@ -998,6 +998,18 @@ func (r *Reconciler) newGardenerMetricsExporter(secretsManager secretsmanager.In
 }
 
 func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface, ingressDomain string, wildcardCertSecretName *string) (plutono.Interface, error) {
+	dashboards, err := plutono.CollectDashboards(
+		component.ClusterTypeSeed,
+		false,
+		false,
+		true,
+		false,
+		vpaEnabled(garden.Spec.RuntimeCluster.Settings),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate dashboards: %w", err)
+	}
+
 	return sharedcomponent.NewPlutono(
 		r.RuntimeClientSet.Client(),
 		r.GardenNamespace,
@@ -1013,6 +1025,7 @@ func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager 
 		false,
 		vpaEnabled(garden.Spec.RuntimeCluster.Settings),
 		wildcardCertSecretName,
+		dashboards,
 	)
 }
 
