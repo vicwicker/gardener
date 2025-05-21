@@ -1040,6 +1040,7 @@ func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager 
 		false,
 		vpaEnabled(garden.Spec.RuntimeCluster.Settings),
 		wildcardCertSecretName,
+		nil,
 	)
 }
 

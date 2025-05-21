@@ -88,6 +88,8 @@ type Interface interface {
 	component.DeployWaiter
 	// SetWildcardCertName sets the WildcardCertSecretName components.
 	SetWildcardCertName(*string)
+	// Dashboards returns a list of dashboards.
+	Dashboards() map[string]string
 }
 
 // Values is a set of configuration values for the plutono component.
@@ -118,6 +120,8 @@ type Values struct {
 	VPNHighAvailabilityEnabled bool
 	// WildcardCertName is name of wildcard TLS certificate which is issued for the seed's ingress domain.
 	WildcardCertName *string
+	// A list of dashboards
+	Dashboards map[string]string
 }
 
 // New creates a new instance of DeployWaiter for plutono.
@@ -140,6 +144,10 @@ type plutono struct {
 	namespace      string
 	secretsManager secretsmanager.Interface
 	values         Values
+}
+
+func (p *plutono) Dashboards() map[string]string {
+	return p.values.Dashboards
 }
 
 func (p *plutono) Deploy(ctx context.Context) error {
