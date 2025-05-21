@@ -6,6 +6,7 @@ package botanist
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/utils/ptr"
 
@@ -17,6 +18,17 @@ import (
 
 // DefaultPlutono returns a deployer for Plutono.
 func (b *Botanist) DefaultPlutono() (plutono.Interface, error) {
+	dashboards, err := plutono.CollectDashboards(
+		component.ClusterTypeShoot, b.ShootUsesDNS(),
+		b.Shoot.IsWorkerless,
+		false,
+		b.Shoot.VPNHighAvailabilityEnabled,
+		b.Shoot.WantsVerticalPodAutoscaler,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate dashboards: %w", err)
+	}
+
 	return shared.NewPlutono(
 		b.SeedClientSet.Client(),
 		b.Shoot.ControlPlaneNamespace,
@@ -32,6 +44,7 @@ func (b *Botanist) DefaultPlutono() (plutono.Interface, error) {
 		b.Shoot.VPNHighAvailabilityEnabled,
 		b.Shoot.WantsVerticalPodAutoscaler,
 		nil,
+		dashboards,
 	)
 }
 
