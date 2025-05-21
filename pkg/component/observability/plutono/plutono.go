@@ -384,46 +384,61 @@ func (p *plutono) emptyDashboardConfigMap() *corev1.ConfigMap {
 }
 
 func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
+	configMap := p.emptyDashboardConfigMap()
+	configMap.Labels = utils.MergeStringMaps(getLabels(), map[string]string{p.dashboardLabel(): dashboardLabelValue})
+
+	// this is necessary to prevent hitting configmap size limit.
+	var err error
+	configMap.Data, err = convertToCompactJSON(p.values.Dashboards)
+	if err != nil {
+		return nil, err
+	}
+
+	return configMap, nil
+}
+
+// TODO(vicwicker): Make this function specific per garden, seed and shoot instead of generic
+func CollectDashboards(
+	clusterType component.ClusterType,
+	includeIstioDashboards, isWorkerless, isGardenCluster, vpnHighAvailabilityEnabled, vpaEnabled bool,
+) (map[string]string, error) {
 	var (
 		requiredDashboards map[string]embed.FS
 		ignorePaths        = sets.Set[string]{}
 		dashboards         = map[string]string{}
 	)
 
-	configMap := p.emptyDashboardConfigMap()
-	configMap.Labels = utils.MergeStringMaps(getLabels(), map[string]string{p.dashboardLabel(): dashboardLabelValue})
-
-	if p.values.IsGardenCluster {
+	if isGardenCluster {
 		requiredDashboards = map[string]embed.FS{gardenDashboardsPath: gardenDashboards, gardenAndShootDashboardsPath: gardenAndShootDashboards}
-		if p.values.VPAEnabled {
+		if vpaEnabled {
 			requiredDashboards[commonVpaDashboardsPath] = commonDashboards
 		}
-	} else if p.values.ClusterType == component.ClusterTypeSeed {
+	} else if clusterType == component.ClusterTypeSeed {
 		requiredDashboards = map[string]embed.FS{seedDashboardsPath: seedDashboards, commonDashboardsPath: commonDashboards}
-		if !p.values.IncludeIstioDashboards {
+		if !includeIstioDashboards {
 			ignorePaths.Insert("istio")
 		}
-		if !p.values.VPAEnabled {
+		if !vpaEnabled {
 			ignorePaths.Insert("vpa")
 		}
-	} else if p.values.ClusterType == component.ClusterTypeShoot {
+	} else if clusterType == component.ClusterTypeShoot {
 		requiredDashboards = map[string]embed.FS{
 			shootDashboardsPath:          shootDashboards,
 			gardenAndShootDashboardsPath: gardenAndShootDashboards,
 			commonDashboardsPath:         commonDashboards,
 		}
 
-		if !p.values.VPAEnabled {
+		if !vpaEnabled {
 			ignorePaths.Insert("vpa")
 		}
-		if p.values.IsWorkerless {
+		if isWorkerless {
 			ignorePaths.Insert("worker")
 		} else {
 			ignorePaths.Insert("workerless")
-			if !p.values.IncludeIstioDashboards {
+			if !includeIstioDashboards {
 				ignorePaths.Insert("istio")
 			}
-			if p.values.VPNHighAvailabilityEnabled {
+			if vpnHighAvailabilityEnabled {
 				ignorePaths.Insert("envoy-proxy")
 			} else {
 				ignorePaths.Insert("ha-vpn")
@@ -465,14 +480,7 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 		}
 	}
 
-	// this is necessary to prevent hitting configmap size limit.
-	var err error
-	configMap.Data, err = convertToCompactJSON(dashboards)
-	if err != nil {
-		return nil, err
-	}
-
-	return configMap, nil
+	return dashboards, nil
 }
 
 func (p *plutono) getServiceAccount() *corev1.ServiceAccount {
