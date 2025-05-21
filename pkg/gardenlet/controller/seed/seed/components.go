@@ -518,6 +518,18 @@ func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanage
 		authSecretName = authSecret.Name
 	}
 
+	dashboards, err := plutono.CollectDashboards(
+		component.ClusterTypeSeed,
+		true,
+		false,
+		false,
+		false,
+		v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate dashboards: %w", err)
+	}
+
 	return sharedcomponent.NewPlutono(
 		r.SeedClientSet.Client(),
 		r.GardenNamespace,
@@ -533,6 +545,7 @@ func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanage
 		false,
 		v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings),
 		wildcardCertName,
+		dashboards,
 	)
 }
 
