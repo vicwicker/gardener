@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -998,14 +999,12 @@ func (r *Reconciler) newGardenerMetricsExporter(secretsManager secretsmanager.In
 }
 
 func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface, ingressDomain string, wildcardCertSecretName *string) (plutono.Interface, error) {
-	dashboards, err := plutono.CollectDashboards(
-		component.ClusterTypeSeed,
-		false,
-		false,
-		true,
-		false,
-		vpaEnabled(garden.Spec.RuntimeCluster.Settings),
-	)
+	paths := []string{"garden", "garden-shoot"}
+	if vpaEnabled(garden.Spec.RuntimeCluster.Settings) {
+		paths = append(paths, filepath.Join("common", "vpa"))
+	}
+
+	dashboards, err := plutono.LoadDashboardsFromFS(paths, []string{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate dashboards: %w", err)
 	}

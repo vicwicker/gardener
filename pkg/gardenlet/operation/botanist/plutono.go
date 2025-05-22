@@ -18,13 +18,25 @@ import (
 
 // DefaultPlutono returns a deployer for Plutono.
 func (b *Botanist) DefaultPlutono() (plutono.Interface, error) {
-	dashboards, err := plutono.CollectDashboards(
-		component.ClusterTypeShoot, b.ShootUsesDNS(),
-		b.Shoot.IsWorkerless,
-		false,
-		b.Shoot.VPNHighAvailabilityEnabled,
-		b.Shoot.WantsVerticalPodAutoscaler,
-	)
+	skipSubpaths := []string{}
+	if !b.Shoot.WantsVerticalPodAutoscaler {
+		skipSubpaths = append(skipSubpaths, "vpa")
+	}
+	if b.Shoot.IsWorkerless {
+		skipSubpaths = append(skipSubpaths, "worker")
+	} else {
+		skipSubpaths = append(skipSubpaths, "workerless")
+		if !b.ShootUsesDNS() {
+			skipSubpaths = append(skipSubpaths, "istio")
+		}
+		if b.Shoot.VPNHighAvailabilityEnabled {
+			skipSubpaths = append(skipSubpaths, "envoy-proxy")
+		} else {
+			skipSubpaths = append(skipSubpaths, "ha-vpn")
+		}
+	}
+
+	dashboards, err := plutono.LoadDashboardsFromFS([]string{"shoot", "garden-shoot", "common"}, skipSubpaths)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate dashboards: %w", err)
 	}
