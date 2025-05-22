@@ -36,7 +36,11 @@ func (b *Botanist) DefaultPlutono() (plutono.Interface, error) {
 		}
 	}
 
-	dashboards, err := plutono.LoadDashboardsFromFS([]string{"shoot", "garden-shoot", "common"}, skipSubpaths)
+	dashboards, err := plutono.LoadDashboardsFromFS([]string{
+		plutono.DashboardsPath.Shoot,
+		plutono.DashboardsPath.GardenAndShoot,
+		plutono.DashboardsPath.Common,
+	}, skipSubpaths)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate dashboards: %w", err)
 	}

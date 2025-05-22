@@ -76,12 +76,30 @@ var (
 	//go:embed dashboards/common
 	commonDashboards embed.FS
 
-	gardenDashboardsPath         = filepath.Join("dashboards", "garden")
-	seedDashboardsPath           = filepath.Join("dashboards", "seed")
-	shootDashboardsPath          = filepath.Join("dashboards", "shoot")
-	gardenAndShootDashboardsPath = filepath.Join("dashboards", "garden-shoot")
-	commonDashboardsPath         = filepath.Join("dashboards", "common")
-	commonVpaDashboardsPath      = filepath.Join(commonDashboardsPath, "vpa")
+	DashboardsPath = struct {
+		Garden         string
+		Seed           string
+		Shoot          string
+		GardenAndShoot string
+		Common         string
+		CommonVPA      string
+	}{
+		Garden:         filepath.Join("dashboards", "garden"),
+		Seed:           filepath.Join("dashboards", "seed"),
+		Shoot:          filepath.Join("dashboards", "shoot"),
+		GardenAndShoot: filepath.Join("dashboards", "garden-shoot"),
+		Common:         filepath.Join("dashboards", "common"),
+		CommonVPA:      filepath.Join("dashboards", "common", "vpa"),
+	}
+
+	dashboardsMap = map[string]embed.FS{
+		DashboardsPath.Garden:         gardenDashboards,
+		DashboardsPath.Seed:           seedDashboards,
+		DashboardsPath.Shoot:          shootDashboards,
+		DashboardsPath.GardenAndShoot: gardenAndShootDashboards,
+		DashboardsPath.Common:         commonDashboards,
+		DashboardsPath.CommonVPA:      commonDashboards,
+	}
 )
 
 // Interface contains functions for a Plutono Deployer
@@ -401,24 +419,10 @@ func LoadDashboardsFromFS(paths []string, skipSubpaths []string) (map[string]str
 	dashboards := map[string]string{}
 	skipSubpathsSet := sets.New[string](skipSubpaths...)
 	for _, p := range paths {
-		var dashboard embed.FS
-		switch p {
-		case "garden":
-			dashboard = gardenDashboards
-		case "seed":
-			dashboard = seedDashboards
-		case "shoot":
-			dashboard = shootDashboards
-		case "garden-shoot":
-			dashboard = gardenAndShootDashboards
-		case "common":
-			dashboard = commonDashboards
-		case filepath.Join("common", "vpa"):
-			dashboard = commonDashboards
+		dashboard, ok := dashboardsMap[p]
+		if !ok {
+			return nil, fmt.Errorf("path %s not found in embedded dashboards", p)
 		}
-
-		p = filepath.Join("dashboards", p)
-
 		if err := fs.WalkDir(dashboard, p, func(path string, dirEntry fs.DirEntry, err error) error {
 			if err != nil {
 				return err

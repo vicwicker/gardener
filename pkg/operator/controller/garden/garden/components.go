@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -999,9 +998,9 @@ func (r *Reconciler) newGardenerMetricsExporter(secretsManager secretsmanager.In
 }
 
 func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface, ingressDomain string, wildcardCertSecretName *string) (plutono.Interface, error) {
-	paths := []string{"garden", "garden-shoot"}
+	paths := []string{plutono.DashboardsPath.Garden, plutono.DashboardsPath.GardenAndShoot}
 	if vpaEnabled(garden.Spec.RuntimeCluster.Settings) {
-		paths = append(paths, filepath.Join("common", "vpa"))
+		paths = append(paths, plutono.DashboardsPath.CommonVPA)
 	}
 
 	dashboards, err := plutono.LoadDashboardsFromFS(paths, []string{})

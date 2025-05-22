@@ -523,7 +523,7 @@ func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanage
 		skipSubpaths = append(skipSubpaths, "vpa")
 	}
 
-	dashboards, err := plutono.LoadDashboardsFromFS([]string{"seed", "common"}, skipSubpaths)
+	dashboards, err := plutono.LoadDashboardsFromFS([]string{plutono.DashboardsPath.Seed, plutono.DashboardsPath.Common}, skipSubpaths)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate dashboards: %w", err)
 	}
