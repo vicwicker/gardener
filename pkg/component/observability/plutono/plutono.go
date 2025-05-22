@@ -397,62 +397,34 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	return configMap, nil
 }
 
-// TODO(vicwicker): Make this function specific per garden, seed and shoot instead of generic
-func CollectDashboards(
-	clusterType component.ClusterType,
-	includeIstioDashboards, isWorkerless, isGardenCluster, vpnHighAvailabilityEnabled, vpaEnabled bool,
-) (map[string]string, error) {
-	var (
-		requiredDashboards map[string]embed.FS
-		ignorePaths        = sets.Set[string]{}
-		dashboards         = map[string]string{}
-	)
-
-	if isGardenCluster {
-		requiredDashboards = map[string]embed.FS{gardenDashboardsPath: gardenDashboards, gardenAndShootDashboardsPath: gardenAndShootDashboards}
-		if vpaEnabled {
-			requiredDashboards[commonVpaDashboardsPath] = commonDashboards
-		}
-	} else if clusterType == component.ClusterTypeSeed {
-		requiredDashboards = map[string]embed.FS{seedDashboardsPath: seedDashboards, commonDashboardsPath: commonDashboards}
-		if !includeIstioDashboards {
-			ignorePaths.Insert("istio")
-		}
-		if !vpaEnabled {
-			ignorePaths.Insert("vpa")
-		}
-	} else if clusterType == component.ClusterTypeShoot {
-		requiredDashboards = map[string]embed.FS{
-			shootDashboardsPath:          shootDashboards,
-			gardenAndShootDashboardsPath: gardenAndShootDashboards,
-			commonDashboardsPath:         commonDashboards,
+func LoadDashboardsFromFS(paths []string, skipSubpaths []string) (map[string]string, error) {
+	dashboards := map[string]string{}
+	skipSubpathsSet := sets.New[string](skipSubpaths...)
+	for _, p := range paths {
+		var dashboard embed.FS
+		switch p {
+		case "garden":
+			dashboard = gardenDashboards
+		case "seed":
+			dashboard = seedDashboards
+		case "shoot":
+			dashboard = shootDashboards
+		case "garden-shoot":
+			dashboard = gardenAndShootDashboards
+		case "common":
+			dashboard = commonDashboards
+		case filepath.Join("common", "vpa"):
+			dashboard = commonDashboards
 		}
 
-		if !vpaEnabled {
-			ignorePaths.Insert("vpa")
-		}
-		if isWorkerless {
-			ignorePaths.Insert("worker")
-		} else {
-			ignorePaths.Insert("workerless")
-			if !includeIstioDashboards {
-				ignorePaths.Insert("istio")
-			}
-			if vpnHighAvailabilityEnabled {
-				ignorePaths.Insert("envoy-proxy")
-			} else {
-				ignorePaths.Insert("ha-vpn")
-			}
-		}
-	}
+		p = filepath.Join("dashboards", p)
 
-	for dashboardPath, dashboardEmbed := range requiredDashboards {
-		if err := fs.WalkDir(dashboardEmbed, dashboardPath, func(path string, dirEntry fs.DirEntry, err error) error {
+		if err := fs.WalkDir(dashboard, p, func(path string, dirEntry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 
-			normalizedPath := strings.TrimPrefix(strings.TrimPrefix(path, dashboardPath), "/")
+			normalizedPath := strings.TrimPrefix(strings.TrimPrefix(path, p), "/")
 			if normalizedPath == "" {
 				// No need to process top level.
 				return nil
@@ -462,13 +434,13 @@ func CollectDashboards(
 			normalizedPath = filepath.ToSlash(normalizedPath)
 
 			if dirEntry.IsDir() {
-				if len(sets.New[string](strings.Split(path, "/")...).Intersection(ignorePaths)) > 0 {
+				if len(sets.New[string](strings.Split(path, "/")...).Intersection(skipSubpathsSet)) > 0 {
 					return filepath.SkipDir
 				}
 				return nil
 			}
 
-			data, err := dashboardEmbed.ReadFile(path)
+			data, err := dashboard.ReadFile(path)
 			if err != nil {
 				return fmt.Errorf("error reading %s: %s", normalizedPath, err)
 			}

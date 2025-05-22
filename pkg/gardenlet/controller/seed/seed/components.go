@@ -518,14 +518,12 @@ func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanage
 		authSecretName = authSecret.Name
 	}
 
-	dashboards, err := plutono.CollectDashboards(
-		component.ClusterTypeSeed,
-		true,
-		false,
-		false,
-		false,
-		v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings),
-	)
+	skipSubpaths := []string{}
+	if !v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings) {
+		skipSubpaths = append(skipSubpaths, "vpa")
+	}
+
+	dashboards, err := plutono.LoadDashboardsFromFS([]string{"seed", "common"}, skipSubpaths)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate dashboards: %w", err)
 	}
