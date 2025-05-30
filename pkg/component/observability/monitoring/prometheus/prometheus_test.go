@@ -277,6 +277,17 @@ honor_labels: true`
 						Web: &monitoringv1.PrometheusWebSpec{
 							MaxConnections: ptr.To[int32](1024),
 						},
+						// TODO(vicwicker): Remove cleanup-obsolete-folder init container after v1.123 has been released.
+						InitContainers: []corev1.Container{{
+							Name:            "cleanup-obsolete-folder",
+							Image:           image,
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Command:         []string{"sh", "-c", "if [[ -d /prometheus/prometheus-db ]] ; then rm -rf /prometheus/prometheus- ; fi "},
+							VolumeMounts: []corev1.VolumeMount{{
+								Name:      "prometheus-db",
+								MountPath: "/prometheus",
+							}},
+						}},
 					},
 					RuleSelector:          &metav1.LabelSelector{MatchLabels: map[string]string{"prometheus": name}},
 					RuleNamespaceSelector: &metav1.LabelSelector{},
