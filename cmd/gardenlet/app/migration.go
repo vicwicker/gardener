@@ -11,13 +11,16 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 )
 
 func (g *garden) runMigrations(ctx context.Context, log logr.Logger, gardenClient client.Client) error {
@@ -164,4 +167,49 @@ func syncBackupSecretRefAndCredentialsRef(backup *gardencorev1beta1.Backup) {
 	// - both fields are unset -> we have nothing to sync
 	// - both fields are set -> let the validation check if they are correct
 	// - credentialsRef refer to WorkloadIdentity -> secretRef should stay unset
+}
+
+func cleanupOldPrometheusFolders(ctx context.Context, log logr.Logger, seedClient client.Client) error {
+	clusterList := &extensionsv1alpha1.ClusterList{}
+	if err := seedClient.List(ctx, clusterList); err != nil {
+		return fmt.Errorf("failed to list clusters for cleaning up old Prometheus folders: %w", err)
+	}
+
+	for _, cluster := range clusterList.Items {
+		prometheus := &monitoringv1.Prometheus{}
+		if err := seedClient.Get(ctx, client.ObjectKey{Namespace: cluster.Name, Name: "shoot"}, prometheus); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to get Prometheus for cluster %s: %w", cluster.Name, err)
+		}
+
+		needsMigration := true
+		for _, initContainer := range prometheus.Spec.InitContainers {
+			if initContainer.Name == "cleanup-obsolete-folder" {
+				needsMigration = false
+				break
+			}
+		}
+
+		if needsMigration {
+			prometheus.Spec.InitContainers = append(prometheus.Spec.InitContainers, corev1.Container{
+				Name:            "cleanup-obsolete-folder",
+				Image:           *prometheus.Spec.Image,
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				Command:         []string{"rm", "-rf", "/prometheus/prometheus-"},
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      "prometheus-db",
+					MountPath: "/prometheus",
+				}},
+			})
+
+			patch := client.MergeFrom(prometheus.DeepCopy())
+			if err := seedClient.Patch(ctx, prometheus, patch); err != nil {
+				return fmt.Errorf("failed to patch Prometheus for cluster %s: %w", cluster.Name, err)
+			}
+		}
+	}
+
+	return nil
 }
