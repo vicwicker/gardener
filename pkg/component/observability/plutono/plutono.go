@@ -9,9 +9,9 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"log"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -22,7 +22,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -78,7 +77,7 @@ var (
 
 	gardenDashboardsPath         = filepath.Join("dashboards", "garden")
 	seedDashboardsPath           = filepath.Join("dashboards", "seed")
-	shootDashboardsPath          = filepath.Join("dashboards", "shoot")
+	shootDashboardsPath          = filepath.Join("dashboards", "shoot", "owners")
 	gardenAndShootDashboardsPath = filepath.Join("dashboards", "garden-shoot")
 	commonDashboardsPath         = filepath.Join("dashboards", "common")
 	commonVpaDashboardsPath      = filepath.Join(commonDashboardsPath, "vpa")
@@ -378,7 +377,6 @@ func (p *plutono) emptyDashboardConfigMap() *corev1.ConfigMap {
 func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	var (
 		requiredDashboards map[string]embed.FS
-		ignorePaths        = sets.Set[string]{}
 		dashboards         = map[string]string{}
 	)
 
@@ -392,11 +390,11 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 		}
 	} else if p.values.ClusterType == component.ClusterTypeSeed {
 		requiredDashboards = map[string]embed.FS{seedDashboardsPath: seedDashboards, commonDashboardsPath: commonDashboards}
-		if !p.values.IncludeIstioDashboards {
-			ignorePaths.Insert("istio")
+		if p.values.IncludeIstioDashboards {
+			requiredDashboards["dashboards/seed/istio"] = seedDashboards
 		}
-		if !p.values.VPAEnabled {
-			ignorePaths.Insert("vpa")
+		if p.values.VPAEnabled {
+			requiredDashboards[commonVpaDashboardsPath] = commonDashboards
 		}
 	} else if p.values.ClusterType == component.ClusterTypeShoot {
 		requiredDashboards = map[string]embed.FS{
@@ -405,55 +403,43 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 			commonDashboardsPath:         commonDashboards,
 		}
 
-		if !p.values.VPAEnabled {
-			ignorePaths.Insert("vpa")
+		if p.values.VPAEnabled {
+			requiredDashboards[commonVpaDashboardsPath] = commonDashboards
 		}
 		if p.values.IsWorkerless {
-			ignorePaths.Insert("worker")
+			requiredDashboards["dashboards/shoot/owners/workerless"] = shootDashboards
 		} else {
-			ignorePaths.Insert("workerless")
-			if !p.values.IncludeIstioDashboards {
-				ignorePaths.Insert("istio")
+			requiredDashboards["dashboards/shoot/owners/worker"] = shootDashboards
+			requiredDashboards["dashboards/shoot/owners/worker/machine-controller-manager"] = shootDashboards
+			if p.values.IncludeIstioDashboards {
+				requiredDashboards["dashboards/shoot/owners/worker/istio"] = shootDashboards
 			}
 			if p.values.VPNHighAvailabilityEnabled {
-				ignorePaths.Insert("envoy-proxy")
+				requiredDashboards["dashboards/shoot/owners/worker/vpn-seed-server/ha-vpn"] = shootDashboards
 			} else {
-				ignorePaths.Insert("ha-vpn")
+				requiredDashboards["dashboards/shoot/owners/worker/vpn-seed-server/envoy-proxy"] = shootDashboards
 			}
 		}
 	}
 
 	for dashboardPath, dashboardEmbed := range requiredDashboards {
-		if err := fs.WalkDir(dashboardEmbed, dashboardPath, func(path string, dirEntry fs.DirEntry, err error) error {
+		entries, err := fs.ReadDir(dashboardEmbed, dashboardPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+
+			normalizedPath := entry.Name()
+
+			data, err := fs.ReadFile(dashboardEmbed, filepath.Join(dashboardPath, normalizedPath))
 			if err != nil {
-				return err
+				log.Fatalf("error reading %s: %s", normalizedPath, err)
 			}
-
-			normalizedPath := strings.TrimPrefix(strings.TrimPrefix(path, dashboardPath), "/")
-			if normalizedPath == "" {
-				// No need to process top level.
-				return nil
-			}
-
-			// Normalize to / since it will also work on Windows
-			normalizedPath = filepath.ToSlash(normalizedPath)
-
-			if dirEntry.IsDir() {
-				if len(sets.New[string](strings.Split(path, "/")...).Intersection(ignorePaths)) > 0 {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-
-			data, err := dashboardEmbed.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("error reading %s: %s", normalizedPath, err)
-			}
-			dashboards[normalizedPath[strings.LastIndex(normalizedPath, "/")+1:]] = string(data)
-
-			return nil
-		}); err != nil {
-			return nil, err
+			dashboards[normalizedPath] = string(data)
 		}
 	}
 
