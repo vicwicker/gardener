@@ -410,7 +410,6 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 			requiredDashboards["dashboards/shoot/owners/workerless"] = shootDashboards
 		} else {
 			requiredDashboards["dashboards/shoot/owners/worker"] = shootDashboards
-			requiredDashboards["dashboards/shoot/owners/worker/machine-controller-manager"] = shootDashboards
 			if p.values.IncludeIstioDashboards {
 				requiredDashboards["dashboards/shoot/owners/worker/istio"] = shootDashboards
 			}
