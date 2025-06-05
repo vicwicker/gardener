@@ -359,7 +359,7 @@ func (p *plutono) emptyDashboardConfigMap() *corev1.ConfigMap {
 
 func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	var (
-		requiredDashboards map[string]embed.FS
+		requiredDashboards []string
 		dashboards         = map[string]string{}
 	)
 
@@ -367,45 +367,45 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	configMap.Labels = utils.MergeStringMaps(getLabels(), map[string]string{p.dashboardLabel(): dashboardLabelValue})
 
 	if p.values.IsGardenCluster {
-		requiredDashboards = map[string]embed.FS{"dashboards/garden": dashboardsAvailable, "dashboards/garden-shoot": dashboardsAvailable}
+		requiredDashboards = []string{"dashboards/garden", "dashboards/garden-shoot"}
 		if p.values.VPAEnabled {
-			requiredDashboards["dashboards/common/vpa"] = dashboardsAvailable
+			requiredDashboards = append(requiredDashboards, "dashboards/common/vpa")
 		}
 	} else if p.values.ClusterType == component.ClusterTypeSeed {
-		requiredDashboards = map[string]embed.FS{"dashboards/seed": dashboardsAvailable, "dashboards/common": dashboardsAvailable}
+		requiredDashboards = []string{"dashboards/seed", "dashboards/common"}
 		if p.values.IncludeIstioDashboards {
-			requiredDashboards["dashboards/seed/istio"] = dashboardsAvailable
+			requiredDashboards = append(requiredDashboards, "dashboards/seed/istio")
 		}
 		if p.values.VPAEnabled {
-			requiredDashboards["dashboards/common/vpa"] = dashboardsAvailable
+			requiredDashboards = append(requiredDashboards, "dashboards/common/vpa")
 		}
 	} else if p.values.ClusterType == component.ClusterTypeShoot {
-		requiredDashboards = map[string]embed.FS{
-			"dashboards/shoot/owners": dashboardsAvailable,
-			"dashboards/garden-shoot": dashboardsAvailable,
-			"dashboards/common":       dashboardsAvailable,
+		requiredDashboards = []string{
+			"dashboards/shoot/owners",
+			"dashboards/garden-shoot",
+			"dashboards/common",
 		}
 
 		if p.values.VPAEnabled {
-			requiredDashboards["dashboards/common/vpa"] = dashboardsAvailable
+			requiredDashboards = append(requiredDashboards, "dashboards/common/vpa")
 		}
 		if p.values.IsWorkerless {
-			requiredDashboards["dashboards/shoot/owners/workerless"] = dashboardsAvailable
+			requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/workerless")
 		} else {
-			requiredDashboards["dashboards/shoot/owners/worker"] = dashboardsAvailable
+			requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/worker")
 			if p.values.IncludeIstioDashboards {
-				requiredDashboards["dashboards/shoot/owners/worker/istio"] = dashboardsAvailable
+				requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/worker/istio")
 			}
 			if p.values.VPNHighAvailabilityEnabled {
-				requiredDashboards["dashboards/shoot/owners/worker/vpn-seed-server/ha-vpn"] = dashboardsAvailable
+				requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/worker/vpn-seed-server/ha-vpn")
 			} else {
-				requiredDashboards["dashboards/shoot/owners/worker/vpn-seed-server/envoy-proxy"] = dashboardsAvailable
+				requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/worker/vpn-seed-server/envoy-proxy")
 			}
 		}
 	}
 
-	for dashboardPath, dashboardEmbed := range requiredDashboards {
-		entries, err := fs.ReadDir(dashboardEmbed, dashboardPath)
+	for _, dashboardPath := range requiredDashboards {
+		entries, err := fs.ReadDir(dashboardsAvailable, dashboardPath)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -417,7 +417,7 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 
 			normalizedPath := entry.Name()
 
-			data, err := fs.ReadFile(dashboardEmbed, filepath.Join(dashboardPath, normalizedPath))
+			data, err := fs.ReadFile(dashboardsAvailable, filepath.Join(dashboardPath, normalizedPath))
 			if err != nil {
 				log.Fatalf("error reading %s: %s", normalizedPath, err)
 			}
