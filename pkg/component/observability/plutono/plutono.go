@@ -63,25 +63,8 @@ const (
 	volumeMountPathAdminUser  = "/etc/dashboard-refresher/plutono-admin"
 )
 
-var (
-	//go:embed dashboards/garden
-	gardenDashboards embed.FS
-	//go:embed dashboards/seed
-	seedDashboards embed.FS
-	//go:embed dashboards/shoot
-	shootDashboards embed.FS
-	//go:embed dashboards/garden-shoot
-	gardenAndShootDashboards embed.FS
-	//go:embed dashboards/common
-	commonDashboards embed.FS
-
-	gardenDashboardsPath         = filepath.Join("dashboards", "garden")
-	seedDashboardsPath           = filepath.Join("dashboards", "seed")
-	shootDashboardsPath          = filepath.Join("dashboards", "shoot", "owners")
-	gardenAndShootDashboardsPath = filepath.Join("dashboards", "garden-shoot")
-	commonDashboardsPath         = filepath.Join("dashboards", "common")
-	commonVpaDashboardsPath      = filepath.Join(commonDashboardsPath, "vpa")
-)
+//go:embed dashboards
+var dashboardsAvailable embed.FS
 
 // Interface contains functions for a Plutono Deployer
 type Interface interface {
@@ -384,39 +367,39 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	configMap.Labels = utils.MergeStringMaps(getLabels(), map[string]string{p.dashboardLabel(): dashboardLabelValue})
 
 	if p.values.IsGardenCluster {
-		requiredDashboards = map[string]embed.FS{gardenDashboardsPath: gardenDashboards, gardenAndShootDashboardsPath: gardenAndShootDashboards}
+		requiredDashboards = map[string]embed.FS{"dashboards/garden": dashboardsAvailable, "dashboards/garden-shoot": dashboardsAvailable}
 		if p.values.VPAEnabled {
-			requiredDashboards[commonVpaDashboardsPath] = commonDashboards
+			requiredDashboards["dashboards/common/vpa"] = dashboardsAvailable
 		}
 	} else if p.values.ClusterType == component.ClusterTypeSeed {
-		requiredDashboards = map[string]embed.FS{seedDashboardsPath: seedDashboards, commonDashboardsPath: commonDashboards}
+		requiredDashboards = map[string]embed.FS{"dashboards/seed": dashboardsAvailable, "dashboards/common": dashboardsAvailable}
 		if p.values.IncludeIstioDashboards {
-			requiredDashboards["dashboards/seed/istio"] = seedDashboards
+			requiredDashboards["dashboards/seed/istio"] = dashboardsAvailable
 		}
 		if p.values.VPAEnabled {
-			requiredDashboards[commonVpaDashboardsPath] = commonDashboards
+			requiredDashboards["dashboards/common/vpa"] = dashboardsAvailable
 		}
 	} else if p.values.ClusterType == component.ClusterTypeShoot {
 		requiredDashboards = map[string]embed.FS{
-			shootDashboardsPath:          shootDashboards,
-			gardenAndShootDashboardsPath: gardenAndShootDashboards,
-			commonDashboardsPath:         commonDashboards,
+			"dashboards/shoot/owners": dashboardsAvailable,
+			"dashboards/garden-shoot": dashboardsAvailable,
+			"dashboards/common":       dashboardsAvailable,
 		}
 
 		if p.values.VPAEnabled {
-			requiredDashboards[commonVpaDashboardsPath] = commonDashboards
+			requiredDashboards["dashboards/common/vpa"] = dashboardsAvailable
 		}
 		if p.values.IsWorkerless {
-			requiredDashboards["dashboards/shoot/owners/workerless"] = shootDashboards
+			requiredDashboards["dashboards/shoot/owners/workerless"] = dashboardsAvailable
 		} else {
-			requiredDashboards["dashboards/shoot/owners/worker"] = shootDashboards
+			requiredDashboards["dashboards/shoot/owners/worker"] = dashboardsAvailable
 			if p.values.IncludeIstioDashboards {
-				requiredDashboards["dashboards/shoot/owners/worker/istio"] = shootDashboards
+				requiredDashboards["dashboards/shoot/owners/worker/istio"] = dashboardsAvailable
 			}
 			if p.values.VPNHighAvailabilityEnabled {
-				requiredDashboards["dashboards/shoot/owners/worker/vpn-seed-server/ha-vpn"] = shootDashboards
+				requiredDashboards["dashboards/shoot/owners/worker/vpn-seed-server/ha-vpn"] = dashboardsAvailable
 			} else {
-				requiredDashboards["dashboards/shoot/owners/worker/vpn-seed-server/envoy-proxy"] = shootDashboards
+				requiredDashboards["dashboards/shoot/owners/worker/vpn-seed-server/envoy-proxy"] = dashboardsAvailable
 			}
 		}
 	}
