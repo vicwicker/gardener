@@ -63,8 +63,25 @@ const (
 	volumeMountPathAdminUser  = "/etc/dashboard-refresher/plutono-admin"
 )
 
-//go:embed dashboards
-var dashboardsAvailable embed.FS
+var (
+	//go:embed dashboards
+	dashboardsAvailable embed.FS
+
+	gardenDashboardsPath                             = filepath.Join("dashboards", "garden")
+	seedDashboardsPath                               = filepath.Join("dashboards", "seed")
+	seedIstioDashboardsPath                          = filepath.Join(seedDashboardsPath, "istio")
+	shootDashboardsPath                              = filepath.Join("dashboards", "shoot", "owners")
+	shootWorkerlessDashboardsPath                    = filepath.Join(shootDashboardsPath, "workerless")
+	shootWorkerDashboardsPath                        = filepath.Join(shootDashboardsPath, "worker")
+	shootWorkerIstioDashboardsPath                   = filepath.Join(shootWorkerDashboardsPath, "istio")
+	shootWorkerVpnSeedServerDashboardsPath           = filepath.Join(shootWorkerDashboardsPath, "vpn-seed-server")
+	shootVpnSeedServerEnvoyProxyDashboardsPath       = filepath.Join(shootWorkerVpnSeedServerDashboardsPath, "envoy-proxy")
+	shootWorkerVpnSeedServerHaVpnDashboardsPath      = filepath.Join(shootWorkerVpnSeedServerDashboardsPath, "ha-vpn")
+	shootWorkerVpnSeedServerEnvoyProxyDashboardsPath = filepath.Join(shootWorkerVpnSeedServerDashboardsPath, "envoy-proxy")
+	gardenAndShootDashboardsPath                     = filepath.Join("dashboards", "garden-shoot")
+	commonDashboardsPath                             = filepath.Join("dashboards", "common")
+	commonVpaDashboardsPath                          = filepath.Join(commonDashboardsPath, "vpa")
+)
 
 // Interface contains functions for a Plutono Deployer
 type Interface interface {
@@ -367,39 +384,39 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	configMap.Labels = utils.MergeStringMaps(getLabels(), map[string]string{p.dashboardLabel(): dashboardLabelValue})
 
 	if p.values.IsGardenCluster {
-		requiredDashboards = []string{"dashboards/garden", "dashboards/garden-shoot"}
+		requiredDashboards = []string{gardenDashboardsPath, gardenAndShootDashboardsPath}
 		if p.values.VPAEnabled {
-			requiredDashboards = append(requiredDashboards, "dashboards/common/vpa")
+			requiredDashboards = append(requiredDashboards, commonVpaDashboardsPath)
 		}
 	} else if p.values.ClusterType == component.ClusterTypeSeed {
-		requiredDashboards = []string{"dashboards/seed", "dashboards/common"}
+		requiredDashboards = []string{seedDashboardsPath, commonDashboardsPath}
 		if p.values.IncludeIstioDashboards {
-			requiredDashboards = append(requiredDashboards, "dashboards/seed/istio")
+			requiredDashboards = append(requiredDashboards, seedIstioDashboardsPath)
 		}
 		if p.values.VPAEnabled {
-			requiredDashboards = append(requiredDashboards, "dashboards/common/vpa")
+			requiredDashboards = append(requiredDashboards, commonVpaDashboardsPath)
 		}
 	} else if p.values.ClusterType == component.ClusterTypeShoot {
 		requiredDashboards = []string{
-			"dashboards/shoot/owners",
-			"dashboards/garden-shoot",
-			"dashboards/common",
+			shootDashboardsPath,
+			gardenAndShootDashboardsPath,
+			commonDashboardsPath,
 		}
 
 		if p.values.VPAEnabled {
-			requiredDashboards = append(requiredDashboards, "dashboards/common/vpa")
+			requiredDashboards = append(requiredDashboards, commonVpaDashboardsPath)
 		}
 		if p.values.IsWorkerless {
-			requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/workerless")
+			requiredDashboards = append(requiredDashboards, shootWorkerlessDashboardsPath)
 		} else {
-			requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/worker")
+			requiredDashboards = append(requiredDashboards, shootWorkerDashboardsPath)
 			if p.values.IncludeIstioDashboards {
-				requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/worker/istio")
+				requiredDashboards = append(requiredDashboards, shootWorkerIstioDashboardsPath)
 			}
 			if p.values.VPNHighAvailabilityEnabled {
-				requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/worker/vpn-seed-server/ha-vpn")
+				requiredDashboards = append(requiredDashboards, shootWorkerVpnSeedServerHaVpnDashboardsPath)
 			} else {
-				requiredDashboards = append(requiredDashboards, "dashboards/shoot/owners/worker/vpn-seed-server/envoy-proxy")
+				requiredDashboards = append(requiredDashboards, shootWorkerVpnSeedServerEnvoyProxyDashboardsPath)
 			}
 		}
 	}
