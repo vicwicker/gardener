@@ -12,6 +12,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
@@ -208,7 +209,12 @@ func cleanupOldPrometheusFolders(ctx context.Context, log logr.Logger, seedClien
 			})
 		}
 
-		if needsInitContainer {
+		needsScaling := prometheus.Spec.Replicas != nil && *prometheus.Spec.Replicas == 0
+		if needsScaling {
+			prometheus.Spec.Replicas = ptr.To(int32(1))
+		}
+
+		if needsInitContainer || needsScaling {
 			prometheus.Annotations[v1alpha1.Ignore] = "true"
 			if err := seedClient.Patch(ctx, prometheus, patch); err != nil {
 				return fmt.Errorf("failed to patch Prometheus for cluster %s: %w", cluster.Name, err)
