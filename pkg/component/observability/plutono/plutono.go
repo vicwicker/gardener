@@ -382,6 +382,34 @@ func (p *plutono) emptyDashboardConfigMap() *corev1.ConfigMap {
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.namespace}}
 }
 
+// TODO(vicwicker): Could be a general utility (maybe it even exists): ReadDirsFromFS(fs embed.FS, paths ...string) map[string]string
+func ReadDashboardPaths(paths ...string) map[string]string {
+	dashboards := map[string]string{}
+
+	for _, path := range paths {
+		entries, err := fs.ReadDir(dashboardsAvailable, path)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+
+			normalizedPath := entry.Name()
+
+			data, err := fs.ReadFile(dashboardsAvailable, filepath.Join(path, normalizedPath))
+			if err != nil {
+				log.Fatalf("error reading %s: %s", normalizedPath, err)
+			}
+			dashboards[normalizedPath] = string(data)
+		}
+	}
+
+	return dashboards
+}
+
 func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	var (
 		requiredDashboards []string
