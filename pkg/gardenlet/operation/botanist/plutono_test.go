@@ -123,5 +123,51 @@ var _ = Describe("Plutono", func() {
 			mockPlutono.EXPECT().Destroy(ctx)
 			Expect(botanist.DeployPlutono(ctx)).To(Succeed())
 		})
+
+		It("should configure the correct dashboards", func() {
+			// TOOD(vicwicker): Is this meaningful? Are there any better ways using the mock?
+			var dashboards []string
+			plutono, err := botanist.DefaultPlutono()
+			Expect(err).NotTo(HaveOccurred())
+			for d, _ := range plutono.Dashboards() {
+				dashboards = append(dashboards, d)
+			}
+
+			Expect(dashboards).To(ConsistOf([]string{
+				"apiserver-admission-details.json",
+				"apiserver-overview.json",
+				"apiserver-request-details.json",
+				"apiserver-request-duration-and-response-size.json",
+				"apiserver-storage-details.json",
+				"apiserver-watch-details.json",
+				"client-go.json",
+				"cluster-overview-dashboard.json",
+				"container-images.json",
+				"controller-details.json",
+				"controllers.json",
+				"controlplane-logs-dashboard.json",
+				"dns-dashboard.json",
+				"envoy-proxy-dashboard.json",
+				"etcd-backup-dashboard.json",
+				"etcd-cluster-details-dashboard.json",
+				"etcd-compaction-job-dashboard.json",
+				"etcd-dashboard.json",
+				"kubernetes-api-server-details.json",
+				"kubernetes-api-server-watches-dashboard.json",
+				"kubernetes-control-plane-status-dashboard.json",
+				"kubernetes-daemonsets-dashboard.json",
+				"kubernetes-deployments-dashboard.json",
+				"kubernetes-pods-dashboard.json",
+				"kubernetes-statefulsets-dashboard.json",
+				"mcm-dashboard.json",
+				"node-details-dashboard.json",
+				"node-pool-dashboard.json",
+				"prometheus-dashboard.json",
+				"shoot-control-plane-resource-usage-by-owner-container.json",
+				"vpn-dashboard.json",
+				"webhook-details.json",
+				"webhooks.json",
+			}))
+		})
 	})
 })

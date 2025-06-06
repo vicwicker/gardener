@@ -17,6 +17,24 @@ import (
 
 // DefaultPlutono returns a deployer for Plutono.
 func (b *Botanist) DefaultPlutono() (plutono.Interface, error) {
+	dashboards := []string{plutono.ShootDashboardsPath, plutono.GardenAndShootDashboardsPath, plutono.CommonDashboardsPath}
+	if b.Shoot.WantsVerticalPodAutoscaler {
+		dashboards = append(dashboards, plutono.CommonVpaDashboardsPath)
+	}
+	if b.Shoot.IsWorkerless {
+		dashboards = append(dashboards, plutono.ShootWorkerlessDashboardsPath)
+	} else {
+		dashboards = append(dashboards, plutono.ShootWorkerDashboardsPath)
+		if b.ShootUsesDNS() {
+			dashboards = append(dashboards, plutono.ShootWorkerIstioDashboardsPath)
+		}
+		if b.Shoot.VPNHighAvailabilityEnabled {
+			dashboards = append(dashboards, plutono.ShootWorkerVpnSeedServerHaVpnDashboardsPath)
+		} else {
+			dashboards = append(dashboards, plutono.ShootWorkerVpnSeedServerEnvoyProxyDashboardsPath)
+		}
+	}
+
 	return shared.NewPlutono(
 		b.SeedClientSet.Client(),
 		b.Shoot.ControlPlaneNamespace,
@@ -32,7 +50,7 @@ func (b *Botanist) DefaultPlutono() (plutono.Interface, error) {
 		b.Shoot.VPNHighAvailabilityEnabled,
 		b.Shoot.WantsVerticalPodAutoscaler,
 		nil,
-		nil,
+		plutono.ReadPaths(plutono.DashboardFS, dashboards...),
 	)
 }
 
