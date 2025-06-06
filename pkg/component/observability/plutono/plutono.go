@@ -65,7 +65,7 @@ const (
 
 var (
 	//go:embed dashboards
-	dashboardsAvailable embed.FS
+	DashboardFS embed.FS
 
 	GardenDashboardsPath                             = filepath.Join("dashboards", "garden")
 	SeedDashboardsPath                               = filepath.Join("dashboards", "seed")
@@ -382,12 +382,12 @@ func (p *plutono) emptyDashboardConfigMap() *corev1.ConfigMap {
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.namespace}}
 }
 
-// TODO(vicwicker): Could be a general utility (maybe it even exists): ReadDirsFromFS(fs embed.FS, paths ...string) map[string]string
-func ReadDashboardPaths(paths ...string) map[string]string {
+// TODO(vicwicker): Could be a general utility (maybe it even exists)
+func ReadPaths(root embed.FS, paths ...string) map[string]string {
 	dashboards := map[string]string{}
 
 	for _, path := range paths {
-		entries, err := fs.ReadDir(dashboardsAvailable, path)
+		entries, err := fs.ReadDir(root, path)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -399,7 +399,7 @@ func ReadDashboardPaths(paths ...string) map[string]string {
 
 			normalizedPath := entry.Name()
 
-			data, err := fs.ReadFile(dashboardsAvailable, filepath.Join(path, normalizedPath))
+			data, err := fs.ReadFile(root, filepath.Join(path, normalizedPath))
 			if err != nil {
 				log.Fatalf("error reading %s: %s", normalizedPath, err)
 			}
@@ -458,7 +458,7 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	}
 
 	for _, dashboardPath := range requiredDashboards {
-		entries, err := fs.ReadDir(dashboardsAvailable, dashboardPath)
+		entries, err := fs.ReadDir(DashboardFS, dashboardPath)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -470,7 +470,7 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 
 			normalizedPath := entry.Name()
 
-			data, err := fs.ReadFile(dashboardsAvailable, filepath.Join(dashboardPath, normalizedPath))
+			data, err := fs.ReadFile(DashboardFS, filepath.Join(dashboardPath, normalizedPath))
 			if err != nil {
 				log.Fatalf("error reading %s: %s", normalizedPath, err)
 			}
