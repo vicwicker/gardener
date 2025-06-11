@@ -428,6 +428,8 @@ rules:
   - servicemonitors
   - scrapeconfigs
   - prometheusrules
+  # TODO(vicwicker): Remove this migration after v1.123.0 has been released.
+  - prometheuses
   verbs:
   - list
   - watch
