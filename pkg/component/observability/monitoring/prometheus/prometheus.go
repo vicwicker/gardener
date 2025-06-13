@@ -23,9 +23,10 @@ import (
 func (p *prometheus) prometheus(cortexConfigMap *corev1.ConfigMap) *monitoringv1.Prometheus {
 	obj := &monitoringv1.Prometheus{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      p.values.Name,
-			Namespace: p.namespace,
-			Labels:    p.getLabels(),
+			Name:        p.values.Name,
+			Namespace:   p.namespace,
+			Labels:      p.getLabels(),
+			Annotations: p.values.Annotations,
 		},
 		Spec: monitoringv1.PrometheusSpec{
 			RetentionSize:      p.values.RetentionSize,

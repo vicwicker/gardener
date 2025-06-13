@@ -11,8 +11,10 @@ import (
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/component"
@@ -171,6 +173,15 @@ func (b *Botanist) DeployPrometheus(ctx context.Context) error {
 		return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameCACluster)
 	}
 	b.Shoot.Components.ControlPlane.Prometheus.SetCentralScrapeConfigs(shootprometheus.CentralScrapeConfigs(b.Shoot.ControlPlaneNamespace, caSecret.Name, b.Shoot.IsWorkerless))
+
+	// TODO(vicwicker): Remove this migration after v1.123.0 has been released.
+	// Check if this is a new shoot Prometheus and directly mark its obsolete folder as cleaned up.
+	if err := b.SeedClientSet.Client().Get(ctx, client.ObjectKey{Namespace: b.Shoot.ControlPlaneNamespace, Name: "shoot"}, &monitoringv1.Prometheus{}); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to check if shoot prometheus exists: %w", err)
+		}
+		b.Shoot.Components.ControlPlane.Prometheus.SetObsoleteFolderCleanedupAnnotation()
+	}
 
 	return b.Shoot.Components.ControlPlane.Prometheus.Deploy(ctx)
 }

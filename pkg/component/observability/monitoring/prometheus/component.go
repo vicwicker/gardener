@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
@@ -50,6 +51,9 @@ type Interface interface {
 	SetCentralScrapeConfigs([]*monitoringv1alpha1.ScrapeConfig)
 	// SetNamespaceUID sets the namespace UID.
 	SetNamespaceUID(name types.UID)
+	// TODO(vicwicker): Remove this migration after v1.123.0 has been released.
+	// SetObsoleteFolderCleanedupAnnotation sets the obsolete folder cleaned up annotation.
+	SetObsoleteFolderCleanedupAnnotation()
 }
 
 // Values contains configuration values for the prometheus resources.
@@ -106,6 +110,9 @@ type Values struct {
 	RestrictToNamespace bool
 	// ResourceRequests defines the initial resource requests
 	ResourceRequests *corev1.ResourceList
+	// TODO(vicwicker): Remove this migration after v1.123.0 has been released.
+	// Annotations are annotations for the Prometheus resource.
+	Annotations map[string]string
 }
 
 // CentralConfigs contains configuration for this Prometheus instance that is created together with it. This should
@@ -314,6 +321,14 @@ func (p *prometheus) SetCentralScrapeConfigs(configs []*monitoringv1alpha1.Scrap
 
 func (p *prometheus) SetNamespaceUID(uid types.UID) {
 	p.values.NamespaceUID = &uid
+}
+
+// TODO(vicwicker): Remove this migration after v1.123.0 has been released.
+func (p *prometheus) SetObsoleteFolderCleanedupAnnotation() {
+	if p.values.Annotations == nil {
+		p.values.Annotations = map[string]string{}
+	}
+	p.values.Annotations[resourcesv1alpha1.PrometheusObsoleteFolderCleanedUp] = "true"
 }
 
 func (p *prometheus) name() string {
