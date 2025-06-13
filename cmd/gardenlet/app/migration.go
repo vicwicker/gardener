@@ -360,5 +360,5 @@ func cleanupPrometheusObsoleteFolders(ctx context.Context, log logr.Logger, seed
 		})
 	}
 
-	flow.Parallel(tasks...)(ctx)
+	go flow.Parallel(tasks...)(ctx)
 }
