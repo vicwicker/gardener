@@ -657,7 +657,7 @@ status:
 				})
 
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards", 21, nil)
+					checkDeployedResources("plutono-dashboards", -1, Dashboards(values))
 				})
 
 				Context("w/ enabled vpa", func() {
