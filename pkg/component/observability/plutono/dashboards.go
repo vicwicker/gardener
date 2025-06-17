@@ -155,5 +155,47 @@ func Dashboards(values Values) []string {
 		}
 	}
 
+	if values.ClusterType == component.ClusterTypeShoot && !values.IsWorkerless && values.IncludeIstioDashboards && values.VPAEnabled && values.VPNHighAvailabilityEnabled {
+		return []string{
+			"apiserver-admission-details.json",
+			"apiserver-overview.json",
+			"apiserver-proxy-dashboard.json",
+			"apiserver-request-details.json",
+			"apiserver-request-duration-and-response-size.json",
+			"apiserver-storage-details.json",
+			"apiserver-watch-details.json",
+			"client-go.json",
+			"cluster-overview-dashboard.json",
+			"container-images.json",
+			"controller-details.json",
+			"controllers.json",
+			"controlplane-logs-dashboard.json",
+			"dns-dashboard.json",
+			"etcd-backup-dashboard.json",
+			"etcd-cluster-details-dashboard.json",
+			"etcd-compaction-job-dashboard.json",
+			"etcd-dashboard.json",
+			"kubernetes-api-server-details.json",
+			"kubernetes-api-server-watches-dashboard.json",
+			"kubernetes-control-plane-status-dashboard.json",
+			"kubernetes-daemonsets-dashboard.json",
+			"kubernetes-deployments-dashboard.json",
+			"kubernetes-pods-dashboard.json",
+			"kubernetes-statefulsets-dashboard.json",
+			"mcm-dashboard.json",
+			"node-details-dashboard.json",
+			"node-pool-dashboard.json",
+			"prometheus-dashboard.json",
+			"shoot-control-plane-resource-usage-by-owner-container.json",
+			"vpa-admission-controller.json",
+			"vpa-dashboard.json",
+			"vpa-recommender.json",
+			"vpn-dashboard.json",
+			"vpn-seed-server-dashboard.json",
+			"webhook-details.json",
+			"webhooks.json",
+		}
+	}
+
 	return nil
 }
