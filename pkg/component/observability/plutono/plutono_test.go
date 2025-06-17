@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -593,7 +592,7 @@ status:
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		checkDeployedResources := func(dashboardConfigMapName string, dashboardCount int) {
+		checkDeployedResources := func(dashboardConfigMapName string, dashboardCount int, dashboardPaths []string) {
 			GinkgoHelper()
 
 			deployment := deploymentYAMLFor(values)
@@ -634,11 +633,15 @@ status:
 			}
 			Expect(dashboardsConfigMap.Labels).To(HaveKeyWithValue("dashboard.monitoring.gardener.cloud/"+labelKey, "true"), "Dashboards configMap does not contain expected key")
 
-			availableDashboards := sets.Set[string]{}
+			var availableDashboards []string
 			for key := range dashboardsConfigMap.Data {
-				availableDashboards.Insert(key)
+				availableDashboards = append(availableDashboards, key)
 			}
-			Expect(availableDashboards).To(HaveLen(dashboardCount), "The number of deployed dashboards differs from the expected one")
+			if dashboardPaths == nil {
+				Expect(availableDashboards).To(HaveLen(dashboardCount), "The number of deployed dashboards differs from the expected one")
+			} else {
+				Expect(availableDashboards).To(ConsistOf(dashboardPaths))
+			}
 		}
 
 		Context("Cluster type is seed", func() {
@@ -654,7 +657,7 @@ status:
 				})
 
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards", 21)
+					checkDeployedResources("plutono-dashboards", 21, nil)
 				})
 
 				Context("w/ enabled vpa", func() {
@@ -663,7 +666,7 @@ status:
 					})
 
 					It("should successfully deploy all resources", func() {
-						checkDeployedResources("plutono-dashboards", 24)
+						checkDeployedResources("plutono-dashboards", 24, nil)
 					})
 				})
 			})
@@ -679,12 +682,12 @@ status:
 					})
 
 					It("should successfully deploy all resources", func() {
-						checkDeployedResources("plutono-dashboards-garden", 26)
+						checkDeployedResources("plutono-dashboards-garden", 26, nil)
 					})
 				})
 
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards-garden", 23)
+					checkDeployedResources("plutono-dashboards-garden", 23, nil)
 				})
 			})
 		})
@@ -696,7 +699,7 @@ status:
 			})
 
 			It("should successfully deploy all resources", func() {
-				checkDeployedResources("plutono-dashboards", 33)
+				checkDeployedResources("plutono-dashboards", 33, nil)
 			})
 
 			Context("w/ include istio, mcm, ha-vpn, vpa", func() {
@@ -707,7 +710,7 @@ status:
 				})
 
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards", 37)
+					checkDeployedResources("plutono-dashboards", 37, nil)
 				})
 			})
 
@@ -717,7 +720,7 @@ status:
 				})
 
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards", 25)
+					checkDeployedResources("plutono-dashboards", 25, nil)
 				})
 			})
 		})
