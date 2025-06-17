@@ -687,7 +687,7 @@ status:
 				})
 
 				It("should successfully deploy all resources", func() {
-					checkDeployedResources("plutono-dashboards-garden", 23, nil)
+					checkDeployedResources("plutono-dashboards-garden", -1, Dashboards(values))
 				})
 			})
 		})
