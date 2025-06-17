@@ -197,5 +197,35 @@ func Dashboards(values Values) []string {
 		}
 	}
 
+	if values.ClusterType == component.ClusterTypeShoot && values.IsWorkerless {
+		return []string{
+			"apiserver-admission-details.json",
+			"apiserver-overview.json",
+			"apiserver-request-details.json",
+			"apiserver-request-duration-and-response-size.json",
+			"apiserver-storage-details.json",
+			"apiserver-watch-details.json",
+			"client-go.json",
+			"cluster-overview-dashboard.json",
+			"controller-details.json",
+			"controllers.json",
+			"controlplane-logs-dashboard.json",
+			"etcd-backup-dashboard.json",
+			"etcd-cluster-details-dashboard.json",
+			"etcd-compaction-job-dashboard.json",
+			"etcd-dashboard.json",
+			"kubernetes-api-server-details.json",
+			"kubernetes-api-server-watches-dashboard.json",
+			"kubernetes-control-plane-status-dashboard.json",
+			"kubernetes-deployments-dashboard.json",
+			"kubernetes-pods-dashboard.json",
+			"kubernetes-statefulsets-dashboard.json",
+			"prometheus-dashboard.json",
+			"shoot-control-plane-resource-usage-by-owner-container.json",
+			"webhook-details.json",
+			"webhooks.json",
+		}
+	}
+
 	return nil
 }
