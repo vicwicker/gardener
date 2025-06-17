@@ -1025,6 +1025,11 @@ func (r *Reconciler) newGardenerMetricsExporter(secretsManager secretsmanager.In
 }
 
 func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface, ingressDomain string, wildcardCertSecretName *string) (plutono.Interface, error) {
+	dashboards := []string{plutono.GardenDashboardsPath, plutono.GardenAndShootDashboardsPath}
+	if vpaEnabled(garden.Spec.RuntimeCluster.Settings) {
+		dashboards = append(dashboards, plutono.CommonVpaDashboardsPath)
+	}
+
 	return sharedcomponent.NewPlutono(
 		r.RuntimeClientSet.Client(),
 		r.GardenNamespace,
@@ -1040,7 +1045,7 @@ func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager 
 		false,
 		vpaEnabled(garden.Spec.RuntimeCluster.Settings),
 		wildcardCertSecretName,
-		nil,
+		plutono.ReadPaths(plutono.DashboardFS, dashboards...),
 	)
 }
 
