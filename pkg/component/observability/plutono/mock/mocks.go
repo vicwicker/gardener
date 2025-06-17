@@ -40,20 +40,6 @@ func (m *MockInterface) EXPECT() *MockInterfaceMockRecorder {
 	return m.recorder
 }
 
-// Dashboards mocks base method.
-func (m *MockInterface) Dashboards() map[string]string {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Dashboards")
-	ret0, _ := ret[0].(map[string]string)
-	return ret0
-}
-
-// Dashboards indicates an expected call of Dashboards.
-func (mr *MockInterfaceMockRecorder) Dashboards() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Dashboards", reflect.TypeOf((*MockInterface)(nil).Dashboards))
-}
-
 // Deploy mocks base method.
 func (m *MockInterface) Deploy(ctx context.Context) error {
 	m.ctrl.T.Helper()

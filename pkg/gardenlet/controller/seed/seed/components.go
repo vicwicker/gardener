@@ -530,11 +530,6 @@ func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanage
 		authSecretName = authSecret.Name
 	}
 
-	dashboardPaths := []string{plutono.SeedDashboardsPath, plutono.CommonDashboardsPath, plutono.SeedIstioDashboardsPath}
-	if v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings) {
-		dashboardPaths = append(dashboardPaths, plutono.CommonVpaDashboardsPath)
-	}
-
 	return sharedcomponent.NewPlutono(
 		r.SeedClientSet.Client(),
 		r.GardenNamespace,
@@ -550,7 +545,6 @@ func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanage
 		false,
 		v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings),
 		wildcardCertName,
-		plutono.ReadPaths(plutono.DashboardFS, dashboardPaths...),
 	)
 }
 

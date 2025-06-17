@@ -9,9 +9,9 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
-	"log"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -64,23 +65,23 @@ const (
 )
 
 var (
-	//go:embed dashboards
-	DashboardFS embed.FS
+	//go:embed dashboards/garden
+	gardenDashboards embed.FS
+	//go:embed dashboards/seed
+	seedDashboards embed.FS
+	//go:embed dashboards/shoot
+	shootDashboards embed.FS
+	//go:embed dashboards/garden-shoot
+	gardenAndShootDashboards embed.FS
+	//go:embed dashboards/common
+	commonDashboards embed.FS
 
-	GardenDashboardsPath                             = filepath.Join("dashboards", "garden")
-	SeedDashboardsPath                               = filepath.Join("dashboards", "seed")
-	SeedIstioDashboardsPath                          = filepath.Join(SeedDashboardsPath, "istio")
-	ShootDashboardsPath                              = filepath.Join("dashboards", "shoot", "owners")
-	ShootWorkerlessDashboardsPath                    = filepath.Join(ShootDashboardsPath, "workerless")
-	ShootWorkerDashboardsPath                        = filepath.Join(ShootDashboardsPath, "worker")
-	ShootWorkerIstioDashboardsPath                   = filepath.Join(ShootWorkerDashboardsPath, "istio")
-	ShootWorkerVpnSeedServerDashboardsPath           = filepath.Join(ShootWorkerDashboardsPath, "vpn-seed-server")
-	ShootVpnSeedServerEnvoyProxyDashboardsPath       = filepath.Join(ShootWorkerVpnSeedServerDashboardsPath, "envoy-proxy")
-	ShootWorkerVpnSeedServerHaVpnDashboardsPath      = filepath.Join(ShootWorkerVpnSeedServerDashboardsPath, "ha-vpn")
-	ShootWorkerVpnSeedServerEnvoyProxyDashboardsPath = filepath.Join(ShootWorkerVpnSeedServerDashboardsPath, "envoy-proxy")
-	GardenAndShootDashboardsPath                     = filepath.Join("dashboards", "garden-shoot")
-	CommonDashboardsPath                             = filepath.Join("dashboards", "common")
-	CommonVpaDashboardsPath                          = filepath.Join(CommonDashboardsPath, "vpa")
+	gardenDashboardsPath         = filepath.Join("dashboards", "garden")
+	seedDashboardsPath           = filepath.Join("dashboards", "seed")
+	shootDashboardsPath          = filepath.Join("dashboards", "shoot")
+	gardenAndShootDashboardsPath = filepath.Join("dashboards", "garden-shoot")
+	commonDashboardsPath         = filepath.Join("dashboards", "common")
+	commonVpaDashboardsPath      = filepath.Join(commonDashboardsPath, "vpa")
 )
 
 // Interface contains functions for a Plutono Deployer
@@ -88,8 +89,6 @@ type Interface interface {
 	component.DeployWaiter
 	// SetWildcardCertName sets the WildcardCertSecretName components.
 	SetWildcardCertName(*string)
-	// Dashboards returns a list of dashboards.
-	Dashboards() map[string]string
 }
 
 // Values is a set of configuration values for the plutono component.
@@ -120,8 +119,6 @@ type Values struct {
 	VPNHighAvailabilityEnabled bool
 	// WildcardCertName is name of wildcard TLS certificate which is issued for the seed's ingress domain.
 	WildcardCertName *string
-	// A list of dashboards
-	Dashboards map[string]string
 }
 
 // New creates a new instance of DeployWaiter for plutono.
@@ -144,10 +141,6 @@ type plutono struct {
 	namespace      string
 	secretsManager secretsmanager.Interface
 	values         Values
-}
-
-func (p *plutono) Dashboards() map[string]string {
-	return p.values.Dashboards
 }
 
 func (p *plutono) Deploy(ctx context.Context) error {
@@ -382,37 +375,10 @@ func (p *plutono) emptyDashboardConfigMap() *corev1.ConfigMap {
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.namespace}}
 }
 
-// TODO(vicwicker): Could be a general utility (maybe it even exists)
-func ReadPaths(root embed.FS, paths ...string) map[string]string {
-	dashboards := map[string]string{}
-
-	for _, path := range paths {
-		entries, err := fs.ReadDir(root, path)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-
-			normalizedPath := entry.Name()
-
-			data, err := fs.ReadFile(root, filepath.Join(path, normalizedPath))
-			if err != nil {
-				log.Fatalf("error reading %s: %s", normalizedPath, err)
-			}
-			dashboards[normalizedPath] = string(data)
-		}
-	}
-
-	return dashboards
-}
-
 func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	var (
-		requiredDashboards []string
+		requiredDashboards map[string]embed.FS
+		ignorePaths        = sets.Set[string]{}
 		dashboards         = map[string]string{}
 	)
 
@@ -420,61 +386,74 @@ func (p *plutono) getDashboardConfigMap() (*corev1.ConfigMap, error) {
 	configMap.Labels = utils.MergeStringMaps(getLabels(), map[string]string{p.dashboardLabel(): dashboardLabelValue})
 
 	if p.values.IsGardenCluster {
-		requiredDashboards = []string{GardenDashboardsPath, GardenAndShootDashboardsPath}
+		requiredDashboards = map[string]embed.FS{gardenDashboardsPath: gardenDashboards, gardenAndShootDashboardsPath: gardenAndShootDashboards}
 		if p.values.VPAEnabled {
-			requiredDashboards = append(requiredDashboards, CommonVpaDashboardsPath)
+			requiredDashboards[commonVpaDashboardsPath] = commonDashboards
 		}
 	} else if p.values.ClusterType == component.ClusterTypeSeed {
-		requiredDashboards = []string{SeedDashboardsPath, CommonDashboardsPath}
-		if p.values.IncludeIstioDashboards {
-			requiredDashboards = append(requiredDashboards, SeedIstioDashboardsPath)
+		requiredDashboards = map[string]embed.FS{seedDashboardsPath: seedDashboards, commonDashboardsPath: commonDashboards}
+		if !p.values.IncludeIstioDashboards {
+			ignorePaths.Insert("istio")
 		}
-		if p.values.VPAEnabled {
-			requiredDashboards = append(requiredDashboards, CommonVpaDashboardsPath)
+		if !p.values.VPAEnabled {
+			ignorePaths.Insert("vpa")
 		}
 	} else if p.values.ClusterType == component.ClusterTypeShoot {
-		requiredDashboards = []string{
-			ShootDashboardsPath,
-			GardenAndShootDashboardsPath,
-			CommonDashboardsPath,
+		requiredDashboards = map[string]embed.FS{
+			shootDashboardsPath:          shootDashboards,
+			gardenAndShootDashboardsPath: gardenAndShootDashboards,
+			commonDashboardsPath:         commonDashboards,
 		}
 
-		if p.values.VPAEnabled {
-			requiredDashboards = append(requiredDashboards, CommonVpaDashboardsPath)
+		if !p.values.VPAEnabled {
+			ignorePaths.Insert("vpa")
 		}
 		if p.values.IsWorkerless {
-			requiredDashboards = append(requiredDashboards, ShootWorkerlessDashboardsPath)
+			ignorePaths.Insert("worker")
 		} else {
-			requiredDashboards = append(requiredDashboards, ShootWorkerDashboardsPath)
-			if p.values.IncludeIstioDashboards {
-				requiredDashboards = append(requiredDashboards, ShootWorkerIstioDashboardsPath)
+			ignorePaths.Insert("workerless")
+			if !p.values.IncludeIstioDashboards {
+				ignorePaths.Insert("istio")
 			}
 			if p.values.VPNHighAvailabilityEnabled {
-				requiredDashboards = append(requiredDashboards, ShootWorkerVpnSeedServerHaVpnDashboardsPath)
+				ignorePaths.Insert("envoy-proxy")
 			} else {
-				requiredDashboards = append(requiredDashboards, ShootWorkerVpnSeedServerEnvoyProxyDashboardsPath)
+				ignorePaths.Insert("ha-vpn")
 			}
 		}
 	}
 
-	for _, dashboardPath := range requiredDashboards {
-		entries, err := fs.ReadDir(DashboardFS, dashboardPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-
-			normalizedPath := entry.Name()
-
-			data, err := fs.ReadFile(DashboardFS, filepath.Join(dashboardPath, normalizedPath))
+	for dashboardPath, dashboardEmbed := range requiredDashboards {
+		if err := fs.WalkDir(dashboardEmbed, dashboardPath, func(path string, dirEntry fs.DirEntry, err error) error {
 			if err != nil {
-				log.Fatalf("error reading %s: %s", normalizedPath, err)
+				return err
 			}
-			dashboards[normalizedPath] = string(data)
+
+			normalizedPath := strings.TrimPrefix(strings.TrimPrefix(path, dashboardPath), "/")
+			if normalizedPath == "" {
+				// No need to process top level.
+				return nil
+			}
+
+			// Normalize to / since it will also work on Windows
+			normalizedPath = filepath.ToSlash(normalizedPath)
+
+			if dirEntry.IsDir() {
+				if len(sets.New[string](strings.Split(path, "/")...).Intersection(ignorePaths)) > 0 {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			data, err := dashboardEmbed.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("error reading %s: %s", normalizedPath, err)
+			}
+			dashboards[normalizedPath[strings.LastIndex(normalizedPath, "/")+1:]] = string(data)
+
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 	}
 

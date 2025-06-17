@@ -24,7 +24,6 @@ func NewPlutono(
 	includeIstioDashboards, isWorkerless bool,
 	isGardenCluster, vpnHighAvailabilityEnabled, vpaEnabled bool,
 	wildcardCertName *string,
-	dashboards map[string]string,
 ) (
 	plutono.Interface,
 	error,
@@ -56,7 +55,6 @@ func NewPlutono(
 			Replicas:                   replicas,
 			VPNHighAvailabilityEnabled: vpnHighAvailabilityEnabled,
 			VPAEnabled:                 vpaEnabled,
-			Dashboards:                 dashboards,
 			WildcardCertName:           wildcardCertName,
 		},
 	), nil
