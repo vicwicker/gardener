@@ -699,7 +699,7 @@ status:
 			})
 
 			It("should successfully deploy all resources", func() {
-				checkDeployedResources("plutono-dashboards", 33, nil)
+				checkDeployedResources("plutono-dashboards", -1, Dashboards(values))
 			})
 
 			Context("w/ include istio, mcm, ha-vpn, vpa", func() {
