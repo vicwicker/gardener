@@ -8,6 +8,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -258,6 +259,8 @@ type Values struct {
 	// NetworkPolicyAdditionalNamespaceSelectors is the list of additional namespace selectors to consider for the
 	// NetworkPolicy controller.
 	NetworkPolicyAdditionalNamespaceSelectors []metav1.LabelSelector
+	// NetworkPolicyAdditionalLabels is the list of additional network labels for the gardener-resource-manager pods
+	NetworkPolicyAdditionalLabels map[string]string
 	// NetworkPolicyControllerIngressControllerSelector is the peer information of the ingress controller for the
 	// network policy controller.
 	NetworkPolicyControllerIngressControllerSelector *resourcemanagerconfigv1alpha1.IngressControllerSelector
@@ -2042,6 +2045,7 @@ func (r *resourceManager) getNetworkPolicyLabels() map[string]string {
 		labels[gardenerutils.NetworkPolicyLabel(r.values.NamePrefix+v1beta1constants.DeploymentNameKubeAPIServer, kubeapiserverconstants.Port)] = v1beta1constants.LabelNetworkPolicyAllowed
 	}
 
+	maps.Copy(labels, r.values.NetworkPolicyAdditionalLabels)
 	return labels
 }
 
