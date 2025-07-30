@@ -310,6 +310,12 @@ func (r *Reconciler) newGardenerResourceManager(seed *gardencorev1beta1.Seed, se
 				},
 			},
 		},
+		NetworkPolicyAdditionalLabels: map[string]string{
+			gardenerutils.NetworkPolicyLabel("prometheus-aggregate", 9090):                v1beta1constants.LabelNetworkPolicyAllowed,
+			gardenerutils.NetworkPolicyLabel("prometheus-cache", 9090):                    v1beta1constants.LabelNetworkPolicyAllowed,
+			gardenerutils.NetworkPolicyLabel("prometheus-seed", 9090):                     v1beta1constants.LabelNetworkPolicyAllowed,
+			"networking.resources.gardener.cloud/to-all-shoots-prometheus-shoot-tcp-9090": v1beta1constants.LabelNetworkPolicyAllowed,
+		},
 	})
 }
 
