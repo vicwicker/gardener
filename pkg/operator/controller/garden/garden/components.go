@@ -427,6 +427,10 @@ func (r *Reconciler) newGardenerResourceManager(garden *operatorv1alpha1.Garden,
 				},
 			},
 		},
+		NetworkPolicyAdditionalLabels: map[string]string{
+			gardenerutils.NetworkPolicyLabel("prometheus-garden", 9090):   v1beta1constants.LabelNetworkPolicyAllowed,
+			gardenerutils.NetworkPolicyLabel("prometheus-longterm", 9090): v1beta1constants.LabelNetworkPolicyAllowed,
+		},
 	})
 }
 
