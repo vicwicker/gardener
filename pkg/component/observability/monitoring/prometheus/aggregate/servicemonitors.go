@@ -39,7 +39,7 @@ func CentralServiceMonitors() []*monitoringv1.ServiceMonitor {
 							`{__name__="kubeproxy_sync_proxy:quantile"}`,
 						},
 					},
-					Port: prometheus.ServicePortName,
+					Port: prometheus.ServicePorts().Web.Name,
 					RelabelConfigs: []monitoringv1.RelabelConfig{
 						// This service monitor is targeting the prometheis in multiple namespaces. Without explicitly
 						// overriding the job label, prometheus-operator would choose job=prometheus-web (service name).
