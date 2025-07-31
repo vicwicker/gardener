@@ -73,6 +73,18 @@ func CentralPrometheusRules(seedIsGarden bool) []*monitoringv1.PrometheusRule {
 				"summary":     "Too many etcd snapshot compaction jobs are failing in the seed.",
 			},
 		},
+		{
+			Alert: "SomethingIsFailing",
+			Expr:  intstr.FromString(`vector(1)`),
+			For:   ptr.To(monitoringv1.Duration("10m")),
+			Labels: map[string]string{
+				"type": "healthcheck",
+			},
+			Annotations: map[string]string{
+				"summary":     "Something is failing in the seed.",
+				"description": "This alert is used to indicate that something is failing in the seed.",
+			},
+		},
 	}
 
 	// Avoid duplicating the alert when the seed is garden because the garden cluster always deploys the VPA capped recommendation alert.
