@@ -5,12 +5,47 @@
 package health
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	prom "github.com/prometheus/client_golang/api"
+	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
+
+func queryPrometheus(host string) (model.Vector, error) {
+	client, err := prom.NewClient(prom.Config{
+		Address: "http://" + host + ":9090",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	v1api := promv1.NewAPI(client)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	query := `ALERTS{alertstate="firing", type="healthcheck"}`
+	result, warnings, err := v1api.Query(ctx, query, time.Now())
+	if err != nil {
+		return nil, err
+	}
+
+	if len(warnings) > 0 {
+		// TODO(vicwicker): Should we log these warnings?
+		fmt.Printf("Warnings: %v\n", warnings)
+	}
+
+	if result.Type() != model.ValVector {
+		return nil, fmt.Errorf("Unexpected result type: %s", result.Type())
+	}
+
+	return result.(model.Vector), nil
+}
 
 // CheckPrometheus checks whether the given Prometheus is healthy.
 func CheckPrometheus(prometheus *monitoringv1.Prometheus) error {
@@ -18,9 +53,23 @@ func CheckPrometheus(prometheus *monitoringv1.Prometheus) error {
 		return err
 	}
 
-	if replicas := ptr.Deref(prometheus.Spec.Replicas, 1); prometheus.Status.AvailableReplicas < replicas {
+	replicas := ptr.Deref(prometheus.Spec.Replicas, 1)
+	if prometheus.Status.AvailableReplicas < replicas {
 		return fmt.Errorf("not enough available replicas (%d/%d)", prometheus.Status.AvailableReplicas, replicas)
 	}
+
+	serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
+	for r := 0; r < int(replicas); r++ {
+		hostName := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
+		result, err := queryPrometheus(hostName)
+		if err != nil {
+			// TODO(vicwicker): Consider having a generic error message for this case too.
+			return err
+		} else if len(result) > 0 {
+			return fmt.Errorf("Please check the ALERTS.")
+		}
+	}
+
 	return nil
 }
 
