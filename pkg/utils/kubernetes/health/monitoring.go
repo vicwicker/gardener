@@ -59,15 +59,14 @@ func CheckPrometheus(prometheus *monitoringv1.Prometheus) error {
 	}
 
 	serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
-	errMsgPrefix := "There are issues with the " + prometheus.Name + " Prometheus"
 	for r := 0; r < int(replicas); r++ {
-		hostName := fmt.Sprintf("%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
+		hostName := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
 		result, err := queryPrometheus(hostName)
 		if err != nil {
 			// TODO(vicwicker): Consider having a generic error message for this case too.
-			return fmt.Errorf("%s: %w", errMsgPrefix, err)
+			return err
 		} else if len(result) > 0 {
-			return fmt.Errorf("%s. Please check the ALERTS.", errMsgPrefix)
+			return fmt.Errorf("please check the ALERTS.")
 		}
 	}
 
