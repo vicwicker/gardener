@@ -431,9 +431,8 @@ func (r *Reconciler) newGardenerResourceManager(garden *operatorv1alpha1.Garden,
 			gardenerutils.NetworkPolicyLabel("prometheus-aggregate", 9090): v1beta1constants.LabelNetworkPolicyAllowed,
 			gardenerutils.NetworkPolicyLabel("prometheus-cache", 9090):     v1beta1constants.LabelNetworkPolicyAllowed,
 			gardenerutils.NetworkPolicyLabel("prometheus-garden", 9090):    v1beta1constants.LabelNetworkPolicyAllowed,
-			// longterm Prometheus service and network policy are on the cortex container exposed on port 9091
-			gardenerutils.NetworkPolicyLabel("prometheus-longterm", 9091): v1beta1constants.LabelNetworkPolicyAllowed,
-			gardenerutils.NetworkPolicyLabel("prometheus-seed", 9090):     v1beta1constants.LabelNetworkPolicyAllowed,
+			gardenerutils.NetworkPolicyLabel("prometheus-longterm", 9090):  v1beta1constants.LabelNetworkPolicyAllowed,
+			gardenerutils.NetworkPolicyLabel("prometheus-seed", 9090):      v1beta1constants.LabelNetworkPolicyAllowed,
 		},
 	})
 }
