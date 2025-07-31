@@ -66,7 +66,7 @@ func CheckPrometheus(prometheus *monitoringv1.Prometheus) error {
 			// TODO(vicwicker): Consider having a generic error message for this case too.
 			return err
 		} else if len(result) > 0 {
-			return fmt.Errorf("please check the ALERTS.")
+			return fmt.Errorf("Please check the ALERTS.")
 		}
 	}
 
