@@ -54,6 +54,9 @@ func (b *Botanist) DefaultResourceManager() (resourcemanager.Interface, error) {
 			SystemComponentTolerations:          gardenerutils.ExtractSystemComponentsTolerations(b.Shoot.GetInfo().Spec.Provider.Workers),
 			TargetNamespaces:                    []string{metav1.NamespaceSystem, v1beta1constants.KubernetesDashboardNamespace, corev1.NamespaceNodeLease},
 			TopologyAwareRoutingEnabled:         b.Shoot.TopologyAwareRoutingEnabled,
+			NetworkPolicyAdditionalLabels: map[string]string{
+				gardenerutils.NetworkPolicyLabel("prometheus-shoot", 9090): v1beta1constants.LabelNetworkPolicyAllowed,
+			},
 		}
 	)
 
