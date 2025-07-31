@@ -29,3 +29,11 @@ spec:
       annotations:
         description: Latest Prometheus configuration is broken and Prometheus is using the previous one.
         summary: Prometheus is misconfigured
+    - alert: SomethingIsFailing
+      expr: vector(1)
+      for: 10m
+      labels:
+        type: healthcheck
+      annotations:
+        summary: Something is failing in the shoot.
+        description: This alert is used to indicate that something is failing in the seed.
