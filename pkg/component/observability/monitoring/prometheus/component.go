@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
@@ -129,6 +130,8 @@ type Values struct {
 	RestrictToNamespace bool
 	// ResourceRequests defines the initial resource requests
 	ResourceRequests *corev1.ResourceList
+	// HealthCondition is the condition type that should be used to report the health of this Prometheus instance.
+	HealthCondition gardencorev1beta1.ConditionType
 }
 
 // CentralConfigs contains configuration for this Prometheus instance that is created together with it. This should
@@ -290,7 +293,12 @@ func (p *prometheus) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	if err := managedresources.CreateForSeedWithLabels(ctx, p.client, p.namespace, p.name(), false, map[string]string{v1beta1constants.LabelCareConditionType: v1beta1constants.ObservabilityComponentsHealthy}, resources); err != nil {
+	healthCondition := p.values.HealthCondition
+	if healthCondition == "" {
+		healthCondition = v1beta1constants.ObservabilityComponentsHealthy
+	}
+
+	if err := managedresources.CreateForSeedWithLabels(ctx, p.client, p.namespace, p.name(), false, map[string]string{v1beta1constants.LabelCareConditionType: string(healthCondition)}, resources); err != nil {
 		return err
 	}
 

@@ -107,7 +107,7 @@ func (h *health) checkObservabilityComponents(condition gardencorev1beta1.Condit
 		return exitCondition
 	}
 
-	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsHealthy", "All observability components are healthy."))
+	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy."))
 }
 
 // SeedConditions contains all seed related conditions of the seed status subresource.
