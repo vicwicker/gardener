@@ -92,8 +92,12 @@ func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.
 
 func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
 	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
-		return managedResource.Spec.Class != nil ||
-			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.SeedSystemComponentsHealthy)
+		hasClass := managedResource.Spec.Class != nil
+		isSystemComponent := true
+		if value, ok := managedResource.Labels[v1beta1constants.LabelCareConditionType]; ok {
+			isSystemComponent = value == string(gardencorev1beta1.SeedSystemComponentsHealthy)
+		}
+		return hasClass && isSystemComponent
 	}, nil); exitCondition != nil {
 		return exitCondition
 	}
@@ -103,8 +107,7 @@ func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, ma
 
 func (h *health) checkObservabilityComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
 	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
-		return managedResource.Spec.Class != nil ||
-			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.SeedObservabilityComponentsHealthy)
+		return managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.SeedObservabilityComponentsHealthy)
 	}, nil); exitCondition != nil {
 		return exitCondition
 	}
