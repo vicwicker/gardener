@@ -17,6 +17,7 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/utils/flow"
 	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
@@ -54,11 +55,25 @@ func (h *health) Check(
 	managedResources, err := h.listManagedResources(ctx)
 	if err != nil {
 		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
 		return conditions.ConvertToSlice()
 	}
 
-	newSystemComponentsCondition := h.checkSystemComponents(conditions.systemComponentsHealthy, managedResources)
-	return []gardencorev1beta1.Condition{v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, newSystemComponentsCondition, nil)}
+	taskFns := []flow.TaskFn{
+		func(ctx context.Context) error {
+			newSystemComponents := h.checkSystemComponents(conditions.systemComponentsHealthy, managedResources)
+			conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, newSystemComponents, nil)
+			return nil
+		}, func(ctx context.Context) error {
+			newObservabilityComponents := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResources)
+			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponents, nil)
+			return nil
+		},
+	}
+
+	_ = flow.Parallel(taskFns...)(ctx)
+
+	return []gardencorev1beta1.Condition{conditions.systemComponentsHealthy, conditions.observabilityComponentsHealthy}
 }
 
 func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.ManagedResource, error) {
@@ -77,7 +92,8 @@ func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.
 
 func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
 	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
-		return managedResource.Spec.Class != nil
+		return managedResource.Spec.Class != nil ||
+			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.SeedSystemComponentsHealthy)
 	}, nil); exitCondition != nil {
 		return exitCondition
 	}
@@ -85,15 +101,28 @@ func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, ma
 	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
 }
 
+func (h *health) checkObservabilityComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+		return managedResource.Spec.Class != nil ||
+			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.SeedObservabilityComponentsHealthy)
+	}, nil); exitCondition != nil {
+		return exitCondition
+	}
+
+	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsHealthy", "All observability components are healthy."))
+}
+
 // SeedConditions contains all seed related conditions of the seed status subresource.
 type SeedConditions struct {
-	systemComponentsHealthy gardencorev1beta1.Condition
+	systemComponentsHealthy        gardencorev1beta1.Condition
+	observabilityComponentsHealthy gardencorev1beta1.Condition
 }
 
 // ConvertToSlice returns the seed conditions as a slice.
 func (s SeedConditions) ConvertToSlice() []gardencorev1beta1.Condition {
 	return []gardencorev1beta1.Condition{
 		s.systemComponentsHealthy,
+		s.observabilityComponentsHealthy,
 	}
 }
 
@@ -101,6 +130,7 @@ func (s SeedConditions) ConvertToSlice() []gardencorev1beta1.Condition {
 func (s SeedConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
 	return []gardencorev1beta1.ConditionType{
 		s.systemComponentsHealthy.Type,
+		s.observabilityComponentsHealthy.Type,
 	}
 }
 
@@ -108,6 +138,7 @@ func (s SeedConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
 // All conditions are retrieved from the given 'status' or newly initialized.
 func NewSeedConditions(clock clock.Clock, status gardencorev1beta1.SeedStatus) SeedConditions {
 	return SeedConditions{
-		systemComponentsHealthy: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedSystemComponentsHealthy),
+		systemComponentsHealthy:        v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedSystemComponentsHealthy),
+		observabilityComponentsHealthy: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedObservabilityComponentsHealthy),
 	}
 }
