@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"time"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -73,7 +75,7 @@ func (h *health) Check(
 	}
 
 	taskFns = append(taskFns, func(ctx context.Context) error {
-		newObservabilityComponentsCondition := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResourcesGarden)
+		newObservabilityComponentsCondition := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, managedResourcesGarden)
 		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponentsCondition, nil)
 		return nil
 	})
@@ -103,12 +105,31 @@ func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, ma
 	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
 }
 
-func (h *health) checkObservabilityComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
-	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+func (h *health) checkObservabilityComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
+	filterFn := func(managedResource resourcesv1alpha1.ManagedResource) bool {
 		// TODO(vicwicker): Check at the end of PR of checking the class is necessary.
 		return managedResource.Spec.Class != nil && managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(v1beta1constants.SeedObservabilityComponentsHealthy)
-	}, nil); exitCondition != nil {
+	}
+
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, filterFn, nil); exitCondition != nil {
 		return exitCondition
+	}
+
+	for _, managedResource := range managedResources {
+		if !filterFn(managedResource) {
+			continue
+		}
+
+		for _, resource := range managedResource.Status.Resources {
+			if resource.Kind == monitoringv1.PrometheusesKind {
+				prometheus := &monitoringv1.Prometheus{ObjectMeta: metav1.ObjectMeta{Namespace: resource.Namespace, Name: resource.Name}}
+				if exitCondition, err := h.healthChecker.CheckHealthAlerts(ctx, condition, prometheus); err != nil {
+					return ptr.To(v1beta1helper.NewConditionOrError(h.clock, condition, nil, fmt.Errorf("failed checking Prometheus %s/%s: %w", resource.Namespace, resource.Name, err)))
+				} else if exitCondition != nil {
+					return exitCondition
+				}
+			}
+		}
 	}
 
 	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy."))
