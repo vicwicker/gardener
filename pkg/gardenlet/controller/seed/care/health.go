@@ -17,6 +17,7 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/utils/flow"
 	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
@@ -58,13 +59,21 @@ func (h *health) Check(
 		return conditions.ConvertToSlice()
 	}
 
-	newSystemComponentsCondition := h.checkSystemComponents(conditions.systemComponentsHealthy, managedResources)
-	newObservabilityComponentsCondition := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResources)
-
-	return []gardencorev1beta1.Condition{
-		v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, newSystemComponentsCondition, nil),
-		v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, newObservabilityComponentsCondition, nil),
+	taskFns := []flow.TaskFn{
+		func(ctx context.Context) error {
+			newSystemComponentsCondition := h.checkSystemComponents(conditions.systemComponentsHealthy, managedResources)
+			conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, newSystemComponentsCondition, nil)
+			return nil
+		}, func(ctx context.Context) error {
+			newObservabilityComponentsCondition := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResources)
+			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponentsCondition, nil)
+			return nil
+		},
 	}
+
+	_ = flow.Parallel(taskFns...)(ctx)
+
+	return conditions.ConvertToSlice()
 }
 
 func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.ManagedResource, error) {
