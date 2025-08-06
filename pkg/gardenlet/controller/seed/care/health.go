@@ -92,7 +92,8 @@ func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.
 
 func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
 	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
-		return managedResource.Spec.Class != nil
+		// Only the observability components have a specific condition type
+		return managedResource.Spec.Class != nil && managedResource.Labels[v1beta1constants.LabelCareConditionType] != string(v1beta1constants.SeedObservabilityComponentsHealthy)
 	}, nil); exitCondition != nil {
 		return exitCondition
 	}
@@ -101,6 +102,13 @@ func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, ma
 }
 
 func (h *health) checkObservabilityComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+		// TODO(vicwicker): Check at the end of PR of checking the class is necessary.
+		return managedResource.Spec.Class != nil && managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(v1beta1constants.SeedObservabilityComponentsHealthy)
+	}, nil); exitCondition != nil {
+		return exitCondition
+	}
+
 	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy."))
 }
 
