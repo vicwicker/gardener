@@ -5,12 +5,48 @@
 package health
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	prom "github.com/prometheus/client_golang/api"
+	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
+
+func CheckHealthAlerts(endpoint string, port int) error {
+	client, err := prom.NewClient(prom.Config{Address: fmt.Sprintf("http://%s:%d", endpoint, port)})
+	if err != nil {
+		return err
+	}
+
+	v1api := promv1.NewAPI(client)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	query := `ALERTS{alertstate="firing", type="health"}`
+	result, warnings, err := v1api.Query(ctx, query, time.Now())
+	if err != nil {
+		return err
+	}
+
+	if len(warnings) > 0 {
+		return fmt.Errorf("Query returned warnings.")
+	}
+
+	if result.Type() != model.ValVector {
+		return fmt.Errorf("Query returned an unexpected result type.")
+	}
+
+	if len(result.(model.Vector)) > 0 {
+		return fmt.Errorf("Please check the ALERTS.")
+	}
+
+	return nil
+}
 
 // CheckPrometheus checks whether the given Prometheus is healthy.
 func CheckPrometheus(prometheus *monitoringv1.Prometheus) error {
