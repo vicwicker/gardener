@@ -6,6 +6,7 @@ package checker_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,19 +14,23 @@ import (
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
 	"github.com/onsi/gomega/types"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	testclock "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 	. "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
@@ -728,6 +733,194 @@ var _ = Describe("HealthChecker", func() {
 				false,
 				PointTo(beConditionWithFalseStatusReasonAndMsg("Unknown", "bar is unknown"))),
 		)
+
+		Describe("CheckManagedPrometheuses", func() {
+			var (
+				condition      = gardencorev1beta1.Condition{Type: "test"}
+				filterTrueFunc = func(resourcesv1alpha1.ManagedResource) bool { return true }
+
+				healthChecker                     *HealthChecker
+				managedResources                  []resourcesv1alpha1.ManagedResource
+				prometheus                        *monitoringv1.Prometheus
+				testPrometheusHealthAlertsChecker health.PrometheusHealthAlertsChecker
+
+				healthy   = func() (bool, error) { return false, nil }
+				unhealthy = func() (bool, error) { return true, nil }
+				erroring  = func() (bool, error) { return false, errors.New("test error") }
+			)
+
+			BeforeEach(func() {
+				testPrometheusHealthAlertsChecker = func(_ context.Context, _ string, _ int) (bool, error) {
+					msg := "testPrometheusHealthAlertsChecker should have been overridden"
+					Fail(msg)
+					return false, errors.New(msg)
+				}
+
+				healthChecker = NewHealthChecker(fakeClient, fakeClock, WithPrometheusHealthAlertsChecker(
+					func(ctx context.Context, endpoint string, port int) (bool, error) {
+						return testPrometheusHealthAlertsChecker(ctx, endpoint, port)
+					}))
+
+				managedResources = []resourcesv1alpha1.ManagedResource{{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-mr",
+						Namespace: namespace,
+					},
+					Status: resourcesv1alpha1.ManagedResourceStatus{
+						Resources: []resourcesv1alpha1.ObjectReference{
+							{
+								ObjectReference: corev1.ObjectReference{
+									Kind:      monitoringv1.PrometheusesKind,
+									Name:      "test-prometheus",
+									Namespace: namespace,
+								},
+							},
+						},
+					},
+				}}
+
+				prometheus = &monitoringv1.Prometheus{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-prometheus",
+						Namespace: namespace,
+					},
+					Spec: monitoringv1.PrometheusSpec{
+						CommonPrometheusFields: monitoringv1.CommonPrometheusFields{
+							Replicas: ptr.To(int32(3)),
+						},
+					},
+				}
+
+				Expect(fakeClient.Create(ctx, prometheus)).To(Succeed())
+			})
+
+			It("should return nil when no prometheus instances are found", func() {
+				managedResources[0].Status.Resources = []resourcesv1alpha1.ObjectReference{}
+
+				result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+				Expect(result).To(BeNil())
+			})
+
+			It("should return nil when filter function returns false", func() {
+				filterFalseFunc := func(resourcesv1alpha1.ManagedResource) bool { return false }
+
+				result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterFalseFunc)
+				Expect(result).To(BeNil())
+			})
+
+			It("should skip resources with ignore annotation", func() {
+				managedResources[0].Annotations = map[string]string{
+					resourcesv1alpha1.Ignore: "true",
+				}
+
+				result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+				Expect(result).To(BeNil())
+			})
+
+			It("should return error condition when prometheus resource is not found", func() {
+				Expect(fakeClient.Delete(ctx, prometheus)).To(Succeed())
+
+				result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+				Expect(result).NotTo(BeNil())
+				Expect(result.Status).To(Equal(gardencorev1beta1.ConditionFalse))
+				Expect(result.Reason).To(Equal("PrometheusHealthAlertsError"))
+				Expect(result.Message).To(Equal("Prometheus \"shoot--foo--bar/test-prometheus\" not found"))
+			})
+
+			It("should return error condition when client returns error", func() {
+				errorClient := fakeclient.NewClientBuilder().
+					WithScheme(kubernetes.SeedScheme).
+					WithInterceptorFuncs(interceptor.Funcs{
+						Get: func(ctx context.Context, client client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							gvks, _, err := kubernetes.SeedScheme.ObjectKinds(obj)
+							if err == nil && len(gvks) > 0 {
+								if gvks[0].Kind == monitoringv1.PrometheusesKind {
+									return errors.New("test error")
+								}
+							}
+							return client.Get(ctx, key, obj, opts...)
+						},
+					}).
+					Build()
+
+				healthChecker := NewHealthChecker(errorClient, fakeClock)
+				result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+				Expect(result).NotTo(BeNil())
+				Expect(result.Status).To(Equal(gardencorev1beta1.ConditionUnknown))
+				Expect(result.Reason).To(Equal("ConditionCheckError"))
+				Expect(result.Message).To(Equal("failed checking Prometheus \"shoot--foo--bar/test-prometheus\": test error"))
+			})
+
+			It("should return error condition when health check returns error in at least a replica", func() {
+				testPrometheusHealthAlertsChecker = func(_ context.Context, endpoint string, port int) (bool, error) {
+					Expect(port).To(Equal(9090))
+					switch endpoint {
+					case "prometheus-test-prometheus-0.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return healthy()
+					case "prometheus-test-prometheus-1.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return erroring()
+					case "prometheus-test-prometheus-2.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return healthy()
+					default:
+						msg := "unexpected endpoint: " + endpoint
+						Fail(msg)
+						return false, errors.New(msg)
+					}
+				}
+
+				result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+				Expect(result).NotTo(BeNil())
+				Expect(result.Status).To(Equal(gardencorev1beta1.ConditionFalse))
+				Expect(result.Reason).To(Equal("PrometheusHealthAlertsError"))
+				Expect(result.Message).To(Equal("Querying Prometheus \"shoot--foo--bar/test-prometheus\" for health alerts returned an error: test error"))
+			})
+
+			It("should return failing condition when health alerts are firing in at least a replica", func() {
+				testPrometheusHealthAlertsChecker = func(_ context.Context, endpoint string, port int) (bool, error) {
+					Expect(port).To(Equal(9090))
+					switch endpoint {
+					case "prometheus-test-prometheus-0.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return healthy()
+					case "prometheus-test-prometheus-1.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return healthy()
+					case "prometheus-test-prometheus-2.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return unhealthy()
+					default:
+						msg := "unexpected endpoint: " + endpoint
+						Fail(msg)
+						return false, errors.New(msg)
+					}
+				}
+
+				result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+				Expect(result).NotTo(BeNil())
+				Expect(result.Status).To(Equal(gardencorev1beta1.ConditionFalse))
+				Expect(result.Reason).To(Equal("PrometheusHealthAlertsFiring"))
+				Expect(result.Message).To(Equal("There are firing health alerts in Prometheus \"shoot--foo--bar/test-prometheus\". " +
+					"Access Prometheus UI and check for firing ALERTS with type=\"health\"."))
+			})
+
+			It("should return nil when no health alerts are firing", func() {
+				testPrometheusHealthAlertsChecker = func(_ context.Context, endpoint string, port int) (bool, error) {
+					Expect(port).To(Equal(9090))
+					switch endpoint {
+					case "prometheus-test-prometheus-0.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return healthy()
+					case "prometheus-test-prometheus-1.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return healthy()
+					case "prometheus-test-prometheus-2.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+						return healthy()
+					default:
+						msg := "unexpected endpoint: " + endpoint
+						Fail(msg)
+						return false, errors.New(msg)
+					}
+				}
+
+				result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+				Expect(result).To(BeNil())
+			})
+		})
 	})
 })
 
