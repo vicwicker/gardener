@@ -25,6 +25,7 @@ func NewVali(
 	priorityClassName string,
 	storage *resource.Quantity,
 	ingressHost string,
+	careConditionType string,
 ) (
 	vali.Interface,
 	error,
@@ -66,6 +67,7 @@ func NewVali(
 		Storage:                 storage,
 		ClusterType:             clusterType,
 		IngressHost:             ingressHost,
+		CareConditionType:       careConditionType,
 	})
 
 	return deployer, nil

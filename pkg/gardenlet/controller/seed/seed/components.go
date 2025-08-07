@@ -524,6 +524,7 @@ func (r *Reconciler) newVali() (component.Deployer, error) {
 		v1beta1constants.PriorityClassNameSeedSystem600,
 		storage,
 		"",
+		v1beta1constants.SeedObservabilityComponentsHealthy,
 	)
 	if err != nil {
 		return nil, err

@@ -125,6 +125,7 @@ func (b *Botanist) DefaultVali() (vali.Interface, error) {
 		v1beta1constants.PriorityClassNameShootControlPlane100,
 		nil,
 		b.ComputeValiHost(),
+		v1beta1constants.ObservabilityComponentsHealthy,
 	)
 }
 

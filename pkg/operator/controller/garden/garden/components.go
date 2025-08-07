@@ -1338,6 +1338,7 @@ func (r *Reconciler) newVali() (component.Deployer, error) {
 		v1beta1constants.PriorityClassNameGardenSystem100,
 		nil,
 		"",
+		v1beta1constants.ObservabilityComponentsHealthy,
 	)
 }
 
