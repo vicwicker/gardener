@@ -12,13 +12,16 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	druidcorev1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
@@ -529,4 +532,59 @@ func (h *HealthChecker) checkControllerInstallationConditions(
 	}
 
 	return nil, nil
+}
+
+// CheckManagedPrometheuses checks the health of Prometheus instances from a list of managed resources in case the provided filter func returns true.
+func (h *HealthChecker) CheckManagedPrometheuses(
+	ctx context.Context,
+	condition gardencorev1beta1.Condition,
+	managedResources []resourcesv1alpha1.ManagedResource,
+	filterFunc func(resourcesv1alpha1.ManagedResource) bool,
+) *gardencorev1beta1.Condition {
+	for _, managedResource := range managedResources {
+		if !filterFunc(managedResource) || managedResource.Annotations[resourcesv1alpha1.Ignore] == "true" {
+			continue
+		}
+
+		for _, resource := range managedResource.Status.Resources {
+			if resource.Kind == monitoringv1.PrometheusesKind {
+				prometheus := &monitoringv1.Prometheus{ObjectMeta: metav1.ObjectMeta{Namespace: resource.Namespace, Name: resource.Name}}
+				if err := h.reader.Get(ctx, client.ObjectKeyFromObject(prometheus), prometheus); err != nil {
+					if apierrors.IsNotFound(err) {
+						return ptr.To(v1beta1helper.FailedCondition(h.clock, h.lastOperation, h.conditionThresholds, condition, "PrometheusHealthAlertsError", fmt.Sprintf("Prometheus \"%s/%s\" not found", resource.Namespace, resource.Name)))
+					}
+
+					return ptr.To(v1beta1helper.NewConditionOrError(h.clock, condition, nil, fmt.Errorf("failed checking Prometheus \"%s/%s\": %w", resource.Namespace, resource.Name, err)))
+				}
+
+				if exitCondition := h.checkPrometheusHealthAlerts(ctx, condition, prometheus); exitCondition != nil {
+					return exitCondition
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (h *HealthChecker) checkPrometheusHealthAlerts(ctx context.Context, condition gardencorev1beta1.Condition, prometheus *monitoringv1.Prometheus) *gardencorev1beta1.Condition {
+	serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
+	replicas := int(ptr.Deref(prometheus.Spec.Replicas, 1))
+
+	for r := range replicas {
+		endpoint := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
+
+		hasAlerts, err := h.prometheusHealthAlertsChecker(ctx, endpoint, 9090)
+		if err != nil {
+			msg := fmt.Sprintf("Querying Prometheus \"%s/%s\" for health alerts returned an error: %v", prometheus.Namespace, prometheus.Name, err)
+			return ptr.To(v1beta1helper.FailedCondition(h.clock, h.lastOperation, h.conditionThresholds, condition, "PrometheusHealthAlertsError", msg))
+		}
+
+		if hasAlerts {
+			msg := fmt.Sprintf("There are firing health alerts in Prometheus \"%s/%s\". Access Prometheus UI and check for firing ALERTS with type=\"health\".", prometheus.Namespace, prometheus.Name)
+			return ptr.To(v1beta1helper.FailedCondition(h.clock, h.lastOperation, h.conditionThresholds, condition, "PrometheusHealthAlertsFiring", msg))
+		}
+	}
+
+	return nil
 }
