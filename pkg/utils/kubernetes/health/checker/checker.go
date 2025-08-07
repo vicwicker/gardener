@@ -12,6 +12,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	druidcorev1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
@@ -502,6 +504,22 @@ func (h *HealthChecker) checkControllerInstallationConditions(
 		}
 		c := v1beta1helper.FailedCondition(h.clock, h.lastOperation, h.conditionThresholds, condition, "MissingControllerInstallationCondition", fmt.Sprintf("Seed %s: ControllerInstallation %s is missing the following condition(s), %v", controllerInstallation.Spec.SeedRef.Name, controllerInstallation.Name, missing))
 		return &c, nil
+	}
+
+	return nil, nil
+}
+
+func (h *HealthChecker) CheckHealthAlerts(ctx context.Context, condition gardencorev1beta1.Condition, prometheus *monitoringv1.Prometheus) (*gardencorev1beta1.Condition, error) {
+	if err := h.reader.Get(ctx, client.ObjectKeyFromObject(prometheus), prometheus); err != nil {
+		return nil, err
+	}
+
+	serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
+	for r := 0; r < int(ptr.Deref(prometheus.Spec.Replicas, 1)); r++ {
+		endpoint := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
+		if err := health.CheckHealthAlerts(endpoint, 9090); err != nil {
+			return ptr.To(v1beta1helper.FailedCondition(h.clock, h.lastOperation, h.conditionThresholds, condition, "PrometheusUnhealthy", fmt.Sprintf("Prometheus \"%s/%s\" is unhealthy: %v", prometheus.Namespace, prometheus.Name, err))), nil
+		}
 	}
 
 	return nil, nil
