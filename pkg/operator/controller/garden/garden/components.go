@@ -1490,6 +1490,7 @@ func (r *Reconciler) newBlackboxExporter(garden *operatorv1alpha1.Garden, secret
 			Config:            gardenblackboxexporter.Config(isDashboardCertificateIssuedByGardener, garden.Spec.VirtualCluster.Gardener.DiscoveryServer != nil),
 			ScrapeConfigs:     gardenblackboxexporter.ScrapeConfig(r.GardenNamespace, kubeAPIServerTargets, gardenerDashboardTarget),
 			Replicas:          1,
+			CareConditionType: v1beta1constants.ObservabilityComponentsHealthy,
 		},
 	)
 }

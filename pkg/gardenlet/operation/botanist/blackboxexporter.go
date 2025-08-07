@@ -42,6 +42,7 @@ func (b *Botanist) DefaultBlackboxExporterControlPlane() (component.DeployWaiter
 			Config:            controlplaneblackboxexporter.Config(),
 			ScrapeConfigs:     controlplaneblackboxexporter.ScrapeConfig(b.Shoot.ControlPlaneNamespace, monitoringv1alpha1.Target("https://"+v1beta1helper.GetAPIServerDomain(b.Shoot.InternalClusterDomain)+"/healthz")),
 			Replicas:          b.Shoot.GetReplicas(1),
+			CareConditionType: v1beta1constants.ObservabilityComponentsHealthy,
 		},
 	)
 }
@@ -76,6 +77,7 @@ func (b *Botanist) DefaultBlackboxExporterCluster() (component.DeployWaiter, err
 			ScrapeConfigs:     clusterblackboxexporter.ScrapeConfig(b.Shoot.ControlPlaneNamespace),
 			PrometheusRules:   clusterblackboxexporter.PrometheusRule(b.Shoot.ControlPlaneNamespace),
 			Replicas:          1,
+			CareConditionType: v1beta1constants.SeedObservabilityComponentsHealthy,
 		},
 	)
 }

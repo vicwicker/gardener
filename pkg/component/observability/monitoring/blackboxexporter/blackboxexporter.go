@@ -82,6 +82,8 @@ type Values struct {
 	PriorityClassName string
 	// Replicas is the number of replicas
 	Replicas int32
+	// CareConditionType is the type of care condition for the care health checks.
+	CareConditionType string
 }
 
 // New creates a new instance of DeployWaiter for blackbox-exporter.
@@ -113,7 +115,7 @@ func (b *blackboxExporter) Deploy(ctx context.Context) error {
 	}
 
 	if b.values.ClusterType == component.ClusterTypeSeed {
-		return managedresources.CreateForSeedWithLabels(ctx, b.client, b.namespace, b.managedResourceName(), false, map[string]string{v1beta1constants.LabelCareConditionType: v1beta1constants.ObservabilityComponentsHealthy}, data)
+		return managedresources.CreateForSeedWithLabels(ctx, b.client, b.namespace, b.managedResourceName(), false, map[string]string{v1beta1constants.LabelCareConditionType: b.values.CareConditionType}, data)
 	}
 
 	for _, scrapeConfig := range b.values.ScrapeConfigs {
