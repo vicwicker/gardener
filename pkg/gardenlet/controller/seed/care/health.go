@@ -52,42 +52,44 @@ func (h *health) Check(
 	ctx context.Context,
 	conditions SeedConditions,
 ) []gardencorev1beta1.Condition {
-	managedResources, err := h.listManagedResources(ctx)
+	var taskFns []flow.TaskFn
+
+	managedResourcesGarden, err := h.listManagedResources(ctx, ptr.Deref(h.namespace, v1beta1constants.GardenNamespace))
 	if err != nil {
 		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
 		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
 		return conditions.ConvertToSlice()
 	}
 
-	taskFns := []flow.TaskFn{
-		func(ctx context.Context) error {
-			newSystemComponentsCondition := h.checkSystemComponents(conditions.systemComponentsHealthy, managedResources)
+	managedResourcesIstio, err := h.listManagedResources(ctx, ptr.Deref(h.namespace, v1beta1constants.IstioSystemNamespace))
+	if err != nil {
+		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+	} else {
+		taskFns = append(taskFns, func(ctx context.Context) error {
+			newSystemComponentsCondition := h.checkSystemComponents(conditions.systemComponentsHealthy, append(managedResourcesGarden, managedResourcesIstio...))
 			conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, newSystemComponentsCondition, nil)
 			return nil
-		}, func(ctx context.Context) error {
-			newObservabilityComponentsCondition := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResources)
-			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponentsCondition, nil)
-			return nil
-		},
+		})
 	}
+
+	taskFns = append(taskFns, func(ctx context.Context) error {
+		newObservabilityComponentsCondition := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResourcesGarden)
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponentsCondition, nil)
+		return nil
+	})
 
 	_ = flow.Parallel(taskFns...)(ctx)
 
 	return conditions.ConvertToSlice()
 }
 
-func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.ManagedResource, error) {
-	managedResourceListGarden := &resourcesv1alpha1.ManagedResourceList{}
-	if err := h.seedClient.List(ctx, managedResourceListGarden, client.InNamespace(ptr.Deref(h.namespace, v1beta1constants.GardenNamespace))); err != nil {
-		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", ptr.Deref(h.namespace, v1beta1constants.GardenNamespace), err)
+func (h *health) listManagedResources(ctx context.Context, namespace string) ([]resourcesv1alpha1.ManagedResource, error) {
+	managedResourceList := &resourcesv1alpha1.ManagedResourceList{}
+	if err := h.seedClient.List(ctx, managedResourceList, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", namespace, err)
 	}
 
-	managedResourceListIstioSystem := &resourcesv1alpha1.ManagedResourceList{}
-	if err := h.seedClient.List(ctx, managedResourceListIstioSystem, client.InNamespace(ptr.Deref(h.namespace, v1beta1constants.IstioSystemNamespace))); err != nil {
-		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", ptr.Deref(h.namespace, v1beta1constants.IstioSystemNamespace), err)
-	}
-
-	return append(managedResourceListGarden.Items, managedResourceListIstioSystem.Items...), nil
+	return managedResourceList.Items, nil
 }
 
 func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
