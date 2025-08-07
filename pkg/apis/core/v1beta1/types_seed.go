@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 )
 
 // +genclient
@@ -455,7 +457,7 @@ const (
 	// SeedSystemComponentsHealthy is a constant for a condition type indicating the system components health.
 	SeedSystemComponentsHealthy ConditionType = "SeedSystemComponentsHealthy"
 	// SeedObservabilityComponentsHealthy is a constant for a condition type indicating the observability components health.
-	SeedObservabilityComponentsHealthy ConditionType = "SeedObservabilityComponentsHealthy"
+	SeedObservabilityComponentsHealthy ConditionType = v1beta1constants.SeedObservabilityComponentsHealthy
 )
 
 // Resource constants for Gardener object types

@@ -755,6 +755,8 @@ const (
 	LabelCareCheckHealthAlerts = "monitoring.care.gardener.cloud/check-health-alerts"
 	// ObservabilityComponentsHealthy is a constant for a condition type indicating the health of observability components.
 	ObservabilityComponentsHealthy = "ObservabilityComponentsHealthy"
+	// ObservabilityComponentsHealthy is a constant for a condition type indicating the health of observability components in the seed.
+	SeedObservabilityComponentsHealthy = "SeedObservabilityComponentsHealthy"
 
 	// LabelWorkerName is a constant for a label that indicates the name of the Worker resource the MachineDeployment belongs to.
 	LabelWorkerName = "worker.gardener.cloud/name"
