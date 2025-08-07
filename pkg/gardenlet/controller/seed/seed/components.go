@@ -579,6 +579,9 @@ func (r *Reconciler) newCachePrometheus(log logr.Logger, seed *seedpkg.Seed, see
 		Replicas:          1,
 		Retention:         ptr.To(monitoringv1.Duration("1d")),
 		RetentionSize:     "5GB",
+		AdditionalLabels: map[string]string{
+			v1beta1constants.LabelCareCheckHealthAlerts: "true",
+		},
 		AdditionalPodLabels: map[string]string{
 			"networking.resources.gardener.cloud/to-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets: v1beta1constants.LabelNetworkPolicyAllowed,
 		},
@@ -602,6 +605,9 @@ func (r *Reconciler) newSeedPrometheus(log logr.Logger, seed *seedpkg.Seed) (com
 		Replicas:          1,
 		RetentionSize:     "85GB",
 		VPAMinAllowed:     &corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("400Mi")},
+		AdditionalLabels: map[string]string{
+			v1beta1constants.LabelCareCheckHealthAlerts: "true",
+		},
 		AdditionalPodLabels: map[string]string{
 			"networking.resources.gardener.cloud/to-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets:            v1beta1constants.LabelNetworkPolicyAllowed,
 			"networking.resources.gardener.cloud/to-extensions-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets: v1beta1constants.LabelNetworkPolicyAllowed,
@@ -632,6 +638,9 @@ func (r *Reconciler) newAggregatePrometheus(log logr.Logger, seed *seedpkg.Seed,
 			PrometheusRules: aggregateprometheus.CentralPrometheusRules(seedIsGarden),
 			ScrapeConfigs:   aggregateprometheus.CentralScrapeConfigs(),
 			ServiceMonitors: aggregateprometheus.CentralServiceMonitors(),
+		},
+		AdditionalLabels: map[string]string{
+			v1beta1constants.LabelCareCheckHealthAlerts: "true",
 		},
 		AdditionalPodLabels: map[string]string{
 			"networking.resources.gardener.cloud/to-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets:                                                                       v1beta1constants.LabelNetworkPolicyAllowed,
