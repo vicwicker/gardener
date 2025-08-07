@@ -751,6 +751,8 @@ const (
 	// LabelCareConditionType is a key for a label on a ManagedResource indicating to which condition type its status
 	// should be aggregated.
 	LabelCareConditionType = "care.gardener.cloud/condition-type"
+	// LabelCareCheckHealthAlerts is the key for a label on a Prometheus resources to indicate the gardenlet should check for health alerts.
+	LabelCareCheckHealthAlerts = "monitoring.care.gardener.cloud/check-health-alerts"
 	// ObservabilityComponentsHealthy is a constant for a condition type indicating the health of observability components.
 	ObservabilityComponentsHealthy = "ObservabilityComponentsHealthy"
 
