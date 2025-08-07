@@ -6,6 +6,7 @@ package prometheus
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
@@ -107,6 +108,8 @@ type Values struct {
 	RestrictToNamespace bool
 	// ResourceRequests defines the initial resource requests
 	ResourceRequests *corev1.ResourceList
+	// AdditionalLabels is a map of additional labels that should be added to the Prometheus resource.
+	AdditionalLabels map[string]string
 }
 
 // CentralConfigs contains configuration for this Prometheus instance that is created together with it. This should
@@ -380,9 +383,13 @@ func (p *prometheus) addCentralConfigsToRegistry(registry *managedresources.Regi
 }
 
 func (p *prometheus) getLabels() map[string]string {
-	return map[string]string{
+	labels := make(map[string]string)
+	maps.Copy(labels, p.values.AdditionalLabels)
+	maps.Copy(labels, map[string]string{
 		v1beta1constants.LabelApp:  "prometheus",
 		v1beta1constants.LabelRole: v1beta1constants.LabelMonitoring,
 		"name":                     p.values.Name,
-	}
+	})
+
+	return labels
 }
