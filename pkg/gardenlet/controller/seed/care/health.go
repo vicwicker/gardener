@@ -10,7 +10,6 @@ import (
 	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -68,7 +67,7 @@ func (h *health) Check(
 		return conditions.ConvertToSlice()
 	}
 
-	prometheusList, err := h.listPrometheus(ctx)
+	prometheusMap, err := h.mapPrometheus(ctx)
 	if err != nil {
 		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
 		return conditions.ConvertToSlice()
@@ -80,7 +79,7 @@ func (h *health) Check(
 			conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, newSystemComponentsCondition, nil)
 			return nil
 		}, func(ctx context.Context) error {
-			newObservabilityComponentsCondition := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResourcesGarden, prometheusList)
+			newObservabilityComponentsCondition := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResourcesGarden, prometheusMap)
 			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponentsCondition, nil)
 			return nil
 		},
@@ -100,22 +99,22 @@ func (h *health) listManagedResources(ctx context.Context, namespace string) ([]
 	return managedResourceList.Items, nil
 }
 
-func (h *health) listPrometheus(ctx context.Context) ([]monitoringv1.Prometheus, error) {
+func (h *health) mapPrometheus(ctx context.Context) (map[string]monitoringv1.Prometheus, error) {
 	var (
-		prometheusList []monitoringv1.Prometheus
+		prometheusMap  = map[string]monitoringv1.Prometheus{}
+		prometheusList = &monitoringv1.PrometheusList{}
 		namespace      = ptr.Deref(h.namespace, v1beta1constants.GardenNamespace)
 	)
 
-	for _, prometheusName := range []string{"aggregate", "cache", "seed"} {
-		prometheus := &monitoringv1.Prometheus{ObjectMeta: metav1.ObjectMeta{Name: prometheusName, Namespace: namespace}}
-		if err := h.seedClient.Get(ctx, client.ObjectKeyFromObject(prometheus), prometheus); err != nil {
-			return nil, fmt.Errorf("failed listing Prometheus resources in namespace %s: %w", namespace, err)
-		}
-
-		prometheusList = append(prometheusList, *prometheus)
+	if err := h.seedClient.List(ctx, prometheusList, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", namespace, err)
 	}
 
-	return prometheusList, nil
+	for _, prometheus := range prometheusList.Items {
+		prometheusMap[prometheus.Name] = prometheus
+	}
+
+	return prometheusMap, nil
 }
 
 func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
@@ -129,19 +128,30 @@ func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, ma
 	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
 }
 
-func (h *health) checkObservabilityComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheusList []monitoringv1.Prometheus) *gardencorev1beta1.Condition {
-	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+func (h *health) checkObservabilityComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheusMap map[string]monitoringv1.Prometheus) *gardencorev1beta1.Condition {
+	filterFn := func(managedResource resourcesv1alpha1.ManagedResource) bool {
 		return managedResource.Spec.Class != nil && managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(v1beta1constants.ObservabilityComponentsHealthy)
-	}, nil); exitCondition != nil {
+	}
+
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, filterFn, nil); exitCondition != nil {
 		return exitCondition
 	}
 
-	for _, prometheus := range prometheusList {
-		for r := 0; r < int(ptr.Deref(prometheus.Spec.Replicas, 1)); r++ {
-			serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
-			endpoint := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
-			if err := healthutils.CheckHealthAlerts(endpoint, 9090); err != nil {
-				return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionFalse, "PrometheusUnhealthy", fmt.Sprintf("Prometheus \"%s/%s\" is unhealthy: %v", prometheus.Namespace, prometheus.Name, err)))
+	for _, managedResource := range managedResources {
+		if filterFn(managedResource) {
+			continue
+		}
+
+		for _, resource := range managedResource.Status.Resources {
+			if resource.Kind == "Prometheus" && resource.Labels[v1beta1constants.LabelCareCheckHealthAlerts] == "true" {
+				prometheus := prometheusMap[resource.Name]
+				serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
+				for r := 0; r < int(ptr.Deref(prometheus.Spec.Replicas, 1)); r++ {
+					endpoint := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
+					if err := healthutils.CheckHealthAlerts(endpoint, 9090); err != nil {
+						return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionFalse, "PrometheusUnhealthy", fmt.Sprintf("Prometheus \"%s/%s\" is unhealthy: %v", prometheus.Namespace, prometheus.Name, err)))
+					}
+				}
 			}
 		}
 	}
