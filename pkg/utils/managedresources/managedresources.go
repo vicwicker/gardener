@@ -47,6 +47,12 @@ const (
 	LabelValueGardener = "gardener"
 	// LabelValueOperator is a value for an origin label on a managed resource with the value 'gardener-operator'.
 	LabelValueOperator = "gardener-operator"
+	// LabelKeyManagedBy is a constant for a key of a label on a Secret describing who is managing it.
+	LabelKeyManagedBy = "managed-by"
+	// LabelValueManagedByGardenerOperator is a value for a label on a Secret describing that it is managed by the Gardener operator.
+	LabelValueManagedByGardenerOperator = "gardener-operator"
+	// LabelValueManagedByGardenlet is a value for a label on a Secret describing that it is managed by the gardenlet.
+	LabelValueManagedByGardenlet = "gardenlet"
 )
 
 // New initiates a new ManagedResource object which can be reconciled.
