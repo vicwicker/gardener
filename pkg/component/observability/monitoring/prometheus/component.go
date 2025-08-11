@@ -109,6 +109,8 @@ type Values struct {
 	ResourceRequests *corev1.ResourceList
 	// CareConditionType is the condition type for the care health check.
 	CareConditionType string
+	// ManagedBy is the value of the managed-by label for the ManagedResource.
+	ManagedBy string
 }
 
 // CentralConfigs contains configuration for this Prometheus instance that is created together with it. This should
@@ -270,7 +272,12 @@ func (p *prometheus) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	if err := managedresources.CreateForSeedWithLabels(ctx, p.client, p.namespace, p.name(), false, map[string]string{v1beta1constants.LabelCareConditionType: p.values.CareConditionType}, resources); err != nil {
+	managedResourceLabels := map[string]string{v1beta1constants.LabelCareConditionType: p.values.CareConditionType}
+	if p.values.ManagedBy != "" {
+		managedResourceLabels[managedresources.LabelKeyManagedBy] = p.values.ManagedBy
+	}
+
+	if err := managedresources.CreateForSeedWithLabels(ctx, p.client, p.namespace, p.name(), false, managedResourceLabels, resources); err != nil {
 		return err
 	}
 
@@ -285,7 +292,7 @@ func (p *prometheus) Deploy(ctx context.Context) error {
 			return err
 		}
 
-		if err := managedresources.CreateForShootWithLabels(ctx, p.client, p.namespace, p.name()+"-target", managedresources.LabelValueGardener, false, map[string]string{v1beta1constants.LabelCareConditionType: p.values.CareConditionType}, resourcesTarget); err != nil {
+		if err := managedresources.CreateForShootWithLabels(ctx, p.client, p.namespace, p.name()+"-target", managedresources.LabelValueGardener, false, managedResourceLabels, resourcesTarget); err != nil {
 			return err
 		}
 	} else {
