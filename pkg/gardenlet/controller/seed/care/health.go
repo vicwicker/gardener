@@ -21,6 +21,7 @@ import (
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
 )
 
 // health contains information needed to execute health checks for a seed.
@@ -116,7 +117,7 @@ func (h *health) checkObservabilityComponents(ctx context.Context, condition gar
 	}
 
 	for _, managedResource := range managedResources {
-		if !filterFn(managedResource) {
+		if !filterFn(managedResource) && managedResource.Labels[managedresources.LabelKeyManagedBy] != managedresources.LabelValueManagedByGardenlet {
 			continue
 		}
 
