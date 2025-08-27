@@ -62,7 +62,7 @@ var _ = Describe("HealthChecker", func() {
 			func(conditions []gardencorev1beta1.Condition, upToDate bool, stepTime bool, conditionMatcher types.GomegaMatcher) {
 				var (
 					mr      = new(resourcesv1alpha1.ManagedResource)
-					checker = NewHealthChecker(fakeClient, fakeClock, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
+					checker = NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
 				)
 
 				if !upToDate {
@@ -266,7 +266,7 @@ var _ = Describe("HealthChecker", func() {
 					Expect(fakeClient.Create(ctx, obj.DeepCopy())).To(Succeed(), "creating deployment "+client.ObjectKeyFromObject(obj).String())
 				}
 
-				checker := NewHealthChecker(fakeClient, fakeClock, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
+				checker := NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
 
 				exitCondition, err := checker.CheckLoggingControlPlane(ctx, namespace, eventLoggingEnabled, condition)
 				Expect(err).NotTo(HaveOccurred())
@@ -299,7 +299,7 @@ var _ = Describe("HealthChecker", func() {
 		// CheckExtensionCondition
 		DescribeTable("#CheckExtensionCondition - HealthCheckReport",
 			func(healthCheckOutdatedThreshold *metav1.Duration, condition gardencorev1beta1.Condition, extensionsConditions []ExtensionCondition, expected types.GomegaMatcher) {
-				checker := NewHealthChecker(fakeClient, fakeClock, nil, nil)
+				checker := NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, nil, nil)
 				updatedCondition := checker.CheckExtensionCondition(condition, extensionsConditions, healthCheckOutdatedThreshold)
 				if expected == nil {
 					Expect(updatedCondition).To(BeNil())
@@ -445,7 +445,7 @@ var _ = Describe("HealthChecker", func() {
 					Expect(fakeClient.Create(ctx, obj.DeepCopy())).To(Succeed(), "creating deployment "+client.ObjectKeyFromObject(obj).String())
 				}
 
-				checker := NewHealthChecker(fakeClient, fakeClock, nil, nil)
+				checker := NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, nil, nil)
 
 				exitCondition, err := checker.CheckMonitoringControlPlane(
 					ctx,
@@ -475,7 +475,7 @@ var _ = Describe("HealthChecker", func() {
 
 		DescribeTable("#CheckControllerInstallation",
 			func(conditions []gardencorev1beta1.Condition, upToDate bool, stepTime bool, conditionMatcher types.GomegaMatcher) {
-				var checker = NewHealthChecker(fakeClient, fakeClock, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
+				var checker = NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
 
 				controllerRegistration := &gardencorev1beta1.ControllerRegistration{
 					ObjectMeta: metav1.ObjectMeta{

@@ -17,6 +17,7 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	kuberneteshealth "github.com/gardener/gardener/pkg/utils/kubernetes/health"
 	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
@@ -42,7 +43,7 @@ func NewHealth(
 		seed:          seed,
 		clock:         clock,
 		namespace:     namespace,
-		healthChecker: healthchecker.NewHealthChecker(seedClient, clock, conditionThresholds, seed.Status.LastOperation),
+		healthChecker: healthchecker.NewHealthChecker(seedClient, clock, kuberneteshealth.DefaultPrometheusEndpointBuilder, conditionThresholds, seed.Status.LastOperation),
 	}
 }
 
