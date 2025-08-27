@@ -7,18 +7,21 @@ package checker_test
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
 	"github.com/onsi/gomega/types"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	testclock "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -26,8 +29,10 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 	. "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+	healthtest "github.com/gardener/gardener/test/utils/kubernetes/health"
 )
 
 var _ = Describe("HealthChecker", func() {
@@ -729,6 +734,176 @@ var _ = Describe("HealthChecker", func() {
 				false,
 				PointTo(beConditionWithFalseStatusReasonAndMsg("Unknown", "bar is unknown"))),
 		)
+
+		Describe("CheckManagedPrometheuses", func() {
+			var (
+				healthChecker  *HealthChecker
+				condition      = gardencorev1beta1.Condition{Type: "test"}
+				filterTrueFunc = func(resourcesv1alpha1.ManagedResource) bool { return true }
+			)
+
+			Context("resource filtering and selection", func() {
+				var managedResources []resourcesv1alpha1.ManagedResource
+
+				BeforeEach(func() {
+					healthChecker = NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, nil, nil)
+					managedResources = []resourcesv1alpha1.ManagedResource{{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-mr",
+							Namespace: namespace,
+						},
+						Status: resourcesv1alpha1.ManagedResourceStatus{
+							Resources: []resourcesv1alpha1.ObjectReference{
+								{
+									ObjectReference: corev1.ObjectReference{
+										Kind:      monitoringv1.PrometheusesKind,
+										Name:      "test-prometheus",
+										Namespace: namespace,
+									},
+								},
+							},
+						},
+					}}
+				})
+
+				It("should return nil when no prometheus instances are found", func() {
+					managedResources[0].Status.Resources = []resourcesv1alpha1.ObjectReference{}
+
+					result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+					Expect(result).To(BeNil())
+				})
+
+				It("should return nil when filter function returns false", func() {
+					filterFalseFunc := func(resourcesv1alpha1.ManagedResource) bool { return false }
+
+					result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterFalseFunc)
+					Expect(result).To(BeNil())
+				})
+
+				It("should skip resources with ignore annotation", func() {
+					managedResources[0].Annotations = map[string]string{
+						resourcesv1alpha1.Ignore: "true",
+					}
+
+					result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+					Expect(result).To(BeNil())
+				})
+
+				It("should return error condition when prometheus resource is not found", func() {
+					result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+					Expect(result).NotTo(BeNil())
+					Expect(result.Status).To(Equal(gardencorev1beta1.ConditionUnknown))
+					Expect(result.Reason).To(Equal("ConditionCheckError"))
+					Expect(result.Message).To(ContainSubstring("failed checking Prometheus"))
+				})
+			})
+
+			Context("prometheus health checking", func() {
+				type prometheusEndpoint struct {
+					host string
+					port int
+				}
+
+				var (
+					servers             []*healthtest.PrometheusServer
+					prometheus          *monitoringv1.Prometheus
+					prometheusEndpoints []prometheusEndpoint
+					managedResources    = []resourcesv1alpha1.ManagedResource{{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-mr",
+							Namespace: namespace,
+						},
+						Status: resourcesv1alpha1.ManagedResourceStatus{
+							Resources: []resourcesv1alpha1.ObjectReference{
+								{
+									ObjectReference: corev1.ObjectReference{
+										Kind:      monitoringv1.PrometheusesKind,
+										Name:      "test-prometheus",
+										Namespace: namespace,
+									},
+								},
+							},
+						},
+					}}
+
+					prometheusEndpointBuilder = func(prometheus *monitoringv1.Prometheus, replica int) (string, int) {
+						endpoint := prometheusEndpoints[replica]
+						return endpoint.host, endpoint.port
+					}
+				)
+
+				BeforeEach(func() {
+					healthChecker = NewHealthChecker(fakeClient, fakeClock, prometheusEndpointBuilder, nil, nil)
+					replicas := int32(3)
+					servers = make([]*healthtest.PrometheusServer, 0, replicas)
+					prometheusEndpoints = make([]prometheusEndpoint, 0, replicas)
+					for range replicas {
+						server := healthtest.NewPrometheusServer()
+						servers = append(servers, server)
+						prometheusEndpoints = append(prometheusEndpoints, prometheusEndpoint{
+							host: server.Endpoint(),
+							port: server.Port(),
+						})
+					}
+
+					prometheus = &monitoringv1.Prometheus{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-prometheus",
+							Namespace: namespace,
+						},
+						Spec: monitoringv1.PrometheusSpec{
+							CommonPrometheusFields: monitoringv1.CommonPrometheusFields{
+								Replicas:    &replicas,
+								ServiceName: ptr.To("test-service"),
+							},
+						},
+					}
+
+					Expect(fakeClient.Create(ctx, prometheus)).To(Succeed())
+				})
+
+				AfterEach(func() {
+					for _, server := range servers {
+						if server != nil {
+							server.Close()
+						}
+					}
+				})
+
+				It("should return error condition when health check returns error in at least a replica", func() {
+					servers[0].SetSuccessResponse("vector", "0")
+					servers[1].SetErrorResponse(http.StatusInternalServerError, "server error")
+					servers[2].SetSuccessResponse("vector", "5")
+
+					result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+					Expect(result).NotTo(BeNil())
+					Expect(result.Status).To(Equal(gardencorev1beta1.ConditionFalse))
+					Expect(result.Reason).To(Equal("PrometheusHealthAlertsError"))
+					Expect(result.Message).To(ContainSubstring("Querying Prometheus \"shoot--foo--bar/test-prometheus\" for health alerts returned an error"))
+				})
+
+				It("should return failing condition when health alerts are firing in at least a replica", func() {
+					servers[0].SetSuccessResponse("vector", "0")
+					servers[1].SetSuccessResponse("vector", "0")
+					servers[2].SetSuccessResponse("vector", "5")
+
+					result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+					Expect(result).NotTo(BeNil())
+					Expect(result.Status).To(Equal(gardencorev1beta1.ConditionFalse))
+					Expect(result.Reason).To(Equal("PrometheusHealthAlertsFiring"))
+					Expect(result.Message).To(ContainSubstring("There are firing health alerts in Prometheus \"shoot--foo--bar/test-prometheus\""))
+				})
+
+				It("should return nil when no health alerts are firing", func() {
+					servers[0].SetSuccessResponse("vector", "0")
+					servers[1].SetSuccessResponse("vector", "0")
+					servers[2].SetSuccessResponse("vector", "0")
+
+					result := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+					Expect(result).To(BeNil())
+				})
+			})
+		})
 	})
 })
 

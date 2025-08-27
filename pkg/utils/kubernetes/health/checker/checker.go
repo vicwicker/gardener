@@ -51,24 +51,27 @@ var (
 
 // HealthChecker contains the condition thresholds.
 type HealthChecker struct {
-	reader              client.Reader
-	clock               clock.Clock
-	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration
-	lastOperation       *gardencorev1beta1.LastOperation
+	reader                    client.Reader
+	clock                     clock.Clock
+	prometheusEndpointBuilder health.PrometheusEndpointBuilder
+	conditionThresholds       map[gardencorev1beta1.ConditionType]time.Duration
+	lastOperation             *gardencorev1beta1.LastOperation
 }
 
 // NewHealthChecker creates a new health checker.
 func NewHealthChecker(
 	reader client.Reader,
 	clock clock.Clock,
+	prometheusEndpointBuilder health.PrometheusEndpointBuilder,
 	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration,
 	lastOperation *gardencorev1beta1.LastOperation,
 ) *HealthChecker {
 	return &HealthChecker{
-		reader:              reader,
-		clock:               clock,
-		conditionThresholds: conditionThresholds,
-		lastOperation:       lastOperation,
+		reader:                    reader,
+		clock:                     clock,
+		prometheusEndpointBuilder: prometheusEndpointBuilder,
+		conditionThresholds:       conditionThresholds,
+		lastOperation:             lastOperation,
 	}
 }
 
@@ -539,13 +542,12 @@ func (h *HealthChecker) CheckManagedPrometheuses(
 }
 
 func (h *HealthChecker) checkPrometheusHealthAlerts(ctx context.Context, condition gardencorev1beta1.Condition, prometheus *monitoringv1.Prometheus) *gardencorev1beta1.Condition {
-	serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
 	replicas := int(ptr.Deref(prometheus.Spec.Replicas, 1))
 
 	for r := range replicas {
-		endpoint := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
+		endpoint, port := h.prometheusEndpointBuilder(prometheus, r)
 
-		hasAlerts, err := health.HasPrometheusHealthAlerts(ctx, endpoint, 9090)
+		hasAlerts, err := health.HasPrometheusHealthAlerts(ctx, endpoint, port)
 		if err != nil {
 			msg := fmt.Sprintf("Querying Prometheus \"%s/%s\" for health alerts returned an error: %v", prometheus.Namespace, prometheus.Name, err)
 			return ptr.To(v1beta1helper.FailedCondition(h.clock, h.lastOperation, h.conditionThresholds, condition, "PrometheusHealthAlertsError", msg))
