@@ -17,7 +17,6 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
-	kuberneteshealth "github.com/gardener/gardener/pkg/utils/kubernetes/health"
 	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
@@ -39,11 +38,14 @@ func NewHealth(
 	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration,
 ) HealthCheck {
 	return &health{
-		seedClient:    seedClient,
-		seed:          seed,
-		clock:         clock,
-		namespace:     namespace,
-		healthChecker: healthchecker.NewHealthChecker(seedClient, clock, kuberneteshealth.DefaultPrometheusEndpointBuilder, conditionThresholds, seed.Status.LastOperation),
+		seedClient: seedClient,
+		seed:       seed,
+		clock:      clock,
+		namespace:  namespace,
+		healthChecker: healthchecker.NewHealthCheckerBuilder(seedClient, clock).
+			WithConditionThresholds(conditionThresholds).
+			WithLastOperation(seed.Status.LastOperation).
+			Build(),
 	}
 }
 

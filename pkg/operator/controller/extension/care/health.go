@@ -20,7 +20,6 @@ import (
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	"github.com/gardener/gardener/pkg/utils/gardener/operator"
-	kuberneteshealth "github.com/gardener/gardener/pkg/utils/kubernetes/health"
 	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
@@ -51,7 +50,9 @@ func NewHealth(
 		virtualClient:       virtualClient,
 		clock:               clock,
 		conditionThresholds: conditionThresholds,
-		healthChecker:       healthchecker.NewHealthChecker(runtimeClient, clock, kuberneteshealth.DefaultPrometheusEndpointBuilder, conditionThresholds, nil),
+		healthChecker: healthchecker.NewHealthCheckerBuilder(runtimeClient, clock).
+			WithConditionThresholds(conditionThresholds).
+			Build(),
 	}
 }
 

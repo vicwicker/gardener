@@ -58,20 +58,52 @@ type HealthChecker struct {
 	lastOperation             *gardencorev1beta1.LastOperation
 }
 
-// NewHealthChecker creates a new health checker.
-func NewHealthChecker(
-	reader client.Reader,
-	clock clock.Clock,
-	prometheusEndpointBuilder health.PrometheusEndpointBuilder,
-	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration,
-	lastOperation *gardencorev1beta1.LastOperation,
-) *HealthChecker {
+// HealthCheckerBuilder provides a fluent interface for constructing HealthChecker instances.
+type HealthCheckerBuilder struct {
+	HealthChecker
+}
+
+// NewHealthCheckerBuilder creates a new builder with required parameters.
+func NewHealthCheckerBuilder(reader client.Reader, clock clock.Clock) *HealthCheckerBuilder {
+	return &HealthCheckerBuilder{
+		HealthChecker{
+			reader: reader,
+			clock:  clock,
+		},
+	}
+}
+
+// WithPrometheusEndpointBuilder sets the Prometheus endpoint builder.
+func (b *HealthCheckerBuilder) WithPrometheusEndpointBuilder(builder health.PrometheusEndpointBuilder) *HealthCheckerBuilder {
+	b.prometheusEndpointBuilder = builder
+	return b
+}
+
+// WithConditionThresholds sets the condition thresholds.
+func (b *HealthCheckerBuilder) WithConditionThresholds(thresholds map[gardencorev1beta1.ConditionType]time.Duration) *HealthCheckerBuilder {
+	b.conditionThresholds = thresholds
+	return b
+}
+
+// WithLastOperation sets the last operation.
+func (b *HealthCheckerBuilder) WithLastOperation(lastOp *gardencorev1beta1.LastOperation) *HealthCheckerBuilder {
+	b.lastOperation = lastOp
+	return b
+}
+
+// Build creates the HealthChecker instance with sensible defaults for unset optional parameters.
+func (b *HealthCheckerBuilder) Build() *HealthChecker {
+	// Apply defaults for optional parameters
+	if b.prometheusEndpointBuilder == nil {
+		b.prometheusEndpointBuilder = health.DefaultPrometheusEndpointBuilder
+	}
+
 	return &HealthChecker{
-		reader:                    reader,
-		clock:                     clock,
-		prometheusEndpointBuilder: prometheusEndpointBuilder,
-		conditionThresholds:       conditionThresholds,
-		lastOperation:             lastOperation,
+		reader:                    b.reader,
+		clock:                     b.clock,
+		prometheusEndpointBuilder: b.prometheusEndpointBuilder,
+		conditionThresholds:       b.conditionThresholds,
+		lastOperation:             b.lastOperation,
 	}
 }
 

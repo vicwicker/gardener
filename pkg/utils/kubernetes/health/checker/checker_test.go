@@ -29,7 +29,6 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 	. "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	healthtest "github.com/gardener/gardener/test/utils/kubernetes/health"
@@ -62,7 +61,9 @@ var _ = Describe("HealthChecker", func() {
 			func(conditions []gardencorev1beta1.Condition, upToDate bool, stepTime bool, conditionMatcher types.GomegaMatcher) {
 				var (
 					mr      = new(resourcesv1alpha1.ManagedResource)
-					checker = NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
+					checker = NewHealthCheckerBuilder(fakeClient, fakeClock).
+						WithConditionThresholds(map[gardencorev1beta1.ConditionType]time.Duration{}).
+						Build()
 				)
 
 				if !upToDate {
@@ -266,7 +267,9 @@ var _ = Describe("HealthChecker", func() {
 					Expect(fakeClient.Create(ctx, obj.DeepCopy())).To(Succeed(), "creating deployment "+client.ObjectKeyFromObject(obj).String())
 				}
 
-				checker := NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
+				checker := NewHealthCheckerBuilder(fakeClient, fakeClock).
+					WithConditionThresholds(map[gardencorev1beta1.ConditionType]time.Duration{}).
+					Build()
 
 				exitCondition, err := checker.CheckLoggingControlPlane(ctx, namespace, eventLoggingEnabled, condition)
 				Expect(err).NotTo(HaveOccurred())
@@ -299,7 +302,7 @@ var _ = Describe("HealthChecker", func() {
 		// CheckExtensionCondition
 		DescribeTable("#CheckExtensionCondition - HealthCheckReport",
 			func(healthCheckOutdatedThreshold *metav1.Duration, condition gardencorev1beta1.Condition, extensionsConditions []ExtensionCondition, expected types.GomegaMatcher) {
-				checker := NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, nil, nil)
+				checker := NewHealthCheckerBuilder(fakeClient, fakeClock).Build()
 				updatedCondition := checker.CheckExtensionCondition(condition, extensionsConditions, healthCheckOutdatedThreshold)
 				if expected == nil {
 					Expect(updatedCondition).To(BeNil())
@@ -445,7 +448,7 @@ var _ = Describe("HealthChecker", func() {
 					Expect(fakeClient.Create(ctx, obj.DeepCopy())).To(Succeed(), "creating deployment "+client.ObjectKeyFromObject(obj).String())
 				}
 
-				checker := NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, nil, nil)
+				checker := NewHealthCheckerBuilder(fakeClient, fakeClock).Build()
 
 				exitCondition, err := checker.CheckMonitoringControlPlane(
 					ctx,
@@ -475,7 +478,9 @@ var _ = Describe("HealthChecker", func() {
 
 		DescribeTable("#CheckControllerInstallation",
 			func(conditions []gardencorev1beta1.Condition, upToDate bool, stepTime bool, conditionMatcher types.GomegaMatcher) {
-				var checker = NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, map[gardencorev1beta1.ConditionType]time.Duration{}, nil)
+				var checker = NewHealthCheckerBuilder(fakeClient, fakeClock).
+					WithConditionThresholds(map[gardencorev1beta1.ConditionType]time.Duration{}).
+					Build()
 
 				controllerRegistration := &gardencorev1beta1.ControllerRegistration{
 					ObjectMeta: metav1.ObjectMeta{
@@ -746,7 +751,7 @@ var _ = Describe("HealthChecker", func() {
 				var managedResources []resourcesv1alpha1.ManagedResource
 
 				BeforeEach(func() {
-					healthChecker = NewHealthChecker(fakeClient, fakeClock, health.DefaultPrometheusEndpointBuilder, nil, nil)
+					healthChecker = NewHealthCheckerBuilder(fakeClient, fakeClock).Build()
 					managedResources = []resourcesv1alpha1.ManagedResource{{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-mr",
@@ -833,7 +838,9 @@ var _ = Describe("HealthChecker", func() {
 				)
 
 				BeforeEach(func() {
-					healthChecker = NewHealthChecker(fakeClient, fakeClock, prometheusEndpointBuilder, nil, nil)
+					healthChecker = NewHealthCheckerBuilder(fakeClient, fakeClock).
+						WithPrometheusEndpointBuilder(prometheusEndpointBuilder).
+						Build()
 					replicas := int32(3)
 					servers = make([]*healthtest.PrometheusServer, 0, replicas)
 					prometheusEndpoints = make([]prometheusEndpoint, 0, replicas)

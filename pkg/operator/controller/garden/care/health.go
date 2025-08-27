@@ -55,7 +55,10 @@ func NewHealth(
 		gardenClientSet:     gardenClientSet,
 		clock:               clock,
 		conditionThresholds: conditionThresholds,
-		healthChecker:       healthchecker.NewHealthChecker(runtimeClient, clock, kuberneteshealth.DefaultPrometheusEndpointBuilder, conditionThresholds, garden.Status.LastOperation),
+		healthChecker: healthchecker.NewHealthCheckerBuilder(runtimeClient, clock).
+			WithConditionThresholds(conditionThresholds).
+			WithLastOperation(garden.Status.LastOperation).
+			Build(),
 	}
 }
 

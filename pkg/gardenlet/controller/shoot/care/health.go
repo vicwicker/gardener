@@ -109,7 +109,10 @@ func NewHealth(
 		gardenletConfiguration: gardenletConfig,
 		controllerRegistrationToLastHeartbeatTime: map[string]*metav1.MicroTime{},
 		conditionThresholds:                       conditionThresholds,
-		healthChecker:                             healthchecker.NewHealthChecker(seedClientSet.Client(), clock, health.DefaultPrometheusEndpointBuilder, conditionThresholds, shoot.GetInfo().Status.LastOperation),
+		healthChecker: healthchecker.NewHealthCheckerBuilder(seedClientSet.Client(), clock).
+			WithConditionThresholds(conditionThresholds).
+			WithLastOperation(shoot.GetInfo().Status.LastOperation).
+			Build(),
 	}
 }
 
