@@ -17,6 +17,9 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+// PrometheusHealthAlertsChecker is a function type that checks for firing health alerts in a Prometheus instance.
+type PrometheusHealthAlertsChecker func(ctx context.Context, endpoint string, port int) (bool, error)
+
 // HasPrometheusHealthAlerts counts firing health alerts in a Prometheus endpoint
 func HasPrometheusHealthAlerts(ctx context.Context, endpoint string, port int) (bool, error) {
 	client, err := prom.NewClient(prom.Config{Address: fmt.Sprintf("http://%s:%d", endpoint, port)})
