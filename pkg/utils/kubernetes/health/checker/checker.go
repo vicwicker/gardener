@@ -51,11 +51,11 @@ var (
 
 // HealthChecker contains the condition thresholds.
 type HealthChecker struct {
-	reader                    client.Reader
-	clock                     clock.Clock
-	prometheusEndpointBuilder health.PrometheusEndpointBuilder
-	conditionThresholds       map[gardencorev1beta1.ConditionType]time.Duration
-	lastOperation             *gardencorev1beta1.LastOperation
+	reader                 client.Reader
+	clock                  clock.Clock
+	prometheusAlertChecker health.PrometheusAlertChecker
+	conditionThresholds    map[gardencorev1beta1.ConditionType]time.Duration
+	lastOperation          *gardencorev1beta1.LastOperation
 }
 
 // HealthCheckerBuilder provides a fluent interface for constructing HealthChecker instances.
@@ -74,8 +74,8 @@ func NewHealthCheckerBuilder(reader client.Reader, clock clock.Clock) *HealthChe
 }
 
 // WithPrometheusEndpointBuilder sets the Prometheus endpoint builder.
-func (b *HealthCheckerBuilder) WithPrometheusEndpointBuilder(builder health.PrometheusEndpointBuilder) *HealthCheckerBuilder {
-	b.prometheusEndpointBuilder = builder
+func (b *HealthCheckerBuilder) WithPrometheusAlertChecker(checker health.PrometheusAlertChecker) *HealthCheckerBuilder {
+	b.prometheusAlertChecker = checker
 	return b
 }
 
@@ -94,16 +94,16 @@ func (b *HealthCheckerBuilder) WithLastOperation(lastOp *gardencorev1beta1.LastO
 // Build creates the HealthChecker instance with sensible defaults for unset optional parameters.
 func (b *HealthCheckerBuilder) Build() *HealthChecker {
 	// Apply defaults for optional parameters
-	if b.prometheusEndpointBuilder == nil {
-		b.prometheusEndpointBuilder = health.DefaultPrometheusEndpointBuilder
+	if b.prometheusAlertChecker == nil {
+		b.prometheusAlertChecker = health.DefaultPrometheusAlertChecker
 	}
 
 	return &HealthChecker{
-		reader:                    b.reader,
-		clock:                     b.clock,
-		prometheusEndpointBuilder: b.prometheusEndpointBuilder,
-		conditionThresholds:       b.conditionThresholds,
-		lastOperation:             b.lastOperation,
+		reader:                 b.reader,
+		clock:                  b.clock,
+		prometheusAlertChecker: b.prometheusAlertChecker,
+		conditionThresholds:    b.conditionThresholds,
+		lastOperation:          b.lastOperation,
 	}
 }
 
@@ -577,9 +577,10 @@ func (h *HealthChecker) checkPrometheusHealthAlerts(ctx context.Context, conditi
 	replicas := int(ptr.Deref(prometheus.Spec.Replicas, 1))
 
 	for r := range replicas {
-		endpoint, port := h.prometheusEndpointBuilder(prometheus, r)
+		serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
+		endpoint := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, r, serviceName, prometheus.Namespace)
 
-		hasAlerts, err := health.HasPrometheusHealthAlerts(ctx, endpoint, port)
+		hasAlerts, err := h.prometheusAlertChecker(ctx, endpoint, 9090)
 		if err != nil {
 			msg := fmt.Sprintf("Querying Prometheus \"%s/%s\" for health alerts returned an error: %v", prometheus.Namespace, prometheus.Name, err)
 			return ptr.To(v1beta1helper.FailedCondition(h.clock, h.lastOperation, h.conditionThresholds, condition, "PrometheusHealthAlertsError", msg))

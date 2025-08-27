@@ -18,16 +18,9 @@ import (
 )
 
 // PrometheusEndpointBuilder builds Prometheus endpoint URLs for health checking.
-type PrometheusEndpointBuilder func(prometheus *monitoringv1.Prometheus, replica int) (string, int)
+type PrometheusAlertChecker func(ctx context.Context, endpoint string, port int) (bool, error)
 
-// PrometheusEndpointFromHeadlessService implements the default production endpoint building logic.
-func PrometheusEndpointFromHeadlessService(prometheus *monitoringv1.Prometheus, replica int) (string, int) {
-	serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
-	endpoint := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, replica, serviceName, prometheus.Namespace)
-	return endpoint, 9090
-}
-
-var DefaultPrometheusEndpointBuilder = PrometheusEndpointFromHeadlessService
+var DefaultPrometheusAlertChecker = HasPrometheusHealthAlerts
 
 // HasPrometheusHealthAlerts counts firing health alerts in a Prometheus endpoint
 func HasPrometheusHealthAlerts(ctx context.Context, endpoint string, port int) (bool, error) {
