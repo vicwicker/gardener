@@ -6,12 +6,7 @@ package health_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"strconv"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -21,6 +16,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	healthtest "github.com/gardener/gardener/test/utils/kubernetes/health"
 )
 
 var _ = Describe("Monitoring", func() {
@@ -181,137 +177,62 @@ var _ = Describe("Monitoring", func() {
 	})
 
 	Describe("HasPrometheusHealthAlerts", func() {
-		var (
-			server          *httptest.Server
-			endpoint        string
-			port            int
-			responseHandler func(w http.ResponseWriter)
-
-			createPrometheusResponse = func(resultType string, count string) map[string]any {
-				// Example response format:
-				// > curl 'http://localhost:9090/api/v1/query' -d 'query=count(ALERTS{alertstate="firing",type="health"}) or vector(0)'
-				// {"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1756207466.038,"10"]}]}}
-				return map[string]any{
-					"status": "success",
-					"data": map[string]any{
-						"resultType": resultType,
-						"result": []map[string]any{{
-							"metric": map[string]any{},
-							"value":  []any{float64(time.Now().Unix()), count},
-						}},
-					},
-				}
-			}
-
-			createResponseHandler = func(statusCode int, response map[string]any) func(w http.ResponseWriter) {
-				return func(w http.ResponseWriter) {
-					w.WriteHeader(statusCode)
-					if err := json.NewEncoder(w).Encode(response); err != nil {
-						http.Error(w, "failed to marshal response: "+err.Error(), http.StatusInternalServerError)
-						return
-					}
-				}
-			}
-		)
+		var server *healthtest.PrometheusServer
 
 		BeforeEach(func() {
-			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				path := r.URL.Path
-				query := r.FormValue("query")
-				if path != "/api/v1/query" || query != `count(ALERTS{alertstate="firing", type="health"}) or vector(0)` {
-					http.Error(w, "bad request: "+path+"?query="+query, http.StatusBadRequest)
-					return
-				}
-
-				// delegate to test-specific handler
-				if responseHandler != nil {
-					responseHandler(w)
-				}
-			}))
-
-			parsedURL, err := url.Parse(server.URL)
-			Expect(err).NotTo(HaveOccurred())
-
-			endpoint = parsedURL.Hostname()
-			port, err = strconv.Atoi(parsedURL.Port())
-			Expect(err).NotTo(HaveOccurred())
+			server = healthtest.NewPrometheusServer()
 		})
 
 		AfterEach(func() {
 			if server != nil {
 				server.Close()
 			}
-
-			// reset test-specific handler
-			responseHandler = nil
 		})
 
 		It("should return true when alerts are present", func() {
-			response := createPrometheusResponse("vector", "5")
-			responseHandler = createResponseHandler(http.StatusOK, response)
+			server.SetSuccessResponse("vector", "5")
 
-			hasAlerts, err := health.HasPrometheusHealthAlerts(context.Background(), endpoint, port)
+			hasAlerts, err := health.HasPrometheusHealthAlerts(context.Background(), server.Endpoint(), server.Port())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(hasAlerts).To(BeTrue())
 		})
 
 		It("should return false when no alerts are present", func() {
-			response := createPrometheusResponse("vector", "0")
-			responseHandler = createResponseHandler(http.StatusOK, response)
+			server.SetSuccessResponse("vector", "0")
 
-			hasAlerts, err := health.HasPrometheusHealthAlerts(context.Background(), endpoint, port)
+			hasAlerts, err := health.HasPrometheusHealthAlerts(context.Background(), server.Endpoint(), server.Port())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(hasAlerts).To(BeFalse())
 		})
 
 		It("should handle prometheus error responses", func() {
-			response := map[string]any{
-				"status": "error",
-				"error":  "invalid query",
-			}
-			responseHandler = createResponseHandler(http.StatusBadRequest, response)
+			server.SetErrorResponse(http.StatusBadRequest, "invalid query")
 
-			_, err := health.HasPrometheusHealthAlerts(context.Background(), endpoint, port)
+			_, err := health.HasPrometheusHealthAlerts(context.Background(), server.Endpoint(), server.Port())
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("invalid query"))
 		})
 
 		It("should handle warnings in prometheus response", func() {
-			response := createPrometheusResponse("vector", "5")
-			response["warnings"] = []string{"some warning"}
-			responseHandler = createResponseHandler(http.StatusOK, response)
+			server.SetWarningsResponse([]string{"some warning"})
 
-			_, err := health.HasPrometheusHealthAlerts(context.Background(), endpoint, port)
+			_, err := health.HasPrometheusHealthAlerts(context.Background(), server.Endpoint(), server.Port())
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(Equal("query returned warnings"))
 		})
 
 		It("should handle unexpected result type", func() {
-			response := map[string]any{
-				"status": "success",
-				"data": map[string]any{
-					"resultType": "matrix",
-					"result":     []any{},
-				},
-			}
-			responseHandler = createResponseHandler(http.StatusOK, response)
+			server.SetMatrixResponse()
 
-			_, err := health.HasPrometheusHealthAlerts(context.Background(), endpoint, port)
+			_, err := health.HasPrometheusHealthAlerts(context.Background(), server.Endpoint(), server.Port())
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(Equal("query returned an unexpected result type"))
 		})
 
 		It("should handle empty vector response", func() {
-			response := map[string]any{
-				"status": "success",
-				"data": map[string]any{
-					"resultType": "vector",
-					"result":     []any{},
-				},
-			}
-			responseHandler = createResponseHandler(http.StatusOK, response)
+			server.SetEmptyVectorResponse()
 
-			_, err := health.HasPrometheusHealthAlerts(context.Background(), endpoint, port)
+			_, err := health.HasPrometheusHealthAlerts(context.Background(), server.Endpoint(), server.Port())
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(Equal("query returned empty vector"))
 		})
