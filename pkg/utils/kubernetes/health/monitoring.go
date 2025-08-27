@@ -17,6 +17,18 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+// PrometheusEndpointBuilder builds Prometheus endpoint URLs for health checking.
+type PrometheusEndpointBuilder func(prometheus *monitoringv1.Prometheus, replica int) (string, int)
+
+// PrometheusEndpointFromHeadlessService implements the default production endpoint building logic.
+func PrometheusEndpointFromHeadlessService(prometheus *monitoringv1.Prometheus, replica int) (string, int) {
+	serviceName := ptr.Deref(prometheus.Spec.ServiceName, "prometheus-operated")
+	endpoint := fmt.Sprintf("prometheus-%s-%d.%s.%s.svc.cluster.local", prometheus.Name, replica, serviceName, prometheus.Namespace)
+	return endpoint, 9090
+}
+
+var DefaultPrometheusEndpointBuilder = PrometheusEndpointFromHeadlessService
+
 // HasPrometheusHealthAlerts counts firing health alerts in a Prometheus endpoint
 func HasPrometheusHealthAlerts(ctx context.Context, endpoint string, port int) (bool, error) {
 	client, err := prom.NewClient(prom.Config{Address: fmt.Sprintf("http://%s:%d", endpoint, port)})

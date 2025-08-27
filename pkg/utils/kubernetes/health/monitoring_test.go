@@ -237,4 +237,50 @@ var _ = Describe("Monitoring", func() {
 			Expect(err.Error()).To(Equal("query returned empty vector"))
 		})
 	})
+
+	Describe("PrometheusEndpointFromHeadlessService", func() {
+
+		It("should build endpoint for different replicas", func() {
+			prometheus := &monitoringv1.Prometheus{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-prometheus",
+					Namespace: "test-namespace",
+				},
+				Spec: monitoringv1.PrometheusSpec{
+					CommonPrometheusFields: monitoringv1.CommonPrometheusFields{
+						Replicas: ptr.To(int32(3)),
+					},
+				},
+			}
+			endpoint0, port0 := health.PrometheusEndpointFromHeadlessService(prometheus, 0)
+			endpoint1, port1 := health.PrometheusEndpointFromHeadlessService(prometheus, 1)
+			endpoint2, port2 := health.PrometheusEndpointFromHeadlessService(prometheus, 2)
+
+			Expect(endpoint0).To(Equal("prometheus-test-prometheus-0.prometheus-operated.test-namespace.svc.cluster.local"))
+			Expect(endpoint1).To(Equal("prometheus-test-prometheus-1.prometheus-operated.test-namespace.svc.cluster.local"))
+			Expect(endpoint2).To(Equal("prometheus-test-prometheus-2.prometheus-operated.test-namespace.svc.cluster.local"))
+
+			Expect(port0).To(Equal(9090))
+			Expect(port1).To(Equal(9090))
+			Expect(port2).To(Equal(9090))
+		})
+	})
+
+	Describe("DefaultPrometheusEndpointBuilder", func() {
+
+		It("should be set to PrometheusEndpointFromHeadlessService", func() {
+			prometheus := &monitoringv1.Prometheus{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "test-ns",
+				},
+			}
+
+			defaultEndpoint, defaultPort := health.DefaultPrometheusEndpointBuilder(prometheus, 0)
+			directEndpoint, directPort := health.PrometheusEndpointFromHeadlessService(prometheus, 0)
+
+			Expect(defaultEndpoint).To(Equal(directEndpoint))
+			Expect(defaultPort).To(Equal(directPort))
+		})
+	})
 })
