@@ -62,7 +62,6 @@ var _ = Describe("HealthChecker", func() {
 				var (
 					mr      = new(resourcesv1alpha1.ManagedResource)
 					checker = NewHealthCheckerBuilder(fakeClient, fakeClock).
-						WithConditionThresholds(map[gardencorev1beta1.ConditionType]time.Duration{}).
 						Build()
 				)
 
@@ -268,7 +267,6 @@ var _ = Describe("HealthChecker", func() {
 				}
 
 				checker := NewHealthCheckerBuilder(fakeClient, fakeClock).
-					WithConditionThresholds(map[gardencorev1beta1.ConditionType]time.Duration{}).
 					Build()
 
 				exitCondition, err := checker.CheckLoggingControlPlane(ctx, namespace, eventLoggingEnabled, condition)
@@ -479,7 +477,6 @@ var _ = Describe("HealthChecker", func() {
 		DescribeTable("#CheckControllerInstallation",
 			func(conditions []gardencorev1beta1.Condition, upToDate bool, stepTime bool, conditionMatcher types.GomegaMatcher) {
 				var checker = NewHealthCheckerBuilder(fakeClient, fakeClock).
-					WithConditionThresholds(map[gardencorev1beta1.ConditionType]time.Duration{}).
 					Build()
 
 				controllerRegistration := &gardencorev1beta1.ControllerRegistration{
