@@ -49,17 +49,19 @@ var (
 
 // HealthChecker contains the condition thresholds.
 type HealthChecker struct {
-	reader              client.Reader
-	clock               clock.Clock
-	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration
-	lastOperation       *gardencorev1beta1.LastOperation
+	reader                        client.Reader
+	clock                         clock.Clock
+	conditionThresholds           map[gardencorev1beta1.ConditionType]time.Duration
+	lastOperation                 *gardencorev1beta1.LastOperation
+	prometheusHealthAlertsChecker health.PrometheusHealthAlertsChecker
 }
 
 // NewHealthChecker creates a new health checker.
 func NewHealthChecker(reader client.Reader, clock clock.Clock, opts ...option) *HealthChecker {
 	healthChecker := &HealthChecker{
-		reader: reader,
-		clock:  clock,
+		reader:                        reader,
+		clock:                         clock,
+		prometheusHealthAlertsChecker: health.HasPrometheusHealthAlerts,
 	}
 
 	for _, opt := range opts {
@@ -82,6 +84,13 @@ func WithConditionThresholds(thresholds map[gardencorev1beta1.ConditionType]time
 func WithLastOperation(lastOp *gardencorev1beta1.LastOperation) option {
 	return func(h *HealthChecker) {
 		h.lastOperation = lastOp
+	}
+}
+
+// WithPrometheusHealthAlertsChecker sets the Prometheus health alerts checker function.
+func WithPrometheusHealthAlertsChecker(prometheusHealthAlertsChecker health.PrometheusHealthAlertsChecker) option {
+	return func(h *HealthChecker) {
+		h.prometheusHealthAlertsChecker = prometheusHealthAlertsChecker
 	}
 }
 
