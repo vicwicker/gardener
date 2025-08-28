@@ -23,6 +23,7 @@ import (
 	"github.com/gardener/gardener/pkg/controllerutils"
 	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
 // NewHealthCheck is used to create a new Health check instance.
@@ -70,7 +71,10 @@ func (r *Reconciler) Reconcile(reconcileCtx context.Context, req reconcile.Reque
 		r.SeedClient,
 		r.Clock,
 		r.Namespace,
-		r.conditionThresholdsToProgressingMapping(),
+		checker.NewHealthChecker(
+			r.SeedClient,
+			r.Clock,
+			checker.WithConditionThresholds(r.conditionThresholdsToProgressingMapping())),
 	).Check(
 		ctx,
 		seedConditions,
