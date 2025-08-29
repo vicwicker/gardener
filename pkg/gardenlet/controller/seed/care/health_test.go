@@ -374,6 +374,72 @@ var _ = Describe("Seed health", func() {
 			})
 		})
 	})
+
+	Describe("IsGardenletObservabilityComponent", func() {
+		It("should return true when all required conditions are met", func() {
+			managedResource := resourcesv1alpha1.ManagedResource{
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class: ptr.To("seed"),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1beta1constants.LabelCareConditionType: string(v1beta1constants.ObservabilityComponentsHealthy),
+						"managed-by":                            "gardenlet",
+					},
+				},
+			}
+
+			Expect(IsGardenletObservabilityComponent(managedResource)).To(BeTrue())
+		})
+
+		It("should return false when spec.class is nil", func() {
+			managedResource := resourcesv1alpha1.ManagedResource{
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class: nil,
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1beta1constants.LabelCareConditionType: string(v1beta1constants.ObservabilityComponentsHealthy),
+						"managed-by":                            "gardenlet",
+					},
+				},
+			}
+
+			Expect(IsGardenletObservabilityComponent(managedResource)).To(BeFalse())
+		})
+
+		It("should return false when care condition type label has wrong value", func() {
+			managedResource := resourcesv1alpha1.ManagedResource{
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class: ptr.To("seed"),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1beta1constants.LabelCareConditionType: "SystemComponentsHealthy",
+						"managed-by":                            "gardenlet",
+					},
+				},
+			}
+
+			Expect(IsGardenletObservabilityComponent(managedResource)).To(BeFalse())
+		})
+
+		It("should return false when managed-by label has wrong value", func() {
+			managedResource := resourcesv1alpha1.ManagedResource{
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class: ptr.To("seed"),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1beta1constants.LabelCareConditionType: string(v1beta1constants.ObservabilityComponentsHealthy),
+						"managed-by":                            "gardener-resource-manager",
+					},
+				},
+			}
+
+			Expect(IsGardenletObservabilityComponent(managedResource)).To(BeFalse())
+		})
+	})
 })
 
 func beConditionWithStatusReasonAndMessage(status gardencorev1beta1.ConditionStatus, reason, message string) types.GomegaMatcher {

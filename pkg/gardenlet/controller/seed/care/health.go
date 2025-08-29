@@ -86,13 +86,7 @@ func (h *health) checkSystemComponents(ctx context.Context, condition gardencore
 		return exitCondition
 	}
 
-	filterFunc := func(managedResource resourcesv1alpha1.ManagedResource) bool {
-		return managedResource.Spec.Class != nil &&
-			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(v1beta1constants.ObservabilityComponentsHealthy) &&
-			managedResource.Labels[managedresources.LabelKeyManagedBy] == managedresources.LabelValueGardenlet
-	}
-
-	if exitCondition := h.healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterFunc); exitCondition != nil {
+	if exitCondition := h.healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, IsGardenletObservabilityComponent); exitCondition != nil {
 		return exitCondition
 	}
 
@@ -141,4 +135,11 @@ func NewSeedConditions(clock clock.Clock, status gardencorev1beta1.SeedStatus) S
 		systemComponentsHealthy:           v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedSystemComponentsHealthy),
 		emergencyStopShootReconciliations: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedEmergencyStopShootReconciliations),
 	}
+}
+
+// IsGardenletObservabilityComponent returns true if a ManagedResource corresponds to an observability component managed by the gardenlet.
+func IsGardenletObservabilityComponent(managedResource resourcesv1alpha1.ManagedResource) bool {
+	return managedResource.Spec.Class != nil &&
+		managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(v1beta1constants.ObservabilityComponentsHealthy) &&
+		managedResource.Labels[managedresources.LabelKeyManagedBy] == managedresources.LabelValueGardenlet
 }
