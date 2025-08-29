@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
@@ -64,13 +63,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenClientMap clientmap
 			&operatorv1alpha1.Garden{},
 			&handler.EnqueueRequestForObject{},
 			builder.WithPredicates(predicate.GardenCreatedOrReconciledSuccessfully()),
-		).
-		Watches(
-			&monitoringv1.Prometheus{},
-			&handler.EnqueueRequestForObject{},
-			builder.WithPredicates(predicateutils.InNamespace(r.GardenNamespace)),
-		).
-		Build(r)
+		).Build(r)
 	if err != nil {
 		return err
 	}
