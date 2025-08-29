@@ -7,9 +7,11 @@ package care
 import (
 	"context"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -63,6 +65,12 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster, seedCluste
 			handler.EnqueueRequestsFromMapFunc(r.MapManagedResourceToSeed),
 			r.IsSystemComponent(),
 			predicateutils.ManagedResourceConditionsChanged(),
+		)).
+		WatchesRawSource(source.Kind[client.Object](
+			seedCluster.GetCache(),
+			&monitoringv1.Prometheus{},
+			&handler.EnqueueRequestForObject{},
+			predicateutils.InNamespace(ptr.Deref(r.Namespace, v1beta1constants.GardenNamespace)),
 		)).
 		Complete(r)
 }

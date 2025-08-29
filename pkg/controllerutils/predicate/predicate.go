@@ -6,6 +6,7 @@ package predicate
 
 import (
 	"reflect"
+	"strings"
 
 	"k8s.io/utils/set"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,6 +33,20 @@ func IsDeleting() predicate.Predicate {
 func HasName(name string) predicate.Predicate {
 	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return obj.GetName() == name
+	})
+}
+
+// InNamespace returns a predicate which returns true when the object is in the provided namespace.
+func InNamespace(namespace string) predicate.Predicate {
+	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		return obj.GetNamespace() == namespace
+	})
+}
+
+// InNamespaceStartsWith returns a predicate which returns true when the object's namespace starts with the provided prefix.
+func InNamespaceStartsWith(prefix string) predicate.Predicate {
+	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		return strings.HasPrefix(obj.GetNamespace(), prefix)
 	})
 }
 

@@ -7,6 +7,7 @@ package care
 import (
 	"context"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
@@ -23,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	predicateutils "github.com/gardener/gardener/pkg/controllerutils/predicate"
 	"github.com/gardener/gardener/pkg/utils"
 )
@@ -31,10 +33,11 @@ import (
 const ControllerName = "shoot-care"
 
 // AddToManager adds Reconciler to the given manager.
-func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster cluster.Cluster) error {
+func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster, seedCluster cluster.Cluster) error {
 	if r.GardenClient == nil {
 		r.GardenClient = gardenCluster.GetClient()
 	}
+	// check r.SeedClientSet.Client() ???
 	if r.Clock == nil {
 		r.Clock = clock.RealClock{}
 	}
@@ -52,6 +55,12 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster cluster.Clu
 				&gardencorev1beta1.Shoot{},
 				r.EventHandler(),
 				r.ShootPredicate()),
+		).
+		WatchesRawSource(
+			source.Kind[client.Object](seedCluster.GetCache(),
+				&monitoringv1.Prometheus{},
+				&handler.EnqueueRequestForObject{},
+				predicateutils.InNamespaceStartsWith(v1beta1constants.TechnicalIDPrefix)),
 		).
 		Complete(r)
 }
