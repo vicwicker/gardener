@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/spf13/cobra"
 	certificatesv1 "k8s.io/api/certificates/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -150,6 +151,17 @@ func run(ctx context.Context, cancel context.CancelFunc, log logr.Logger, cfg *g
 					&eventsv1.Event{},
 				},
 			},
+		},
+		NewCache: func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
+			if opts.ByObject == nil {
+				opts.ByObject = map[client.Object]cache.ByObject{}
+			}
+			opts.ByObject[&monitoringv1.Prometheus{}] = cache.ByObject{
+				Namespaces: map[string]cache.Config{
+					v1beta1constants.GardenNamespace: {},
+				},
+			}
+			return cache.New(config, opts)
 		},
 	})
 	if err != nil {
