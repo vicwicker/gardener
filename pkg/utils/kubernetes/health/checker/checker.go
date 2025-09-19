@@ -542,6 +542,11 @@ func (h *HealthChecker) CheckManagedPrometheuses(
 	managedResources []resourcesv1alpha1.ManagedResource,
 	filterFunc func(resourcesv1alpha1.ManagedResource) bool,
 ) *gardencorev1beta1.Condition {
+	var (
+		prometheuses []*monitoringv1.Prometheus
+		tasks        []flow.TaskFn
+	)
+
 	for _, managedResource := range managedResources {
 		if !filterFunc(managedResource) || managedResource.Annotations[resourcesv1alpha1.Ignore] == "true" {
 			continue
@@ -550,14 +555,21 @@ func (h *HealthChecker) CheckManagedPrometheuses(
 		for _, resource := range managedResource.Status.Resources {
 			if resource.Kind == monitoringv1.PrometheusesKind {
 				prometheus := &monitoringv1.Prometheus{ObjectMeta: metav1.ObjectMeta{Namespace: resource.Namespace, Name: resource.Name}}
-				if condition := h.CheckPrometheus(ctx, condition, prometheus); condition != nil {
-					return condition
-				}
+				prometheuses = append(prometheuses, prometheus)
 			}
 		}
 	}
 
-	return nil
+	conditions := make([]*gardencorev1beta1.Condition, len(prometheuses))
+	for i, prometheus := range prometheuses {
+		tasks = append(tasks, func(ctx context.Context) error {
+			conditions[i] = h.CheckPrometheus(ctx, condition, prometheus)
+			return nil
+		})
+	}
+
+	_ = flow.Parallel(tasks...)(ctx)
+	return firstFailedCondition(conditions)
 }
 
 // CheckPrometheus checks the health of the given Prometheus resource.
