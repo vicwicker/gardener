@@ -998,6 +998,43 @@ var _ = Describe("HealthChecker", func() {
 					duration := time.Since(start)
 					Expect(duration).To(BeNumerically("<", maxDuration), fmt.Sprintf("Test took too long: %d ms. Are Prometheus instances checked in parallel?", duration.Milliseconds()))
 				})
+
+				It("should always return the same error regardless the order of managed Prometheus", func() {
+					testPrometheusHealthAlertsChecker = func(_ context.Context, endpoint string, port int) (bool, error) {
+						Expect(port).To(Equal(9090))
+						switch endpoint {
+						case "prometheus-test-prometheus-0.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+							return healthy()
+						case "prometheus-test-prometheus-1.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+							return healthy()
+						case "prometheus-test-prometheus-2.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+							return unhealthy()
+						case "prometheus-test-prometheus2-0.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+							return healthy()
+						case "prometheus-test-prometheus2-1.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+							return unhealthy()
+						case "prometheus-test-prometheus2-2.prometheus-operated.shoot--foo--bar.svc.cluster.local":
+							return erroring()
+						default:
+							msg := "unexpected endpoint: " + endpoint
+							Fail(msg)
+							return false, errors.New(msg)
+						}
+					}
+
+					result1 := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+
+					// Change the order of managed resources and expect the same result
+					managedResources = []resourcesv1alpha1.ManagedResource{managedResources[1], managedResources[0]}
+					result2 := healthChecker.CheckManagedPrometheuses(ctx, condition, managedResources, filterTrueFunc)
+
+					Expect(result1).To(Equal(result2))
+					Expect(result2).NotTo(BeNil())
+					Expect(result2.Status).To(Equal(gardencorev1beta1.ConditionFalse))
+					Expect(result2.Reason).To(Equal("PrometheusHealthAlertsFiring"))
+					Expect(result2.Message).To(Equal("There are firing health alerts in Prometheus \"shoot--foo--bar/test-prometheus\". " +
+						"Access Prometheus UI and check for firing ALERTS with type=\"health\"."))
+				})
 			})
 		})
 	})
