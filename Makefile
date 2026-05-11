@@ -350,8 +350,6 @@ seed2-up seed2-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
 
 # gardener-{up,dev,down}
 gardener-up gardener-dev: $(SKAFFOLD) $(HELM) $(KUBECTL) operator-up garden-up seed-up
-	$(KUBECTL) annotate garden local gardener.cloud/operation=reconcile
-	TIMEOUT=900 ./hack/usage/wait-for-bootstrap.sh
 gardener-down: $(SKAFFOLD) $(HELM) $(KUBECTL) seed-down garden-down
 
 # gardenadm-{up,down}
