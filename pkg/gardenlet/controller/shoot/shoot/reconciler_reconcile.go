@@ -956,10 +956,15 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 			Fn:           botanist.WaitForPlutono,
 			Dependencies: flow.NewTaskIDs(deployPlutonoForLogging, deployPlutonoForMonitoring),
 		})
-		_ = g.Add(flow.Task{
+		deployIstioBasicAuthServer = g.Add(flow.Task{
 			Name:         "Deploying istio-basic-auth-server",
 			Fn:           flow.TaskFn(o.Shoot.Components.ControlPlane.IstioBasicAuthServer.Deploy).RetryUntilTimeout(defaultInterval, 2*time.Minute),
 			Dependencies: flow.NewTaskIDs(waitUntilAlertmanagerReconciled, waitUntilPrometheusReconciled, waitUntilPlutonoReconciled),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Waiting until istio-basic-auth-server is reconciled",
+			Fn:           o.Shoot.Components.ControlPlane.IstioBasicAuthServer.Wait,
+			Dependencies: flow.NewTaskIDs(deployIstioBasicAuthServer),
 		})
 
 		hibernateControlPlane = g.Add(flow.Task{
