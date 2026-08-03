@@ -7,6 +7,7 @@ package secrets
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -75,6 +76,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if err := r.Client.Patch(ctx, namespace, patch); err != nil {
 				return reconcile.Result{}, err
 			}
+		}
+	}
+
+	// TEMP repro of observability rotation race: delay copying secrets into the seed namespace so the
+	// gardener-operator annotates the seed before the new global monitoring secret is propagated. Revert before commit.
+	gmList := &corev1.SecretList{}
+	if err := r.Client.List(ctx, gmList, client.InNamespace(r.GardenNamespace),
+		client.MatchingLabels{v1beta1constants.GardenRole: v1beta1constants.GardenRoleGlobalMonitoring}); err == nil && len(gmList.Items) > 0 {
+		const reproAnnotation = "repro-delayed-until"
+		gm := &gmList.Items[0]
+		if gm.Annotations[reproAnnotation] == "" {
+			patch := client.MergeFrom(gm.DeepCopy())
+			metav1.SetMetaDataAnnotation(&gm.ObjectMeta, reproAnnotation, time.Now().Add(2*time.Minute).Format(time.RFC3339))
+			_ = r.Client.Patch(ctx, gm, patch)
+			return reconcile.Result{RequeueAfter: 2 * time.Minute}, nil
+		}
+		if t, parseErr := time.Parse(time.RFC3339, gm.Annotations[reproAnnotation]); parseErr == nil && time.Now().Before(t) {
+			return reconcile.Result{RequeueAfter: time.Until(t)}, nil
 		}
 	}
 
