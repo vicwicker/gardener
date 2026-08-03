@@ -123,6 +123,21 @@ var _ = Describe("Secrets", func() {
 			assertions(secret)
 		})
 
+		It("should copy the last rotation initiation time label but not other source labels", func() {
+			source := globalMonitoringSecret.DeepCopy()
+			source.Labels = map[string]string{
+				"last-rotation-initiation-time": "1700000000",
+				"unrelated":                     "value",
+			}
+
+			secret, err := ReplicateGlobalMonitoringSecret(ctx, fakeClient, source, namespace, func(name string) string {
+				return "prefix-" + name
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(secret.Labels).To(HaveKeyWithValue("last-rotation-initiation-time", "1700000000"))
+			Expect(secret.Labels).NotTo(HaveKey("unrelated"))
+		})
+
 		It("should delete stale replicas after replicating a new secret", func() {
 			stale := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
