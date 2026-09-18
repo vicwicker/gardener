@@ -10,13 +10,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	apiserverfeatures "github.com/gardener/gardener/pkg/apiserver/features"
-	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
+	"github.com/gardener/gardener/pkg/apiserver/features"
 )
 
 func TestGardener(t *testing.T) {
-	apiserverfeatures.RegisterFeatureGates()
-	gardenletfeatures.RegisterFeatureGates()
+	features.RegisterFeatureGates()
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Utils Gardener Suite")
 }

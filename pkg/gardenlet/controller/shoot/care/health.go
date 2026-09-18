@@ -596,8 +596,10 @@ func (h *Health) checkObservabilityData(
 	*gardencorev1beta1.Condition,
 	error,
 ) {
-	if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, nil); exitCondition != nil {
-		return exitCondition, nil
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, nil); exitCondition != nil {
+			return exitCondition, nil
+		}
 	}
 
 	c := v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityDataRunning", "All observability data is healthy.")
@@ -1292,9 +1294,7 @@ func NewShootConditions(clock clock.Clock, shoot *gardencorev1beta1.Shoot) Shoot
 		systemComponentsHealthy:        v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootSystemComponentsHealthy),
 	}
 
-	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
-		shootConditions.observabilityDataHealthy = new(v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootObservabilityDataHealthy))
-	}
+	shootConditions.observabilityDataHealthy = new(v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootObservabilityDataHealthy))
 
 	if !v1beta1helper.IsWorkerless(shoot) {
 		shootConditions.everyNodeReady = new(v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootEveryNodeReady))

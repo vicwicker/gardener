@@ -118,12 +118,14 @@ func (h *health) checkSystemComponents(ctx context.Context, condition gardencore
 }
 
 func (h *health) checkObservabilityData(ctx context.Context, condition gardencorev1beta1.Condition, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
-	filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
-		return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.Gardenlet
-	}
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
+			return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.Gardenlet
+		}
 
-	if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
-		return exitCondition
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
+			return exitCondition
+		}
 	}
 
 	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityDataRunning", "All observability data is healthy."))
@@ -183,9 +185,7 @@ func NewSeedConditions(clock clock.Clock, status gardencorev1beta1.SeedStatus) S
 		emergencyStopShootReconciliations: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedEmergencyStopShootReconciliations),
 	}
 
-	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
-		seedConditions.observabilityDataHealthy = new(v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedObservabilityDataHealthy))
-	}
+	seedConditions.observabilityDataHealthy = new(v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedObservabilityDataHealthy))
 
 	return seedConditions
 }

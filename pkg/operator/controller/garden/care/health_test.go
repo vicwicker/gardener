@@ -638,7 +638,7 @@ var _ = Describe("Garden health", func() {
 				expectHealthyObservabilityData(updatedConditions)
 			})
 
-			It("should not set ObservabilityDataHealthy condition if Prometheus health check is down but the PrometheusHealthChecks feature gate is disabled", func() {
+			It("should set ObservabilityDataHealthy condition to true if Prometheus health check is down but the PrometheusHealthChecks feature gate is disabled", func() {
 				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.PrometheusHealthChecks, false))
 
 				updatedConditions := NewHealth(
@@ -652,7 +652,7 @@ var _ = Describe("Garden health", func() {
 				).Check(ctx, NewGardenConditions(fakeClock, garden.Status))
 
 				expectHealthyObservabilityComponents(updatedConditions)
-				Expect(updatedConditions).ToNot(ContainElement(HaveField("Type", operatorv1alpha1.ObservabilityDataHealthy)))
+				expectHealthyObservabilityData(updatedConditions)
 			})
 
 			Context("Prometheus is filtered out from the health check", func() {
@@ -714,6 +714,7 @@ var _ = Describe("Garden health", func() {
 					beConditionOfTypeWithStatusReasonAndMessage(operatorv1alpha1.VirtualComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionOfTypeWithStatusReasonAndMessage(operatorv1alpha1.VirtualGardenAPIServerAvailable, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionOfTypeWithStatusReasonAndMessage(operatorv1alpha1.ObservabilityComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
+					beConditionOfTypeWithStatusReasonAndMessage(operatorv1alpha1.ObservabilityDataHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 				))
 			})
 
@@ -730,6 +731,7 @@ var _ = Describe("Garden health", func() {
 					beConditionOfTypeWithStatusReasonAndMessage(operatorv1alpha1.RuntimeComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionOfTypeWithStatusReasonAndMessage(operatorv1alpha1.VirtualComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionOfTypeWithStatusReasonAndMessage(operatorv1alpha1.ObservabilityComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
+					beConditionOfTypeWithStatusReasonAndMessage(operatorv1alpha1.ObservabilityDataHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 				))
 			})
 		})
@@ -743,6 +745,7 @@ var _ = Describe("Garden health", func() {
 					OfType("RuntimeComponentsHealthy"),
 					OfType("VirtualComponentsHealthy"),
 					OfType("ObservabilityComponentsHealthy"),
+					OfType("ObservabilityDataHealthy"),
 				))
 			})
 		})
@@ -756,6 +759,7 @@ var _ = Describe("Garden health", func() {
 					gardencorev1beta1.ConditionType("RuntimeComponentsHealthy"),
 					gardencorev1beta1.ConditionType("VirtualComponentsHealthy"),
 					gardencorev1beta1.ConditionType("ObservabilityComponentsHealthy"),
+					gardencorev1beta1.ConditionType("ObservabilityDataHealthy"),
 				))
 			})
 		})

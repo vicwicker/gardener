@@ -220,6 +220,8 @@ var _ = Describe("Seed Care Control", func() {
 					MatchFields(IgnoreExtras, Fields{
 						"Type": BeEquivalentTo("SeedSystemComponentsHealthy"),
 					}), MatchFields(IgnoreExtras, Fields{
+						"Type": BeEquivalentTo("ObservabilityDataHealthy"),
+					}), MatchFields(IgnoreExtras, Fields{
 						"Type":    BeEquivalentTo("EmergencyStopShootReconciliations"),
 						"Status":  BeEquivalentTo("True"),
 						"Reason":  Equal("EmergencyStopShootReconciliations"),
@@ -245,6 +247,8 @@ var _ = Describe("Seed Care Control", func() {
 				Expect(gardenClient.Get(ctx, client.ObjectKeyFromObject(seed), updatedSeed)).To(Succeed())
 				Expect(updatedSeed.Status.Conditions).To(ConsistOf(MatchFields(IgnoreExtras, Fields{
 					"Type": BeEquivalentTo("SeedSystemComponentsHealthy"),
+				}), MatchFields(IgnoreExtras, Fields{
+					"Type": BeEquivalentTo("ObservabilityDataHealthy"),
 				})))
 			})
 		})

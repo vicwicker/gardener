@@ -614,7 +614,7 @@ func nopGarbageCollectorFunc() NewGarbageCollectorFunc {
 }
 
 func containConditionsInUnknownStatus(message string, isWorkerless bool) types.GomegaMatcher {
-	var expectedLength = 5
+	var expectedLength = 6
 	matcher := And(
 		ContainCondition(
 			OfType(gardencorev1beta1.ShootAPIServerAvailable),
@@ -632,6 +632,11 @@ func containConditionsInUnknownStatus(message string, isWorkerless bool) types.G
 			WithMessage(message),
 		),
 		ContainCondition(
+			OfType(gardencorev1beta1.ShootObservabilityDataHealthy),
+			WithStatus(gardencorev1beta1.ConditionUnknown),
+			WithMessage(message),
+		),
+		ContainCondition(
 			OfType(gardencorev1beta1.ShootSystemComponentsHealthy),
 			WithStatus(gardencorev1beta1.ConditionUnknown),
 			WithMessage(message),
@@ -639,7 +644,7 @@ func containConditionsInUnknownStatus(message string, isWorkerless bool) types.G
 	)
 
 	if !isWorkerless {
-		expectedLength = 6
+		expectedLength = 7
 		matcher = And(matcher,
 			ContainCondition(
 				OfType(gardencorev1beta1.ShootEveryNodeReady),
