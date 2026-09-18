@@ -29,6 +29,10 @@ func ReconciliationSuccessful(shoot *gardencorev1beta1.Shoot) (bool, string) {
 	shootConditions := sets.New(gardenerutils.GetShootConditionTypes(workerlessShoot)...)
 
 	for _, condition := range shoot.Status.Conditions {
+		if condition.Type == gardencorev1beta1.ShootObservabilityDataHealthy {
+			continue
+		}
+
 		if os.Getenv("IPFAMILY") == "ipv6" && condition.Reason == "PrometheusHealthCheckDown" {
 			// tolerate PrometheusHealthCheckDown for shoots on IPv6 tests due to shoot cross-node communication issues in the local setup.
 			// TODO(vicwicker): Run the tests normally for IPv6 once the shoot cross-node communication in the local setup works.

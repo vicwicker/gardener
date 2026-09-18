@@ -325,6 +325,10 @@ func gardenReconciliationSuccessful(garden *operatorv1alpha1.Garden) (bool, stri
 	}
 
 	for _, condition := range garden.Status.Conditions {
+		if condition.Type == operatorv1alpha1.ObservabilityDataHealthy {
+			continue
+		}
+
 		if condition.Status != gardencorev1beta1.ConditionTrue {
 			return false, fmt.Sprintf("condition type %s is not true yet, had message %s with reason %s", condition.Type, condition.Message, condition.Reason)
 		}
