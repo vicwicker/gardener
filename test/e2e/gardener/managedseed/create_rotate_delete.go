@@ -296,10 +296,10 @@ func itShouldVerifyPrometheusHealthCheck(s *ManagedSeedContext, prometheusName s
 
 	ItShouldCreatePrometheusRuleForShoot(s.ShootContext, rule)
 
-	It("Wait until SeedSystemComponentsHealthy is false", func(ctx SpecContext) {
+	It("Wait until SeedObservabilityDataHealthy is false", func(ctx SpecContext) {
 		Eventually(ctx, s.GardenKomega.Object(s.SeedContext.Seed)).Should(
 			HaveField("Status.Conditions", ContainElement(MatchFields(IgnoreExtras, Fields{
-				"Type":   Equal(gardencorev1beta1.SeedSystemComponentsHealthy),
+				"Type":   Equal(gardencorev1beta1.SeedObservabilityDataHealthy),
 				"Status": Equal(gardencorev1beta1.ConditionFalse),
 				"Reason": Equal("PrometheusHealthCheckDown"),
 				"Message": Equal(`There are health issues in Prometheus pod "garden/prometheus-` + prometheusName + `-0". ` +
@@ -310,13 +310,13 @@ func itShouldVerifyPrometheusHealthCheck(s *ManagedSeedContext, prometheusName s
 
 	ItShouldDeletePrometheusRuleForShoot(s.ShootContext, rule)
 
-	It("Wait until SeedSystemComponentsHealthy is true", func(ctx SpecContext) {
+	It("Wait until SeedObservabilityDataHealthy is true", func(ctx SpecContext) {
 		Eventually(ctx, s.GardenKomega.Object(s.SeedContext.Seed)).Should(
 			HaveField("Status.Conditions", ContainElement(MatchFields(IgnoreExtras, Fields{
-				"Type":    Equal(gardencorev1beta1.SeedSystemComponentsHealthy),
+				"Type":    Equal(gardencorev1beta1.SeedObservabilityDataHealthy),
 				"Status":  Equal(gardencorev1beta1.ConditionTrue),
-				"Reason":  Equal("SystemComponentsRunning"),
-				"Message": Equal("All system components are healthy."),
+				"Reason":  Equal("ObservabilityDataRunning"),
+				"Message": Equal("All observability data is healthy."),
 			}))),
 		)
 	}, SpecTimeout(10*time.Minute))
