@@ -38,6 +38,7 @@ import (
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/secrets"
@@ -826,6 +827,10 @@ func GetShootConditionTypes(workerless bool) []gardencorev1beta1.ConditionType {
 		gardencorev1beta1.ShootAPIServerAvailable,
 		gardencorev1beta1.ShootControlPlaneHealthy,
 		gardencorev1beta1.ShootObservabilityComponentsHealthy,
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		shootConditionTypes = append(shootConditionTypes, gardencorev1beta1.ShootObservabilityDataHealthy)
 	}
 
 	if !workerless {

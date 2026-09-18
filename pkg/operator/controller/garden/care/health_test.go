@@ -598,7 +598,7 @@ var _ = Describe("Garden health", func() {
 
 				Expect(updatedConditions).To(ContainElements(
 					beConditionOfTypeWithStatusReasonAndMessage(
-						operatorv1alpha1.ObservabilityComponentsHealthy,
+						operatorv1alpha1.ObservabilityDataHealthy,
 						gardencorev1beta1.ConditionFalse,
 						"PrometheusHealthCheckDown",
 						`There are health issues in Prometheus pod "garden/prometheus-foo-0". Access Prometheus UI and query for "healthcheck:up" for more details: foo is unhealthy`)))
@@ -617,7 +617,7 @@ var _ = Describe("Garden health", func() {
 
 				Expect(updatedConditions).To(ContainElements(
 					beConditionOfTypeWithStatusReasonAndMessage(
-						operatorv1alpha1.ObservabilityComponentsHealthy,
+						operatorv1alpha1.ObservabilityDataHealthy,
 						gardencorev1beta1.ConditionFalse,
 						"PrometheusHealthCheckError",
 						`Querying Prometheus pod "garden/prometheus-foo-0" for health checking returned an error: test error`)))
@@ -635,9 +635,10 @@ var _ = Describe("Garden health", func() {
 				).Check(ctx, gardenConditions)
 
 				expectHealthyObservabilityComponents(updatedConditions)
+				expectHealthyObservabilityData(updatedConditions)
 			})
 
-			It("should set ObservabilityComponentsHealthy condition to true if Prometheus health check is down but the PrometheusHealthChecks feature gate is disabled", func() {
+			It("should not set ObservabilityDataHealthy condition if Prometheus health check is down but the PrometheusHealthChecks feature gate is disabled", func() {
 				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.PrometheusHealthChecks, false))
 
 				updatedConditions := NewHealth(
@@ -648,9 +649,10 @@ var _ = Describe("Garden health", func() {
 					nil,
 					gardenNamespace,
 					healthchecker.NewHealthChecker(log, runtimeClient, fakeClock, healthchecker.WithPrometheusHealthChecker(unhealthy)),
-				).Check(ctx, gardenConditions)
+				).Check(ctx, NewGardenConditions(fakeClock, garden.Status))
 
 				expectHealthyObservabilityComponents(updatedConditions)
+				Expect(updatedConditions).ToNot(ContainElement(HaveField("Type", operatorv1alpha1.ObservabilityDataHealthy)))
 			})
 
 			Context("Prometheus is filtered out from the health check", func() {
@@ -675,7 +677,7 @@ var _ = Describe("Garden health", func() {
 
 					Expect(conditions).To(ContainElements(
 						beConditionOfTypeWithStatusReasonAndMessage(
-							operatorv1alpha1.ObservabilityComponentsHealthy,
+							operatorv1alpha1.ObservabilityDataHealthy,
 							gardencorev1beta1.ConditionFalse,
 							"PrometheusHealthCheckDown",
 							`There are health issues in Prometheus pod "garden/prometheus-foo-0". Access Prometheus UI and query for "healthcheck:up" for more details: foo is unhealthy`)))
@@ -696,6 +698,7 @@ var _ = Describe("Garden health", func() {
 					).Check(ctx, gardenConditions)
 
 					expectHealthyObservabilityComponents(conditions)
+					expectHealthyObservabilityData(conditions)
 				})
 			})
 		})
@@ -1002,5 +1005,15 @@ func expectHealthyObservabilityComponents(conditions []gardencorev1beta1.Conditi
 			gardencorev1beta1.ConditionTrue,
 			"ObservabilityComponentsRunning",
 			"All observability components are healthy."),
+	))
+}
+
+func expectHealthyObservabilityData(conditions []gardencorev1beta1.Condition) {
+	Expect(conditions).To(ContainElements(
+		beConditionOfTypeWithStatusReasonAndMessage(
+			operatorv1alpha1.ObservabilityDataHealthy,
+			gardencorev1beta1.ConditionTrue,
+			"ObservabilityDataRunning",
+			"All observability data is healthy."),
 	))
 }

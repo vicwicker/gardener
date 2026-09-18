@@ -57,17 +57,26 @@ func (h *health) Check(
 	managedResources, err := h.listManagedResources(ctx)
 	if err != nil {
 		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+		if conditions.observabilityDataHealthy != nil {
+			conditions.observabilityDataHealthy = new(v1beta1helper.NewConditionOrError(h.clock, *conditions.observabilityDataHealthy, nil, err))
+		}
 		return conditions.ConvertToSlice()
 	}
 
 	prometheuses, err := h.listPrometheuses(ctx)
 	if err != nil {
 		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+		if conditions.observabilityDataHealthy != nil {
+			conditions.observabilityDataHealthy = new(v1beta1helper.NewConditionOrError(h.clock, *conditions.observabilityDataHealthy, nil, err))
+		}
 		return conditions.ConvertToSlice()
 	}
 
 	var checkedConditions []gardencorev1beta1.Condition
 	checkedConditions = append(checkedConditions, v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, h.checkSystemComponents(ctx, conditions.systemComponentsHealthy, managedResources, prometheuses), nil))
+	if conditions.observabilityDataHealthy != nil {
+		checkedConditions = append(checkedConditions, v1beta1helper.NewConditionOrError(h.clock, *conditions.observabilityDataHealthy, h.checkObservabilityData(ctx, *conditions.observabilityDataHealthy, prometheuses), nil))
+	}
 	if newEmergencyStopShootReconciliations := h.checkEmergencyStopShootReconciliations(conditions.emergencyStopShootReconciliations); newEmergencyStopShootReconciliations != nil {
 		checkedConditions = append(checkedConditions, v1beta1helper.NewConditionOrError(h.clock, conditions.emergencyStopShootReconciliations, newEmergencyStopShootReconciliations, nil))
 	}
@@ -105,17 +114,19 @@ func (h *health) checkSystemComponents(ctx context.Context, condition gardencore
 		return exitCondition
 	}
 
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
+}
+
+func (h *health) checkObservabilityData(ctx context.Context, condition gardencorev1beta1.Condition, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
 	filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
 		return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.Gardenlet
 	}
 
-	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
-		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
-			return exitCondition
-		}
+	if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
+		return exitCondition
 	}
 
-	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityDataRunning", "All observability data is healthy."))
 }
 
 func (h *health) checkEmergencyStopShootReconciliations(condition gardencorev1beta1.Condition) *gardencorev1beta1.Condition {
@@ -134,32 +145,49 @@ func (h *health) checkEmergencyStopShootReconciliations(condition gardencorev1be
 // SeedConditions contains all seed related conditions of the seed status subresource.
 type SeedConditions struct {
 	systemComponentsHealthy           gardencorev1beta1.Condition
+	observabilityDataHealthy          *gardencorev1beta1.Condition
 	emergencyStopShootReconciliations gardencorev1beta1.Condition
 }
 
 // ConvertToSlice returns the seed conditions as a slice.
 func (s SeedConditions) ConvertToSlice() []gardencorev1beta1.Condition {
-	return []gardencorev1beta1.Condition{
+	conditions := []gardencorev1beta1.Condition{
 		s.systemComponentsHealthy,
-		s.emergencyStopShootReconciliations,
 	}
+
+	if s.observabilityDataHealthy != nil {
+		conditions = append(conditions, *s.observabilityDataHealthy)
+	}
+
+	return append(conditions, s.emergencyStopShootReconciliations)
 }
 
 // ConditionTypes returns all seed condition types.
 func (s SeedConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
-	return []gardencorev1beta1.ConditionType{
+	types := []gardencorev1beta1.ConditionType{
 		s.systemComponentsHealthy.Type,
-		s.emergencyStopShootReconciliations.Type,
 	}
+
+	if s.observabilityDataHealthy != nil {
+		types = append(types, gardencorev1beta1.SeedObservabilityDataHealthy)
+	}
+
+	return append(types, s.emergencyStopShootReconciliations.Type)
 }
 
 // NewSeedConditions returns a new instance of SeedConditions.
 // All conditions are retrieved from the given 'status' or newly initialized.
 func NewSeedConditions(clock clock.Clock, status gardencorev1beta1.SeedStatus) SeedConditions {
-	return SeedConditions{
+	seedConditions := SeedConditions{
 		systemComponentsHealthy:           v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedSystemComponentsHealthy),
 		emergencyStopShootReconciliations: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedEmergencyStopShootReconciliations),
 	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		seedConditions.observabilityDataHealthy = new(v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedObservabilityDataHealthy))
+	}
+
+	return seedConditions
 }
 
 // SeedConstraints contains all constraints of the seed status subresource.

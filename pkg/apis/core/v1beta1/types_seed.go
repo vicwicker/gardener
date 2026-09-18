@@ -543,6 +543,7 @@ const (
 	SeedExtensionsReady ConditionType = "ExtensionsReady"
 	// SeedSystemComponentsHealthy is a constant for a condition type indicating the system components health.
 	SeedSystemComponentsHealthy ConditionType = "SeedSystemComponentsHealthy"
+	SeedObservabilityDataHealthy ConditionType = "ObservabilityDataHealthy"
 	// SeedEmergencyStopShootReconciliations is a constant for a condition type indicating disabled shoot reconciliations.
 	SeedEmergencyStopShootReconciliations ConditionType = "EmergencyStopShootReconciliations"
 	// SeedManagedResourcesHonored is a constant for a constraint type indicating that no ManagedResources

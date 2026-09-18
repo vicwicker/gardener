@@ -34,7 +34,9 @@ import (
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/features"
 	. "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
@@ -2068,6 +2070,19 @@ var _ = Describe("Shoot", func() {
 				gardencorev1beta1.ConditionType("APIServerAvailable"),
 				gardencorev1beta1.ConditionType("ControlPlaneHealthy"),
 				gardencorev1beta1.ConditionType("ObservabilityComponentsHealthy"),
+				gardencorev1beta1.ConditionType("SystemComponentsHealthy"),
+			))
+		})
+
+		It("should include the ObservabilityDataHealthy condition type when the PrometheusHealthChecks feature gate is enabled", func() {
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.PrometheusHealthChecks, true))
+
+			Expect(GetShootConditionTypes(false)).To(HaveExactElements(
+				gardencorev1beta1.ConditionType("APIServerAvailable"),
+				gardencorev1beta1.ConditionType("ControlPlaneHealthy"),
+				gardencorev1beta1.ConditionType("ObservabilityComponentsHealthy"),
+				gardencorev1beta1.ConditionType("ObservabilityDataHealthy"),
+				gardencorev1beta1.ConditionType("EveryNodeReady"),
 				gardencorev1beta1.ConditionType("SystemComponentsHealthy"),
 			))
 		})

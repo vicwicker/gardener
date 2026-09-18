@@ -42,9 +42,11 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig"
+	"github.com/gardener/gardener/pkg/features"
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/shoot/care"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
@@ -1823,6 +1825,50 @@ var _ = Describe("health check", func() {
 					gardencorev1beta1.ConditionType("APIServerAvailable"),
 					gardencorev1beta1.ConditionType("ControlPlaneHealthy"),
 					gardencorev1beta1.ConditionType("ObservabilityComponentsHealthy"),
+					gardencorev1beta1.ConditionType("EveryNodeReady"),
+					gardencorev1beta1.ConditionType("SystemComponentsHealthy"),
+				))
+			})
+		})
+
+		Context("when the PrometheusHealthChecks feature gate is enabled", func() {
+			BeforeEach(func() {
+				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.PrometheusHealthChecks, true))
+			})
+
+			It("should include the ObservabilityDataHealthy condition in the slice", func() {
+				conditions := NewShootConditions(fakeClock, &gardencorev1beta1.Shoot{
+					Spec: gardencorev1beta1.ShootSpec{
+						Provider: gardencorev1beta1.Provider{
+							Workers: []gardencorev1beta1.Worker{{Name: "worker"}},
+						},
+					},
+				})
+
+				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
+					OfType("APIServerAvailable"),
+					OfType("ControlPlaneHealthy"),
+					OfType("ObservabilityComponentsHealthy"),
+					OfType("ObservabilityDataHealthy"),
+					OfType("EveryNodeReady"),
+					OfType("SystemComponentsHealthy"),
+				))
+			})
+
+			It("should include the ObservabilityDataHealthy condition type", func() {
+				conditions := NewShootConditions(fakeClock, &gardencorev1beta1.Shoot{
+					Spec: gardencorev1beta1.ShootSpec{
+						Provider: gardencorev1beta1.Provider{
+							Workers: []gardencorev1beta1.Worker{{Name: "worker"}},
+						},
+					},
+				})
+
+				Expect(conditions.ConditionTypes()).To(HaveExactElements(
+					gardencorev1beta1.ConditionType("APIServerAvailable"),
+					gardencorev1beta1.ConditionType("ControlPlaneHealthy"),
+					gardencorev1beta1.ConditionType("ObservabilityComponentsHealthy"),
+					gardencorev1beta1.ConditionType("ObservabilityDataHealthy"),
 					gardencorev1beta1.ConditionType("EveryNodeReady"),
 					gardencorev1beta1.ConditionType("SystemComponentsHealthy"),
 				))

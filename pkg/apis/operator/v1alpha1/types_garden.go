@@ -951,6 +951,7 @@ const (
 	VirtualGardenAPIServerAvailable gardencorev1beta1.ConditionType = "VirtualGardenAPIServerAvailable"
 	// ObservabilityComponentsHealthy is a constant for a condition type indicating the health of observability components.
 	ObservabilityComponentsHealthy gardencorev1beta1.ConditionType = v1beta1constants.ObservabilityComponentsHealthy
+	ObservabilityDataHealthy gardencorev1beta1.ConditionType = v1beta1constants.ObservabilityDataHealthy
 	// GardenManagedResourcesHonored is a constant for a constraint type indicating that no ManagedResources
 	// in the garden's namespaces have been annotated with resources.gardener.cloud/ignore=true.
 	GardenManagedResourcesHonored gardencorev1beta1.ConditionType = "ManagedResourcesHonored"

@@ -68,6 +68,9 @@ func (h *health) Check(ctx context.Context, conditions GardenConditions) []garde
 		conditions.runtimeComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.runtimeComponentsHealthy, nil, err)
 		conditions.virtualComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.virtualComponentsHealthy, nil, err)
 		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
+		if conditions.observabilityDataHealthy != nil {
+			conditions.observabilityDataHealthy = new(v1beta1helper.NewConditionOrError(h.clock, *conditions.observabilityDataHealthy, nil, err))
+		}
 		return conditions.ConvertToSlice()
 	}
 
@@ -91,12 +94,22 @@ func (h *health) Check(ctx context.Context, conditions GardenConditions) []garde
 	prometheuses, err := h.listPrometheuses(ctx)
 	if err != nil {
 		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
+		if conditions.observabilityDataHealthy != nil {
+			conditions.observabilityDataHealthy = new(v1beta1helper.NewConditionOrError(h.clock, *conditions.observabilityDataHealthy, nil, err))
+		}
 	} else {
 		taskFns = append(taskFns, func(_ context.Context) error {
 			newObservabilityCondition := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, managedResources, prometheuses)
 			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityCondition, nil)
 			return nil
 		})
+		if conditions.observabilityDataHealthy != nil {
+			taskFns = append(taskFns, func(_ context.Context) error {
+				newObservabilityDataCondition := h.checkObservabilityData(ctx, *conditions.observabilityDataHealthy, prometheuses)
+				conditions.observabilityDataHealthy = new(v1beta1helper.NewConditionOrError(h.clock, *conditions.observabilityDataHealthy, newObservabilityDataCondition, nil))
+				return nil
+			})
+		}
 	}
 
 	_ = flow.Parallel(taskFns...)(ctx)
@@ -178,17 +191,19 @@ func (h *health) checkObservabilityComponents(ctx context.Context, condition gar
 		return exitCondition
 	}
 
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy."))
+}
+
+func (h *health) checkObservabilityData(ctx context.Context, condition gardencorev1beta1.Condition, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
 	filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
 		return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.GardenerOperator
 	}
 
-	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
-		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
-			return exitCondition
-		}
+	if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
+		return exitCondition
 	}
 
-	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy."))
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityDataRunning", "All observability data is healthy."))
 }
 
 // GardenConditions contains all conditions of the garden status subresource.
@@ -197,37 +212,56 @@ type GardenConditions struct {
 	runtimeComponentsHealthy        gardencorev1beta1.Condition
 	virtualComponentsHealthy        gardencorev1beta1.Condition
 	observabilityComponentsHealthy  gardencorev1beta1.Condition
+	observabilityDataHealthy        *gardencorev1beta1.Condition
 }
 
 // ConvertToSlice returns the garden conditions as a slice.
 func (g GardenConditions) ConvertToSlice() []gardencorev1beta1.Condition {
-	return []gardencorev1beta1.Condition{
+	conditions := []gardencorev1beta1.Condition{
 		g.virtualGardenAPIServerAvailable,
 		g.runtimeComponentsHealthy,
 		g.virtualComponentsHealthy,
 		g.observabilityComponentsHealthy,
 	}
+
+	if g.observabilityDataHealthy != nil {
+		conditions = append(conditions, *g.observabilityDataHealthy)
+	}
+
+	return conditions
 }
 
 // ConditionTypes returns all garden condition types.
 func (g GardenConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
-	return []gardencorev1beta1.ConditionType{
+	types := []gardencorev1beta1.ConditionType{
 		g.virtualGardenAPIServerAvailable.Type,
 		g.runtimeComponentsHealthy.Type,
 		g.virtualComponentsHealthy.Type,
 		g.observabilityComponentsHealthy.Type,
 	}
+
+	if g.observabilityDataHealthy != nil {
+		types = append(types, operatorv1alpha1.ObservabilityDataHealthy)
+	}
+
+	return types
 }
 
 // NewGardenConditions returns a new instance of GardenConditions.
 // All conditions are retrieved from the given 'status' or newly initialized.
 func NewGardenConditions(clock clock.Clock, status operatorv1alpha1.GardenStatus) GardenConditions {
-	return GardenConditions{
+	gardenConditions := GardenConditions{
 		virtualGardenAPIServerAvailable: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.VirtualGardenAPIServerAvailable),
 		runtimeComponentsHealthy:        v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.RuntimeComponentsHealthy),
 		virtualComponentsHealthy:        v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.VirtualComponentsHealthy),
 		observabilityComponentsHealthy:  v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.ObservabilityComponentsHealthy),
 	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		gardenConditions.observabilityDataHealthy = new(v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.ObservabilityDataHealthy))
+	}
+
+	return gardenConditions
 }
 
 // GardenConstraints contains all constraints of the garden status subresource.

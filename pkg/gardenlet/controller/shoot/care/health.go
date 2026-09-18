@@ -169,12 +169,22 @@ func (h *Health) Check(
 	prometheusList := &monitoringv1.PrometheusList{}
 	if err := h.seedClient.Client().List(ctx, prometheusList, client.InNamespace(h.shoot.ControlPlaneNamespace)); err != nil {
 		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
+		if conditions.observabilityDataHealthy != nil {
+			conditions.observabilityDataHealthy = new(v1beta1helper.NewConditionOrError(h.clock, *conditions.observabilityDataHealthy, nil, err))
+		}
 	} else {
 		taskFns = append(taskFns, func(ctx context.Context) error {
 			newObservabilityComponents, err := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, extensionConditionsObservabilityComponentsHealthy, managedResourceList.Items, prometheusList, healthCheckOutdatedThreshold)
 			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponents, err)
 			return nil
 		})
+		if conditions.observabilityDataHealthy != nil {
+			taskFns = append(taskFns, func(ctx context.Context) error {
+				newObservabilityData, err := h.checkObservabilityData(ctx, *conditions.observabilityDataHealthy, prometheusList)
+				conditions.observabilityDataHealthy = new(v1beta1helper.NewConditionOrError(h.clock, *conditions.observabilityDataHealthy, newObservabilityData, err))
+				return nil
+			})
+		}
 	}
 
 	// Health checks with dependencies to the Kube-Apiserver.
@@ -574,13 +584,23 @@ func (h *Health) checkObservabilityComponents(
 		return exitCondition, nil
 	}
 
-	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
-		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, nil); exitCondition != nil {
-			return exitCondition, nil
-		}
+	c := v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy.")
+	return &c, nil
+}
+
+func (h *Health) checkObservabilityData(
+	ctx context.Context,
+	condition gardencorev1beta1.Condition,
+	prometheuses *monitoringv1.PrometheusList,
+) (
+	*gardencorev1beta1.Condition,
+	error,
+) {
+	if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, nil); exitCondition != nil {
+		return exitCondition, nil
 	}
 
-	c := v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy.")
+	c := v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityDataRunning", "All observability data is healthy.")
 	return &c, nil
 }
 
@@ -1207,6 +1227,7 @@ type ShootConditions struct {
 	apiServerAvailable             gardencorev1beta1.Condition
 	controlPlaneHealthy            gardencorev1beta1.Condition
 	observabilityComponentsHealthy gardencorev1beta1.Condition
+	observabilityDataHealthy       *gardencorev1beta1.Condition
 	systemComponentsHealthy        gardencorev1beta1.Condition
 	everyNodeReady                 *gardencorev1beta1.Condition
 	backupBucketsReady             *gardencorev1beta1.Condition
@@ -1218,6 +1239,10 @@ func (s ShootConditions) ConvertToSlice() []gardencorev1beta1.Condition {
 		s.apiServerAvailable,
 		s.controlPlaneHealthy,
 		s.observabilityComponentsHealthy,
+	}
+
+	if s.observabilityDataHealthy != nil {
+		conditions = append(conditions, *s.observabilityDataHealthy)
 	}
 
 	if s.everyNodeReady != nil {
@@ -1238,6 +1263,10 @@ func (s ShootConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
 		s.apiServerAvailable.Type,
 		s.controlPlaneHealthy.Type,
 		s.observabilityComponentsHealthy.Type,
+	}
+
+	if s.observabilityDataHealthy != nil {
+		types = append(types, gardencorev1beta1.ShootObservabilityDataHealthy)
 	}
 
 	if s.everyNodeReady != nil {
@@ -1261,6 +1290,10 @@ func NewShootConditions(clock clock.Clock, shoot *gardencorev1beta1.Shoot) Shoot
 		controlPlaneHealthy:            v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootControlPlaneHealthy),
 		observabilityComponentsHealthy: v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootObservabilityComponentsHealthy),
 		systemComponentsHealthy:        v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootSystemComponentsHealthy),
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		shootConditions.observabilityDataHealthy = new(v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootObservabilityDataHealthy))
 	}
 
 	if !v1beta1helper.IsWorkerless(shoot) {
