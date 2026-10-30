@@ -6,7 +6,6 @@ REGISTRY                                   := europe-docker.pkg.dev/gardener-pro
 APISERVER_IMAGE_REPOSITORY                 := $(REGISTRY)/apiserver
 CONTROLLER_MANAGER_IMAGE_REPOSITORY        := $(REGISTRY)/controller-manager
 SCHEDULER_IMAGE_REPOSITORY                 := $(REGISTRY)/scheduler
-ADMISSION_IMAGE_REPOSITORY                 := $(REGISTRY)/admission-controller
 RESOURCE_MANAGER_IMAGE_REPOSITORY          := $(REGISTRY)/resource-manager
 NODE_AGENT_IMAGE_REPOSITORY                := $(REGISTRY)/node-agent
 OPERATOR_IMAGE_REPOSITORY                  := $(REGISTRY)/operator
