@@ -1,0 +1,30 @@
+apiVersion: seedmanagement.gardener.cloud/v1alpha1
+kind: ManagedSeed
+metadata:
+  name: managedseed
+  namespace: garden
+spec:
+  shoot:
+    name: managedseed
+  gardenlet:
+    config:
+      apiVersion: gardenlet.config.gardener.cloud/v1alpha1
+      kind: GardenletConfiguration
+      seedConfig:
+        spec:
+          dns:
+            internal:
+              type: local
+              domain: internal.local.gardener.cloud
+              credentialsRef:
+                apiVersion: v1
+                kind: Secret
+                name: internal-domain-internal-local-gardener-cloud
+                namespace: garden
+          settings:
+            excessCapacityReservation:
+              enabled: false
+            scheduling:
+              visible: false
+            verticalPodAutoscaler:
+              enabled: false

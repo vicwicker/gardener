@@ -1,0 +1,276 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package bootstrappers_test
+
+import (
+	"context"
+	"time"
+
+	"github.com/go-logr/logr"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
+	gardenletbootstraputil "github.com/gardener/gardener/pkg/gardenlet/bootstrap/util"
+	. "github.com/gardener/gardener/pkg/gardenlet/bootstrappers"
+	"github.com/gardener/gardener/pkg/utils/test"
+)
+
+var _ = Describe("GardenKubeconfig", func() {
+	var (
+		ctx                = context.TODO()
+		log                = logr.Discard()
+		seedName           = "seed"
+		kubeconfigValidity = time.Hour
+
+		gardenFakeClient client.Client
+		fakeClient       client.Client
+		cfg              *gardenletconfigv1alpha1.GardenletConfiguration
+		result           *KubeconfigBootstrapResult
+		runner           *GardenKubeconfig
+	)
+
+	BeforeEach(func() {
+		fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+		gardenFakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+
+		cfg = &gardenletconfigv1alpha1.GardenletConfiguration{
+			GardenClientConnection: &gardenletconfigv1alpha1.GardenClientConnection{
+				KubeconfigValidity: &gardenletconfigv1alpha1.KubeconfigValidity{
+					Validity: &metav1.Duration{Duration: kubeconfigValidity},
+				},
+			},
+			SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
+				SeedTemplate: gardencorev1beta1.SeedTemplate{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: seedName,
+					},
+				},
+			},
+		}
+		result = &KubeconfigBootstrapResult{}
+		runner = &GardenKubeconfig{
+			RuntimeClient: fakeClient,
+			Log:           log,
+			Config:        cfg,
+			Result:        result,
+		}
+	})
+
+	Describe("#Start", func() {
+		Context("when kubeconfigSecret is nil", func() {
+			BeforeEach(func() {
+				runner.Config.GardenClientConnection.KubeconfigSecret = nil
+			})
+
+			It("should return an error because .gardenClientConnection.kubeconfig is nil", func() {
+				runner.Config.GardenClientConnection.Kubeconfig = ""
+
+				Expect(runner.Start(ctx)).To(MatchError(ContainSubstring("the configuration file needs to either specify a Garden API Server kubeconfig under `.gardenClientConnection.kubeconfig` or provide bootstrapping information.")))
+				Expect(result.Kubeconfig).To(BeNil())
+			})
+
+			It("should return nil", func() {
+				kubeconfigPath := "/some/path/to/a/kubeconfig/file"
+				runner.Config.GardenClientConnection.Kubeconfig = kubeconfigPath
+
+				Expect(runner.Start(ctx)).To(Succeed())
+				Expect(result.Kubeconfig).To(BeNil())
+			})
+		})
+
+		Context("when kubeconfigSecret is set", func() {
+			var (
+				secretName      = "gardenlet-kubeconfig"
+				secretNamespace = "garden"
+			)
+
+			BeforeEach(func() {
+				runner.Config.GardenClientConnection.KubeconfigSecret = &corev1.SecretReference{
+					Name:      secretName,
+					Namespace: secretNamespace,
+				}
+			})
+
+			Context("when kubeconfig already exists", func() {
+				var (
+					restConfig         *rest.Config
+					existingKubeconfig []byte
+				)
+
+				BeforeEach(func() {
+					restConfig = &rest.Config{
+						Host: "testhost",
+						TLSClientConfig: rest.TLSClientConfig{
+							Insecure: false,
+							CAData:   []byte("foo"),
+						},
+					}
+
+					var err error
+					existingKubeconfig, err = gardenletbootstraputil.CreateKubeconfigWithClientCertificate(restConfig, nil, nil)
+					Expect(err).ToNot(HaveOccurred())
+
+					secret := &corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      secretName,
+							Namespace: secretNamespace,
+						},
+						Data: map[string][]byte{"kubeconfig": existingKubeconfig},
+					}
+					Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+					gardenFakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+					Expect(gardenFakeClient.Create(ctx, &corev1.ConfigMap{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "kube-root-ca.crt",
+							Namespace: "gardener-system-public",
+						},
+						Data: map[string]string{
+							"ca.crt": string(restConfig.CAData),
+						},
+					})).To(Succeed())
+
+					DeferCleanup(test.WithVars(
+						&NewClientFromBytes, func(_ []byte, _ ...kubernetes.ConfigFunc) (kubernetes.Interface, error) {
+							return fakekubernetes.NewClientSetBuilder().WithAPIReader(gardenFakeClient).Build(), nil
+						},
+					))
+				})
+
+				It("should return the existing kubeconfig", func() {
+					Expect(runner.Start(ctx)).To(Succeed())
+					Expect(result.Kubeconfig).To(Equal(existingKubeconfig))
+				})
+
+				It("should update the CA bundle if it changed", func() {
+					newCAData := "bar"
+
+					Expect(gardenFakeClient.Update(ctx, &corev1.ConfigMap{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "kube-root-ca.crt",
+							Namespace: "gardener-system-public",
+						},
+						Data: map[string]string{
+							"ca.crt": newCAData,
+						},
+					})).To(Succeed())
+
+					Expect(runner.Start(ctx)).To(Succeed())
+
+					restConfig.CAData = []byte(newCAData)
+					updatedKubeconfig, err := gardenletbootstraputil.CreateKubeconfigWithClientCertificate(restConfig, nil, nil)
+					Expect(err).ToNot(HaveOccurred())
+
+					Expect(runner.Start(ctx)).To(Succeed())
+					Expect(result.Kubeconfig).To(Equal(updatedKubeconfig))
+				})
+			})
+
+			Context("when kubeconfig does not yet exist", func() {
+				Context("when bootstrapKubeconfig is nil", func() {
+					BeforeEach(func() {
+						runner.Config.GardenClientConnection.BootstrapKubeconfig = nil
+					})
+
+					It("should return an error when the bootstrapKubeconfig is not set", func() {
+						Expect(runner.Start(ctx)).To(MatchError(ContainSubstring("the configuration file needs to either specify a Garden API Server kubeconfig under `.gardenClientConnection.kubeconfig` or provide bootstrapping information.")))
+						Expect(result.Kubeconfig).To(BeNil())
+					})
+				})
+
+				Context("when bootstrapKubeconfig is set", func() {
+					var (
+						restConfig               *rest.Config
+						bootstrapSecretName      = "bootstrap-secret-name"
+						bootstrapSecretNamespace = "bootstrap-secret-namespace"
+					)
+
+					BeforeEach(func() {
+						runner.Config.GardenClientConnection.BootstrapKubeconfig = &corev1.SecretReference{
+							Name:      bootstrapSecretName,
+							Namespace: bootstrapSecretNamespace,
+						}
+
+						restConfig = &rest.Config{
+							Host: "testhost",
+							TLSClientConfig: rest.TLSClientConfig{
+								Insecure: false,
+								CAData:   []byte("foo"),
+							},
+						}
+					})
+
+					It("should return an error when the bootstrap kubeconfig secret does not exist", func() {
+						Expect(runner.Start(ctx)).To(MatchError(ContainSubstring("bootstrap secret does not contain a kubeconfig, cannot bootstrap")))
+						Expect(result.Kubeconfig).To(BeNil())
+					})
+
+					It("should return an error when the bootstrap kubeconfig secret exists but does not contain a kubeconfig", func() {
+						secret := &corev1.Secret{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      bootstrapSecretName,
+								Namespace: bootstrapSecretNamespace,
+							},
+						}
+						Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+						Expect(runner.Start(ctx)).To(MatchError(ContainSubstring("bootstrap secret does not contain a kubeconfig, cannot bootstrap")))
+						Expect(result.Kubeconfig).To(BeNil())
+					})
+
+					It("should request a kubeconfig with the bootstrap kubeconfig", func() {
+						var csrName = "created-csr"
+
+						requestedKubeconfig, err := gardenletbootstraputil.CreateKubeconfigWithClientCertificate(restConfig, nil, nil)
+						Expect(err).ToNot(HaveOccurred())
+
+						secret := &corev1.Secret{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      bootstrapSecretName,
+								Namespace: bootstrapSecretNamespace,
+							},
+							Data: map[string][]byte{"kubeconfig": []byte("bootstrap-kubeconfig")},
+						}
+						Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+						Expect(gardenFakeClient.Create(ctx, &corev1.ConfigMap{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      "kube-root-ca.crt",
+								Namespace: "gardener-system-public",
+							},
+							Data: map[string]string{
+								"ca.crt": string(restConfig.CAData),
+							},
+						})).To(Succeed())
+
+						DeferCleanup(test.WithVars(
+							&NewClientFromBytes, func(_ []byte, _ ...kubernetes.ConfigFunc) (kubernetes.Interface, error) {
+								return fakekubernetes.NewClientSetBuilder().WithAPIReader(gardenFakeClient).Build(), nil
+							},
+							&RequestKubeconfigWithBootstrapClient, func(_ context.Context, _ logr.Logger, _ client.Client, _ kubernetes.Interface, _, _ client.ObjectKey, _ *gardenletconfigv1alpha1.SeedConfig, _ *types.NamespacedName, _ *metav1.Duration) ([]byte, string, error) {
+								return requestedKubeconfig, csrName, nil
+							},
+						))
+
+						Expect(runner.Start(ctx)).To(Succeed())
+						Expect(result.Kubeconfig).To(Equal(requestedKubeconfig))
+						Expect(result.CSRName).To(Equal(csrName))
+						Expect(result.SeedName).To(Equal(seedName))
+					})
+				})
+			})
+		})
+	})
+})

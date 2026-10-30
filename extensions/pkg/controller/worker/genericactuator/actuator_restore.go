@@ -1,0 +1,190 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package genericactuator
+
+import (
+	"context"
+	"fmt"
+
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
+	extensionsworkercontroller "github.com/gardener/gardener/extensions/pkg/controller/worker"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/utils/flow"
+	"github.com/gardener/gardener/pkg/utils/gardener/shootstate"
+)
+
+// RestoreWithoutReconcile restores the worker state without calling 'Reconcile'.
+func RestoreWithoutReconcile(
+	ctx context.Context,
+	log logr.Logger,
+	gardenReader client.Reader,
+	seedClient client.Client,
+	delegateFactory DelegateFactory,
+	worker *extensionsv1alpha1.Worker,
+	cluster *extensionscontroller.Cluster,
+) error {
+	log = log.WithValues("operation", "restore")
+
+	workerDelegate, err := delegateFactory.WorkerDelegate(ctx, worker, cluster)
+	if err != nil {
+		return fmt.Errorf("could not instantiate actuator context: %w", err)
+	}
+
+	// Generate the desired machine deployments.
+	log.Info("Generating machine deployments")
+	wantedMachineDeployments, err := workerDelegate.GenerateMachineDeployments(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to generate the machine deployments: %w", err)
+	}
+
+	// Parse the worker state to a separate machineDeployment states and attach them to
+	// the corresponding machineDeployments which are to be deployed later
+	log.Info("Extracting machine state")
+	if err := addStateToMachineDeployment(ctx, log, gardenReader, cluster.Shoot, worker, wantedMachineDeployments); err != nil {
+		return err
+	}
+
+	wantedMachineDeployments = removeWantedDeploymentWithoutState(wantedMachineDeployments)
+
+	// Deploy generated machine classes.
+	if err := workerDelegate.DeployMachineClasses(ctx); err != nil {
+		return fmt.Errorf("failed to deploy the machine classes: %w", err)
+	}
+
+	// Do the actual restoration
+	if err := restoreMachineSetsAndMachines(ctx, log, seedClient, wantedMachineDeployments); err != nil {
+		return fmt.Errorf("failed restoration of the machineSet and the machines: %w", err)
+	}
+
+	// Get the list of all existing machine deployments.
+	existingMachineDeployments := &machinev1alpha1.MachineDeploymentList{}
+	if err := seedClient.List(ctx, existingMachineDeployments, client.InNamespace(worker.Namespace)); err != nil {
+		return err
+	}
+
+	// Generate machine deployment configuration based on previously computed list of deployments and deploy them.
+	if err := deployMachineDeployments(ctx, log, seedClient, cluster, worker, existingMachineDeployments, wantedMachineDeployments, true); err != nil {
+		return fmt.Errorf("failed to restore the machine deployment config: %w", err)
+	}
+
+	// Scale the machine-controller-manager to 1 now that all resources have been restored.
+	if !extensionscontroller.IsHibernated(cluster) {
+		if err := scaleMachineControllerManager(ctx, log, seedClient, worker, 1); err != nil {
+			return fmt.Errorf("failed to scale up machine-controller-manager: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Restore uses the Worker's spec to figure out the wanted MachineDeployments. Then it parses the Worker's state.
+// If there is a record in the state corresponding to a wanted deployment then the Restore function
+// deploys that MachineDeployment with all related MachineSet and Machines. It finally calls the 'Reconcile' function.
+func (a *genericActuator) Restore(ctx context.Context, log logr.Logger, worker *extensionsv1alpha1.Worker, cluster *extensionscontroller.Cluster) error {
+	if err := RestoreWithoutReconcile(ctx, log, a.gardenReader, a.seedClient, a.delegateFactory, worker, cluster); err != nil {
+		return err
+	}
+	return a.Reconcile(ctx, log, worker, cluster)
+}
+
+func addStateToMachineDeployment(
+	ctx context.Context,
+	log logr.Logger,
+	gardenReader client.Reader,
+	shoot *gardencorev1beta1.Shoot,
+	worker *extensionsv1alpha1.Worker,
+	wantedMachineDeployments extensionsworkercontroller.MachineDeployments,
+) error {
+	var state []byte
+
+	if worker.Status.State != nil && len(worker.Status.State.Raw) > 0 {
+		log.Info("Reading machine state from Worker status")
+		state = worker.Status.State.Raw
+	} else {
+		// TODO(timebertt): Remove this fallback logic after a few gardener releases.
+		if gardenReader == nil {
+			return fmt.Errorf("cannot fetch machine state from ShootState because garden client is missing")
+		}
+
+		shootState := &gardencorev1beta1.ShootState{ObjectMeta: metav1.ObjectMeta{Name: shoot.Name, Namespace: shoot.Namespace}}
+		log.Info("Reading machine state from ShootState as fallback", "shootState", client.ObjectKeyFromObject(shootState))
+
+		// We use the `gardenReader` here to prevent controller-runtime from trying to cache/list the ShootStates.
+		if err := gardenReader.Get(ctx, client.ObjectKeyFromObject(shootState), shootState); err != nil {
+			return fmt.Errorf("failed reading ShootState %q from garden: %w", client.ObjectKeyFromObject(shootState), err)
+		}
+
+		gardenerData := v1beta1helper.GardenerResourceDataList(shootState.Spec.Gardener)
+		if machineState := gardenerData.Get(v1beta1constants.DataTypeMachineState); machineState != nil && machineState.Type == v1beta1constants.DataTypeMachineState {
+			state = machineState.Data.Raw
+		}
+	}
+
+	machineState, err := shootstate.UnmarshalMachineState(state)
+	if err != nil {
+		return err
+	}
+
+	if len(machineState.MachineDeployments) == 0 {
+		log.Info("Machine state is empty, no state to add")
+		return nil
+	}
+
+	// Attach the parsed MachineDeploymentStates to the wanted MachineDeployments
+	for index, wantedMachineDeployment := range wantedMachineDeployments {
+		wantedMachineDeployments[index].State = machineState.MachineDeployments[wantedMachineDeployment.Name]
+	}
+
+	return nil
+}
+
+func restoreMachineSetsAndMachines(ctx context.Context, log logr.Logger, cl client.Client, wantedMachineDeployments extensionsworkercontroller.MachineDeployments) error {
+	log.Info("Deploying Machines and MachineSets")
+
+	var taskFns []flow.TaskFn
+	for _, wantedMachineDeployment := range wantedMachineDeployments {
+		for _, machineSet := range wantedMachineDeployment.State.MachineSets {
+			taskFns = append(taskFns, func(ctx context.Context) error {
+				if err := client.IgnoreAlreadyExists(cl.Create(ctx, &machineSet)); err != nil {
+					return fmt.Errorf("could not restore MachineSet '%s': %w", client.ObjectKeyFromObject(&machineSet), err)
+				}
+				return nil
+			})
+		}
+
+		for _, machine := range wantedMachineDeployment.State.Machines {
+			taskFns = append(taskFns, func(ctx context.Context) error {
+				if err := client.IgnoreAlreadyExists(cl.Create(ctx, &machine)); err != nil {
+					return fmt.Errorf("could not restore Machine '%s': %w", client.ObjectKeyFromObject(&machine), err)
+				}
+				return nil
+			})
+		}
+	}
+
+	return flow.ParallelN(MaxConcurrentMachineTasks, taskFns...)(ctx)
+}
+
+func removeWantedDeploymentWithoutState(wantedMachineDeployments extensionsworkercontroller.MachineDeployments) extensionsworkercontroller.MachineDeployments {
+	if wantedMachineDeployments == nil {
+		return nil
+	}
+
+	reducedMachineDeployments := make(extensionsworkercontroller.MachineDeployments, 0)
+	for _, wantedMachineDeployment := range wantedMachineDeployments {
+		if wantedMachineDeployment.State != nil && len(wantedMachineDeployment.State.MachineSets) > 0 {
+			reducedMachineDeployments = append(reducedMachineDeployments, wantedMachineDeployment)
+		}
+	}
+	return reducedMachineDeployments
+}

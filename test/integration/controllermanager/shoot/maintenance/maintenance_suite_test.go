@@ -1,0 +1,157 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package maintenance_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
+	testclock "k8s.io/utils/clock/testing"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	controllerconfig "sigs.k8s.io/controller-runtime/pkg/config"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	apiserverfeatures "github.com/gardener/gardener/pkg/apiserver/features"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/controllermanager/controller/shoot/maintenance"
+	controllermanagerfeatures "github.com/gardener/gardener/pkg/controllermanager/features"
+	"github.com/gardener/gardener/pkg/logger"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+	gardenerenvtest "github.com/gardener/gardener/test/envtest"
+)
+
+func TestMaintenance(t *testing.T) {
+	apiserverfeatures.RegisterFeatureGates()
+	controllermanagerfeatures.RegisterFeatureGates()
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Test Integration ControllerManager Shoot Maintenance Suite")
+}
+
+const testID = "maintenance-controller-test"
+
+var (
+	ctx = context.Background()
+	log logr.Logger
+
+	restConfig *rest.Config
+	testEnv    *gardenerenvtest.GardenerTestEnvironment
+	testClient client.Client
+	mgrClient  client.Reader
+
+	testNamespace   *corev1.Namespace
+	gardenNamespace *corev1.Namespace
+	fakeClock       *testclock.FakeClock
+)
+
+var _ = BeforeSuite(func() {
+	logf.SetLogger(logger.MustNewZapLogger(logger.DebugLevel, logger.FormatJSON, zap.WriteTo(GinkgoWriter)))
+	log = logf.Log.WithName(testID)
+
+	By("Start test environment")
+	testEnv = &gardenerenvtest.GardenerTestEnvironment{
+		GardenerAPIServer: &gardenerenvtest.GardenerAPIServer{
+			Args: []string{
+				"--disable-admission-plugins=DeletionConfirmation,ResourceReferenceManager,ExtensionValidator,ShootQuotaValidator,ShootValidator,ShootTolerationRestriction,ShootMutator",
+			},
+		},
+	}
+
+	var err error
+	restConfig, err = testEnv.Start()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(restConfig).NotTo(BeNil())
+
+	DeferCleanup(func() {
+		By("Stop test environment")
+		Expect(testEnv.Stop()).To(Succeed())
+	})
+
+	By("Create test client")
+	testClient, err = client.New(restConfig, client.Options{Scheme: kubernetes.GardenScheme})
+	Expect(err).NotTo(HaveOccurred())
+
+	By("Create test Namespace")
+	testNamespace = &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			// create dedicated namespace for each test run, so that we can run multiple tests concurrently for stress tests
+			GenerateName: "garden-",
+		},
+	}
+	Expect(testClient.Create(ctx, testNamespace)).To(Succeed())
+	log.Info("Created Namespace for test", "namespaceName", testNamespace.Name)
+
+	DeferCleanup(func() {
+		By("Delete test Namespace")
+		Expect(testClient.Delete(ctx, testNamespace)).To(Or(Succeed(), BeNotFoundError()))
+	})
+
+	By("Create garden Namespace")
+	gardenNamespace = &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: v1beta1constants.GardenNamespace,
+		},
+	}
+	Expect(testClient.Create(ctx, gardenNamespace)).To(Succeed())
+	log.Info("Created garden Namespace for test")
+
+	DeferCleanup(func() {
+		By("Delete garden Namespace")
+		Expect(testClient.Delete(ctx, gardenNamespace)).To(Or(Succeed(), BeNotFoundError()))
+	})
+
+	By("Setup manager")
+	mgr, err := manager.New(restConfig, manager.Options{
+		Scheme:  kubernetes.GardenScheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{
+				testNamespace.Name:               {},
+				v1beta1constants.GardenNamespace: {},
+			},
+		},
+		Controller: controllerconfig.Controller{
+			SkipNameValidation: new(true),
+		},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	mgrClient = mgr.GetClient()
+
+	By("Register controller")
+	fakeClock = testclock.NewFakeClock(time.Now().Round(time.Second))
+
+	Expect((&maintenance.Reconciler{
+		Config: controllermanagerconfigv1alpha1.ShootMaintenanceControllerConfiguration{
+			ConcurrentSyncs: new(int32(5)),
+		},
+		Clock:    fakeClock,
+		Recorder: mgr.GetEventRecorder("shoot-maintenance-controller"),
+	}).AddToManager(mgr)).To(Succeed())
+
+	By("Start manager")
+	mgrContext, mgrCancel := context.WithCancel(ctx)
+
+	go func() {
+		defer GinkgoRecover()
+		Expect(mgr.Start(mgrContext)).To(Succeed())
+	}()
+
+	DeferCleanup(func() {
+		By("Stop manager")
+		mgrCancel()
+	})
+})

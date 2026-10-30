@@ -1,0 +1,79 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package storage
+
+import (
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apiserver/pkg/registry/generic"
+	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
+	"k8s.io/apiserver/pkg/registry/rest"
+
+	"github.com/gardener/gardener/pkg/apis/security"
+	"github.com/gardener/gardener/pkg/apiserver/registry/security/workloadidentity"
+	gardencorev1beta1listers "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
+	workloadidentityutils "github.com/gardener/gardener/pkg/utils/workloadidentity"
+)
+
+// REST implements a RESTStorage for WorkloadIdentity.
+type REST struct {
+	*genericregistry.Store
+}
+
+// WorkloadIdentityStorage implements the storage for WorkloadIdentity.
+type WorkloadIdentityStorage struct {
+	WorkloadIdentity *REST
+	TokenRequest     *TokenRequestREST
+}
+
+// NewStorage creates a new WorkloadIdentityStorage object.
+func NewStorage(
+	optsGetter generic.RESTOptionsGetter,
+	tokenIssuer workloadidentityutils.TokenIssuer,
+	shootListers gardencorev1beta1listers.ShootLister,
+	seedLister gardencorev1beta1listers.SeedLister,
+	projectLister gardencorev1beta1listers.ProjectLister,
+	backupBucketLister gardencorev1beta1listers.BackupBucketLister,
+	backupEntryLister gardencorev1beta1listers.BackupEntryLister,
+) WorkloadIdentityStorage {
+	workloadIdentityRest := NewREST(optsGetter)
+
+	return WorkloadIdentityStorage{
+		WorkloadIdentity: workloadIdentityRest,
+		TokenRequest:     NewTokenRequestREST(workloadIdentityRest, tokenIssuer, shootListers, seedLister, projectLister, backupBucketLister, backupEntryLister),
+	}
+}
+
+// NewREST returns a RESTStorage object that will work against WorkloadIdentity.
+func NewREST(optsGetter generic.RESTOptionsGetter) *REST {
+	store := &genericregistry.Store{
+		NewFunc:     func() runtime.Object { return &security.WorkloadIdentity{} },
+		NewListFunc: func() runtime.Object { return &security.WorkloadIdentityList{} },
+
+		DefaultQualifiedResource:  security.Resource("workloadidentities"),
+		SingularQualifiedResource: security.Resource("workloadidentity"),
+		EnableGarbageCollection:   true,
+
+		CreateStrategy: workloadidentity.Strategy,
+		UpdateStrategy: workloadidentity.Strategy,
+		DeleteStrategy: workloadidentity.Strategy,
+
+		TableConvertor: newTableConvertor(),
+	}
+
+	options := &generic.StoreOptions{RESTOptions: optsGetter}
+	if err := store.CompleteWithOptions(options); err != nil {
+		panic(err)
+	}
+
+	return &REST{store}
+}
+
+// Implement ShortNamesProvider
+var _ rest.ShortNamesProvider = &REST{}
+
+// ShortNames implements the ShortNamesProvider interface. Returns a list of short names for a resource.
+func (r *REST) ShortNames() []string {
+	return []string{"wi"}
+}

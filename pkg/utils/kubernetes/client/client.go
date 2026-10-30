@@ -1,0 +1,490 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package client
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/utils/flow"
+)
+
+type objectsRemaining struct {
+	scheme           *runtime.Scheme
+	remainingObjects []client.Object
+}
+
+// Error implements error.
+func (n objectsRemaining) Error() string {
+	out := make([]string, 0, len(n.remainingObjects))
+	for _, obj := range n.remainingObjects {
+		out = append(out, fmt.Sprintf("%s %s", GVKStringForObject(obj, n.scheme), client.ObjectKeyFromObject(obj).String()))
+	}
+	return fmt.Sprintf("remaining objects are still present: %v", out)
+}
+
+// AreObjectsRemaining checks whether the given error is an 'objects remaining error'.
+func AreObjectsRemaining(err error) bool {
+	objectsRemainingErr := &objectsRemaining{}
+	return errors.As(err, &objectsRemainingErr)
+}
+
+// NewObjectsRemaining returns a new error with the remaining objects.
+func NewObjectsRemaining(obj runtime.Object, scheme *runtime.Scheme) error {
+	r := &objectsRemaining{
+		scheme: scheme,
+	}
+
+	switch remaining := obj.(type) {
+	case client.ObjectList:
+		r.remainingObjects = make([]client.Object, 0, meta.LenList(remaining))
+		if err := meta.EachListItem(remaining, func(obj runtime.Object) error {
+			r.remainingObjects = append(r.remainingObjects, obj.(client.Object))
+			return nil
+		}); err != nil {
+			return err
+		}
+		return r
+	case client.Object:
+		r.remainingObjects = append(r.remainingObjects, remaining)
+		return r
+	}
+	return fmt.Errorf("type %T does neither implement client.Object nor client.ObjectList", obj)
+}
+
+type finalizer struct{}
+
+// NewFinalizer instantiates a default finalizer.
+func NewFinalizer() Finalizer {
+	return &finalizer{}
+}
+
+var defaultFinalizer = NewFinalizer()
+
+// Finalize removes the finalizers (.meta.finalizers) of given resource.
+func (f *finalizer) Finalize(ctx context.Context, c client.Client, obj client.Object) error {
+	withFinalizers := obj.DeepCopyObject().(client.Object)
+	obj.SetFinalizers(nil)
+	return c.Patch(ctx, obj, client.MergeFrom(withFinalizers))
+}
+
+// HasFinalizers checks whether the given resource has finalizers (.meta.finalizers).
+func (f *finalizer) HasFinalizers(obj client.Object) (bool, error) {
+	return len(obj.GetFinalizers()) > 0, nil
+}
+
+type namespaceFinalizer struct{}
+
+// NewNamespaceFinalizer instantiates a namespace finalizer.
+func NewNamespaceFinalizer() Finalizer {
+	return &namespaceFinalizer{}
+}
+
+// Finalize removes the finalizers of given namespace resource.
+// Because of legacy reasons namespaces have both .meta.finalizers and .spec.finalizers.
+// Both of them are removed. An error is returned when the given resource is not a namespace.
+func (f *namespaceFinalizer) Finalize(ctx context.Context, c client.Client, obj client.Object) error {
+	namespace, ok := obj.(*corev1.Namespace)
+	if !ok {
+		return errors.New("corev1.Namespace is expected")
+	}
+
+	namespace.SetFinalizers(nil)
+	namespace.Spec.Finalizers = nil
+
+	return c.SubResource("finalize").Update(ctx, namespace)
+}
+
+// HasFinalizers checks whether the given namespace has finalizers
+// (.meta.finalizers and .spec.finalizers).
+func (f *namespaceFinalizer) HasFinalizers(obj client.Object) (bool, error) {
+	namespace, ok := obj.(*corev1.Namespace)
+	if !ok {
+		return false, errors.New("corev1.Namespace expected")
+	}
+
+	return len(namespace.Finalizers)+len(namespace.Spec.Finalizers) > 0, nil
+}
+
+type cleaner struct {
+	clock     clock.Clock
+	finalizer Finalizer
+}
+
+// NewCleaner instantiates a new Cleaner with the given clock and finalizer.
+func NewCleaner(clock clock.Clock, finalizer Finalizer) Cleaner {
+	return &cleaner{clock, finalizer}
+}
+
+var defaultCleaner = NewCleaner(clock.RealClock{}, defaultFinalizer)
+
+// DefaultCleaner is the default Cleaner.
+func DefaultCleaner() Cleaner {
+	return defaultCleaner
+}
+
+// Clean deletes and optionally finalizes resources that expired their termination date.
+func (cl *cleaner) Clean(ctx context.Context, c client.Client, obj runtime.Object, opts ...CleanOption) error {
+	cleanOptions := &CleanOptions{}
+	cleanOptions.ApplyOptions(opts)
+
+	switch o := obj.(type) {
+	case client.ObjectList:
+		return cleanCollectionAction(ctx, c, o, cleanOptions, cl.doClean)
+	case client.Object:
+		return cleanAction(ctx, c, o, cleanOptions, cl.doClean)
+	}
+	return fmt.Errorf("type %T does neither implement client.Object nor client.ObjectList", obj)
+}
+
+func (cl *cleaner) doClean(ctx context.Context, c client.Client, obj client.Object, cleanOptions *CleanOptions) error {
+	gracePeriod := time.Second
+	if cleanOptions.FinalizeGracePeriodSeconds != nil {
+		gracePeriod *= time.Duration(*cleanOptions.FinalizeGracePeriodSeconds)
+	}
+
+	if !obj.GetDeletionTimestamp().IsZero() && obj.GetDeletionTimestamp().Time.Add(gracePeriod).Before(cl.clock.Now()) {
+		hasFinalizers, err := cl.finalizer.HasFinalizers(obj)
+		if err != nil {
+			return err
+		}
+
+		if hasFinalizers {
+			// Ignore NotFound errors which might happen if the object or its namespace got deleted in the meantime.
+			return client.IgnoreNotFound(cl.finalizer.Finalize(ctx, c, obj))
+		}
+	}
+
+	if obj.GetDeletionTimestamp().IsZero() {
+		if err := c.Delete(ctx, obj, cleanOptions.DeleteOptions...); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			if meta.IsNoMatchError(err) {
+				return nil
+			}
+			for _, tolerate := range cleanOptions.ErrorToleration {
+				if tolerate(err) {
+					return nil
+				}
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+var _ Cleaner = (*volumeSnapshotContentCleaner)(nil)
+
+type volumeSnapshotContentCleaner struct {
+	clock clock.Clock
+}
+
+// Clean annotates the VolumeSnapshotContents so that they are cleaned up by the CSI snapshot controller.
+func (v *volumeSnapshotContentCleaner) Clean(ctx context.Context, c client.Client, obj runtime.Object, opts ...CleanOption) error {
+	cleanOptions := &CleanOptions{}
+	cleanOptions.ApplyOptions(opts)
+
+	switch o := obj.(type) {
+	case client.ObjectList:
+		return cleanCollectionAction(ctx, c, o, cleanOptions, v.triggerVolumeSnapshotDeletion)
+	case client.Object:
+		return cleanAction(ctx, c, o, cleanOptions, v.triggerVolumeSnapshotDeletion)
+	}
+	return fmt.Errorf("type %T does neither implement client.Object nor client.ObjectList", obj)
+}
+
+func gracePeriodIsPassed(obj client.Object, ops *CleanOptions, cl clock.Clock) bool {
+	if obj.GetDeletionTimestamp().IsZero() {
+		return false
+	}
+
+	deleteOp := &client.DeleteOptions{}
+	for _, op := range ops.DeleteOptions {
+		op.ApplyToDelete(deleteOp)
+	}
+
+	gracePeriod := time.Second * time.Duration(ptr.Deref(deleteOp.GracePeriodSeconds, 0))
+	return obj.GetDeletionTimestamp().Time.Add(gracePeriod).Before(cl.Now())
+}
+
+const (
+	annVolumeSnapshotBeingDeleted = "snapshot.storage.kubernetes.io/volumesnapshot-being-deleted"
+	annVolumeSnapshotBeingCreated = "snapshot.storage.kubernetes.io/volumesnapshot-being-created"
+)
+
+func (v *volumeSnapshotContentCleaner) triggerVolumeSnapshotDeletion(ctx context.Context, c client.Client, obj client.Object, ops *CleanOptions) error {
+	if !gracePeriodIsPassed(obj, ops, v.clock) {
+		return nil
+	}
+
+	_, annDeleted := obj.GetAnnotations()[annVolumeSnapshotBeingDeleted]
+	_, annCreated := obj.GetAnnotations()[annVolumeSnapshotBeingCreated]
+
+	if annDeleted && !annCreated {
+		return nil
+	}
+
+	patch := client.MergeFrom(obj.DeepCopyObject().(client.Object))
+
+	if obj.GetAnnotations() == nil {
+		obj.SetAnnotations(make(map[string]string))
+	}
+
+	// annVolumeSnapshotBeingDeleted triggers the CSI sidecar to delete the snapshot on the infrastructure.
+	// annVolumeSnapshotBeingCreated must not exist if we want the controller to delete the snapshot.
+	// See https://github.com/kubernetes-csi/external-snapshotter/blob/138d310e5d2d102fcf90df96d7a8aaf6690ce76e/pkg/sidecar-controller/snapshot_controller.go#L563
+	obj.GetAnnotations()[annVolumeSnapshotBeingDeleted] = "yes"
+	delete(obj.GetAnnotations(), annVolumeSnapshotBeingCreated)
+
+	return client.IgnoreNotFound(c.Patch(ctx, obj, patch))
+}
+
+// NewVolumeSnapshotContentCleaner instantiates a new Cleaner with ability to clean VolumeSnapshotContents
+// **after** they got deleted and the given deletion grace period is passed.
+func NewVolumeSnapshotContentCleaner(clock clock.Clock) Cleaner {
+	return &volumeSnapshotContentCleaner{
+		clock: clock,
+	}
+}
+
+var defaultVolumeSnapshotContentCleaner = NewVolumeSnapshotContentCleaner(clock.RealClock{})
+
+// DefaultVolumeSnapshotContentCleaner is the default cleaner for VolumeSnapshotContents.
+// The VolumeSnapshotCleaner initiates the deletion of VolumeSnapshots **after** they got deleted
+// and the given deletion grace period is passed.
+func DefaultVolumeSnapshotContentCleaner() Cleaner {
+	return defaultVolumeSnapshotContentCleaner
+}
+
+var defaultGoneEnsurer = GoneEnsurerFunc(EnsureGone)
+
+// EnsureGone implements GoneEnsurer.
+func (f GoneEnsurerFunc) EnsureGone(ctx context.Context, log logr.Logger, c client.Client, obj runtime.Object, opts ...CleanOption) error {
+	return f(ctx, log, c, obj, opts...)
+}
+
+// DefaultGoneEnsurer is the default GoneEnsurer.
+func DefaultGoneEnsurer() GoneEnsurer {
+	return defaultGoneEnsurer
+}
+
+// EnsureGone ensures that the given object or list is gone.
+func EnsureGone(ctx context.Context, log logr.Logger, c client.Client, obj runtime.Object, opts ...CleanOption) error {
+	cleanOptions := &CleanOptions{}
+	cleanOptions.ApplyOptions(opts)
+
+	switch o := obj.(type) {
+	case client.ObjectList:
+		return ensureCollectionGone(ctx, c, log, o, cleanOptions.ListOptions, cleanOptions.IgnoreLeftovers)
+	case client.Object:
+		return ensureGone(ctx, c, log, o, cleanOptions.IgnoreLeftovers)
+	}
+	return fmt.Errorf("type %T does neither implement client.Object nor client.ObjectList", obj)
+}
+
+func ensureGone(ctx context.Context, c client.Client, log logr.Logger, obj client.Object, ignoreFns []IgnoreLeftoverFunc) error {
+	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	for _, ignore := range ignoreFns {
+		if ignore(log, obj) {
+			return nil
+		}
+	}
+
+	return NewObjectsRemaining(obj, c.Scheme())
+}
+
+func ensureCollectionGone(ctx context.Context, c client.Client, log logr.Logger, list client.ObjectList, listOpts []client.ListOption, ignoreFns []IgnoreLeftoverFunc) error {
+	if err := c.List(ctx, list, listOpts...); err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	objectsInList := meta.LenList(list)
+	if objectsInList == 0 {
+		return nil
+	}
+
+	ignoredObjects := 0
+	if err := meta.EachListItem(list, func(object runtime.Object) error {
+		for _, ignore := range ignoreFns {
+			if ignore(log, object.(client.Object)) {
+				ignoredObjects++
+				return nil
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to iterate over list: %w", err)
+	}
+
+	if ignoredObjects < objectsInList {
+		return NewObjectsRemaining(list, c.Scheme())
+	}
+	return nil
+}
+
+type actionFunc func(ctx context.Context, c client.Client, obj client.Object, cleanOptions *CleanOptions) error
+
+func cleanAction(
+	ctx context.Context,
+	c client.Client,
+	obj client.Object,
+	cleanOptions *CleanOptions,
+	action actionFunc,
+) error {
+	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	return action(ctx, c, obj, cleanOptions)
+}
+
+func cleanCollectionAction(
+	ctx context.Context,
+	c client.Client,
+	list client.ObjectList,
+	cleanOptions *CleanOptions,
+	action actionFunc,
+) error {
+	if err := c.List(ctx, list, cleanOptions.ListOptions...); err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	tasks := make([]flow.TaskFn, 0, meta.LenList(list))
+	if err := meta.EachListItem(list, func(obj runtime.Object) error {
+		tasks = append(tasks, func(ctx context.Context) error {
+			return action(ctx, c, obj.(client.Object), cleanOptions)
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	return flow.Parallel(tasks...)(ctx)
+}
+
+type cleanerOps struct {
+	GoneEnsurer
+
+	cleaners []Cleaner
+}
+
+// CleanAndEnsureGone cleans the target resources. Afterwards, it checks, whether the target resource is still
+// present. If yes, it errors with a NewObjectsRemaining error.
+func (o *cleanerOps) CleanAndEnsureGone(ctx context.Context, log logr.Logger, c client.Client, obj runtime.Object, opts ...CleanOption) error {
+	for _, cle := range o.cleaners {
+		if err := cle.Clean(ctx, c, obj, opts...); err != nil {
+			return err
+		}
+	}
+
+	return o.EnsureGone(ctx, log, c, obj, opts...)
+}
+
+// NewCleanOps instantiates new CleanOps with the given Cleaner and GoneEnsurer.
+func NewCleanOps(ensurer GoneEnsurer, cleaner ...Cleaner) CleanOps {
+	return &cleanerOps{ensurer, cleaner}
+}
+
+var defaultCleanerOps = NewCleanOps(DefaultGoneEnsurer(), DefaultCleaner())
+
+// DefaultCleanOps are the default CleanOps.
+func DefaultCleanOps() CleanOps {
+	return defaultCleanerOps
+}
+
+// ApplyToObjects applies the passed function to all the objects in the list.
+func ApplyToObjects(ctx context.Context, objectList client.ObjectList, fn func(ctx context.Context, object client.Object) error) error {
+	taskFns := make([]flow.TaskFn, 0, meta.LenList(objectList))
+	if err := meta.EachListItem(objectList, func(obj runtime.Object) error {
+		object, ok := obj.(client.Object)
+		if !ok {
+			return fmt.Errorf("expected client.Object but got %T", obj)
+		}
+		taskFns = append(taskFns, func(ctx context.Context) error {
+			return fn(ctx, object)
+		})
+		return nil
+	}); err != nil {
+		return err
+	}
+	return flow.Parallel(taskFns...)(ctx)
+}
+
+// ApplyToObjectKinds applies the passed function to all the object lists for the passed kinds.
+func ApplyToObjectKinds(ctx context.Context, fn func(kind string, objectList client.ObjectList) flow.TaskFn, kindToObjectList map[string]client.ObjectList) error {
+	var taskFns []flow.TaskFn
+	for kind, objectList := range kindToObjectList {
+		taskFns = append(taskFns, fn(kind, objectList))
+	}
+
+	return flow.Parallel(taskFns...)(ctx)
+}
+
+// ForceDeleteObjects lists and finalizes all the objects in the passed namespace and deletes them.
+func ForceDeleteObjects(c client.Client, namespace string, objectList client.ObjectList, opts ...client.ListOption) flow.TaskFn {
+	return func(ctx context.Context) error {
+		listOpts := &client.ListOptions{Namespace: namespace}
+		listOpts.ApplyOptions(opts)
+		if err := c.List(ctx, objectList, listOpts); err != nil {
+			return err
+		}
+
+		return ApplyToObjects(ctx, objectList, func(ctx context.Context, object client.Object) error {
+			if err := c.Delete(ctx, object); err != nil {
+				if apierrors.IsNotFound(err) {
+					return nil
+				}
+				return err
+			}
+
+			return controllerutils.RemoveAllFinalizers(ctx, c, object)
+		})
+	}
+}
+
+// GVKStringForObject finds the GroupVersionKind associated with the given object.
+// Falls back to the object type if a distinct GVK couldn't be found.
+func GVKStringForObject(obj client.Object, scheme *runtime.Scheme) string {
+	var typeID string
+	// Generally use the scheme to find the GVK for the object, since list calls may strip the type meta.
+	// See https://github.com/kubernetes-sigs/controller-runtime/issues/3302#issuecomment-3237537512 for more information.
+	gvk, err := apiutil.GVKForObject(obj, scheme)
+	if err != nil || gvk.Empty() {
+		typeID = fmt.Sprintf("%T", obj)
+	} else {
+		typeID = gvk.String()
+	}
+
+	return typeID
+}

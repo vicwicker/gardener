@@ -1,0 +1,46 @@
+apiVersion: operator.gardener.cloud/v1alpha1
+kind: Extension
+metadata:
+  name: provider-local
+spec:
+  deployment:
+    admission:
+      runtimeCluster:
+        helm:
+          ociRepository:
+            ref: local-skaffold/gardener-extension-admission-local/charts/runtime:v0.0.0
+            caBundleSecretRef:
+              name: gardener-local-registry-ca
+      virtualCluster:
+        helm:
+          ociRepository:
+            ref: local-skaffold/gardener-extension-admission-local/charts/application:v0.0.0
+            caBundleSecretRef:
+              name: gardener-local-registry-ca
+    extension:
+      helm:
+        ociRepository:
+          ref: local-skaffold/gardener-extension-provider-local/charts/extension:v0.0.0
+          caBundleSecretRef:
+            name: gardener-local-registry-ca
+      injectGardenKubeconfig: true
+  resources:
+  - kind: BackupBucket
+    type: local
+  - kind: BackupEntry
+    type: local
+  - kind: Bastion
+    type: local
+  - kind: ControlPlane
+    type: local
+  - kind: DNSRecord
+    type: local
+  - kind: Infrastructure
+    type: local
+  - kind: Worker
+    type: local
+  - kind: OperatingSystemConfig
+    type: local
+  - kind: SelfHostedShootExposure
+    type: local
+    continuousEndpointUpdate: true

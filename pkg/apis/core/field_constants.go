@@ -1,0 +1,96 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package core
+
+// Field path constants that are specific to the internal API
+// representation.
+const (
+	// BackupBucketSeedName is the field selector path for finding
+	// the Seed cluster of a core.gardener.cloud/v1beta1 BackupBucket.
+	BackupBucketSeedName = "spec.seedName"
+	// BackupBucketShootRefName is the field selector path for finding
+	// the name of the shoot reference of a core.gardener.cloud/v1beta1 BackupBucket.
+	BackupBucketShootRefName = "spec.shootRef.name"
+	// BackupBucketShootRefNamespace is the field selector path for finding
+	// the namespace of the shoot reference of a core.gardener.cloud/v1beta1 BackupBucket.
+	BackupBucketShootRefNamespace = "spec.shootRef.namespace"
+
+	// BackupEntrySeedName is the field selector path for finding
+	// the Seed cluster of a core.gardener.cloud/v1beta1 BackupEntry.
+	BackupEntrySeedName = "spec.seedName"
+	// BackupEntryShootRefName is the field selector path for finding
+	// the name of the shoot reference of a core.gardener.cloud/v1beta1 BackupEntry.
+	BackupEntryShootRefName = "spec.shootRef.name"
+	// BackupEntryShootRefNamespace is the field selector path for finding
+	// the namespace of the shoot reference of a core.gardener.cloud/v1beta1 BackupEntry.
+	BackupEntryShootRefNamespace = "spec.shootRef.namespace"
+	// BackupEntryBucketName is the field selector path for finding
+	// the BackupBucket for a core.gardener.cloud/v1beta1 BackupEntry.
+	BackupEntryBucketName = "spec.bucketName"
+
+	// InternalSecretType is the field selector path for finding
+	// the secret type of a core.gardener.cloud/v1beta1 InternalSecret.
+	InternalSecretType = "type"
+
+	// ProjectNamespace is the field selector path for filtering by namespace
+	// for core.gardener.cloud/v1beta1 Project.
+	ProjectNamespace = "spec.namespace"
+
+	// RegistrationRefName is the field selector path for finding
+	// the ControllerRegistration name of a core.gardener.cloud/v1beta1.ControllerInstallation.
+	RegistrationRefName = "spec.registrationRef.name"
+	// SeedRefName is the field selector path for finding
+	// the Seed name of a core.gardener.cloud/v1beta1.ControllerInstallation.
+	SeedRefName = "spec.seedRef.name"
+	// ShootRefName is the field selector path for finding
+	// the Shoot name of a core.gardener.cloud/v1beta1.ControllerInstallation.
+	ShootRefName = "spec.shootRef.name"
+	// ShootRefNamespace is the field selector path for finding
+	// the Shoot namespace of a core.gardener.cloud/v1beta1.ControllerInstallation.
+	ShootRefNamespace = "spec.shootRef.namespace"
+
+	// ShootCloudProfileName is the field selector path for finding
+	// the CloudProfile name of a core.gardener.cloud/v1beta1.Shoot.
+	ShootCloudProfileName = "spec.cloudProfileName"
+	// ShootCloudProfileRefName is the field selector path for finding
+	// the referenced CloudProfile name of a core.gardener.cloud/v1beta1.Shoot.
+	ShootCloudProfileRefName = "spec.cloudProfile.Name"
+	// ShootCloudProfileRefKind is the field selector path for finding
+	// the referenced CloudProfile kind of a core.gardener.cloud/v1beta1.Shoot.
+	ShootCloudProfileRefKind = "spec.cloudProfile.Kind"
+	// ShootAuditPolicyConfigMapName is the field selector path for finding Shoots
+	// referencing a given audit policy ConfigMap.
+	ShootAuditPolicyConfigMapName = "spec.kubernetes.kubeAPIServer.auditConfig.auditPolicy.configMapRef.name"
+	// ShootAuthenticationConfigMapName is the field selector path for finding Shoots
+	// referencing a given authentication configuration ConfigMap.
+	ShootAuthenticationConfigMapName = "spec.kubernetes.kubeAPIServer.structuredAuthentication.configMapName"
+	// ShootAuthorizationConfigMapName is the field selector path for finding Shoots
+	// referencing a given authorization configuration ConfigMap.
+	ShootAuthorizationConfigMapName = "spec.kubernetes.kubeAPIServer.structuredAuthorization.configMapName"
+	// ShootAdmissionPluginKubeconfigSecretName is the field selector path for finding Shoots
+	// referencing a given kubeconfig Secret via an admission plugin.
+	ShootAdmissionPluginKubeconfigSecretName = "spec.kubernetes.kubeAPIServer.admissionPlugins.kubeconfigSecretName"
+	// ShootStructuredAuthorizationKubeconfigSecretName is the field selector path for finding Shoots
+	// referencing a given kubeconfig Secret via structured authorization.
+	ShootStructuredAuthorizationKubeconfigSecretName = "spec.kubernetes.kubeAPIServer.structuredAuthorization.kubeconfigs.secretName"
+	// ShootSeedName is the field selector path for finding
+	// the Seed cluster of a core.gardener.cloud/v1beta1.Shoot.
+	ShootSeedName = "spec.seedName"
+	// ShootStatusSeedName is the field selector path for finding
+	// the Seed cluster of a core.gardener.cloud/v1beta1.Shoot
+	// referred in the status.
+	ShootStatusSeedName = "status.seedName"
+
+	// NamespacedCloudProfileParentRefName is the field selector path for finding
+	// the parent CloudProfile of a core.gardener.cloud/v1beta1 NamespacedCloudProfile.
+	NamespacedCloudProfileParentRefName = "spec.parent.name"
+
+	// SecretBindingSecretRefName is the field selector path for finding
+	// the Secret name of a core.gardener.cloud/v1beta1 SecretBinding.
+	SecretBindingSecretRefName = "spec.secretRef.name"
+	// SecretBindingSecretRefNamespace is the field selector path for finding
+	// the Secret namespace of a core.gardener.cloud/v1beta1 SecretBinding.
+	SecretBindingSecretRefNamespace = "spec.secretRef.namespace"
+)

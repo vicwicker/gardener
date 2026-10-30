@@ -1,0 +1,20 @@
+# ControllerInstallation object requests a specific controller to get deployed to a seed cluster.
+# See https://github.com/gardener/enhancements/tree/main/geps/0001-gardener-extensibility.
+---
+apiVersion: core.gardener.cloud/v1beta1
+kind: ControllerInstallation
+metadata:
+  name: os-gardenlinux
+spec:
+  deploymentRef:
+    apiVersion: core.gardener.cloud/v1beta1
+    kind: ControllerDeployment
+    name: os-gardenlinux
+  registrationRef:
+    apiVersion: core.gardener.cloud/v1beta1
+    kind: ControllerRegistration
+    name: os-gardenlinux
+  seedRef:
+    apiVersion: core.gardener.cloud/v1beta1
+    kind: Seed
+    name: my-seed

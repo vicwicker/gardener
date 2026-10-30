@@ -1,0 +1,73 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package kubelet
+
+import (
+	"slices"
+	"strings"
+
+	fluentbitv1alpha2 "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2"
+	fluentbitv1alpha2filter "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2/plugins/filter"
+	fluentbitv1alpha2input "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2/plugins/input"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	comp "github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/features"
+)
+
+// CentralLoggingConfiguration returns a fluent-bit parser and filter for the kubelet logs.
+func CentralLoggingConfiguration() (comp.CentralLoggingConfig, error) {
+	return comp.CentralLoggingConfig{Inputs: generateClusterInputs(), Filters: generateClusterFilters()}, nil
+}
+
+func getKubeletTag() string {
+	if slices.ContainsFunc(features.DefaultFeatureGate.KnownFeatures(), func(s string) bool {
+		return strings.HasPrefix(s, string(features.OpenTelemetryCollector)+"=")
+	}) && features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) {
+		return "systemd.kubelet"
+	}
+	return "journald.kubelet"
+}
+
+func generateClusterInputs() []*fluentbitv1alpha2.ClusterInput {
+	clusterInput := &fluentbitv1alpha2.ClusterInput{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   strings.ReplaceAll(getKubeletTag(), ".", "-"),
+			Labels: map[string]string{v1beta1constants.LabelKeyCustomLoggingResource: v1beta1constants.LabelValueCustomLoggingResource},
+		},
+		Spec: fluentbitv1alpha2.InputSpec{
+			Systemd: &fluentbitv1alpha2input.Systemd{
+				Tag:           getKubeletTag(),
+				ReadFromTail:  "on",
+				SystemdFilter: []string{"_SYSTEMD_UNIT=kubelet.service"},
+				Path:          "/var/log/journal",
+			},
+		},
+	}
+
+	return []*fluentbitv1alpha2.ClusterInput{clusterInput}
+}
+
+func generateClusterFilters() []*fluentbitv1alpha2.ClusterFilter {
+	return []*fluentbitv1alpha2.ClusterFilter{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   strings.ReplaceAll(getKubeletTag(), ".", "-"),
+				Labels: map[string]string{v1beta1constants.LabelKeyCustomLoggingResource: v1beta1constants.LabelValueCustomLoggingResource},
+			},
+			Spec: fluentbitv1alpha2.FilterSpec{
+				Match: getKubeletTag() + ".*",
+				FilterItems: []fluentbitv1alpha2.FilterItem{
+					{
+						RecordModifier: &fluentbitv1alpha2filter.RecordModifier{
+							Records: []string{"hostname ${NODE_NAME}", "unit kubelet"},
+						},
+					},
+				},
+			},
+		},
+	}
+}

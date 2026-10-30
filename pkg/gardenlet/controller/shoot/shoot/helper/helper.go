@@ -1,0 +1,41 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package helper
+
+import (
+	"time"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	"github.com/gardener/gardener/pkg/component/etcd/etcd"
+	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+)
+
+// ComputeOperationType determines which operation should be executed when acting on the given shoot.
+func ComputeOperationType(shoot *gardencorev1beta1.Shoot) gardencorev1beta1.LastOperationType {
+	if v1beta1helper.ShouldPrepareShootForMigration(shoot) {
+		if v1beta1helper.HasLiveMigrationAnnotation(shoot.Annotations) {
+			return gardencorev1beta1.LastOperationTypeLiveMigrate
+		}
+		return gardencorev1beta1.LastOperationTypeMigrate
+	}
+
+	lastOperation := shoot.Status.LastOperation
+	if lastOperation != nil && lastOperation.Type == gardencorev1beta1.LastOperationTypeMigrate &&
+		(lastOperation.State == gardencorev1beta1.LastOperationStateSucceeded || lastOperation.State == gardencorev1beta1.LastOperationStateAborted) {
+		return gardencorev1beta1.LastOperationTypeRestore
+	}
+
+	return v1beta1helper.ComputeOperationType(shoot.ObjectMeta, shoot.Status.LastOperation)
+}
+
+// GetEtcdDeployTimeout returns the timeout for the etcd deployment task of the reconcile flow.
+func GetEtcdDeployTimeout(shoot *shoot.Shoot, defaultDuration time.Duration) time.Duration {
+	timeout := defaultDuration
+	if v1beta1helper.IsHAControlPlaneConfigured(shoot.GetInfo()) {
+		timeout = etcd.DefaultTimeout
+	}
+	return timeout
+}

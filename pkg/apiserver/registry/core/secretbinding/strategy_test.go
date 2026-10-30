@@ -1,0 +1,155 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package secretbinding_test
+
+import (
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	"github.com/gardener/gardener/pkg/apis/core"
+	secretbindingregistry "github.com/gardener/gardener/pkg/apiserver/registry/core/secretbinding"
+)
+
+var _ = Describe("Strategy", func() {
+	var secretBinding *core.SecretBinding
+
+	BeforeEach(func() {
+		secretBinding = &core.SecretBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "profile",
+				Namespace: "garden",
+			},
+			SecretRef: corev1.SecretReference{
+				Name:      "my-secret",
+				Namespace: "my-namespace",
+			},
+		}
+	})
+
+	Describe("#PrepareForCreate", func() {
+		It("should set the name if not set", func() {
+			secretBinding.SetName("")
+
+			secretbindingregistry.Strategy.PrepareForCreate(context.TODO(), secretBinding)
+
+			Expect(secretBinding.GetName()).NotTo(BeEmpty())
+		})
+
+		It("should set name with generateName as prefix", func() {
+			genName := "prefix-"
+			secretBinding.GenerateName = genName
+			secretBinding.Name = ""
+
+			secretbindingregistry.Strategy.PrepareForCreate(context.TODO(), secretBinding)
+
+			Expect(secretBinding.GetGenerateName()).To(Equal(genName))
+			Expect(secretBinding.GetName()).To(HavePrefix(genName))
+		})
+
+		It("should not overwrite already set name", func() {
+			secretBinding.SetName("bar")
+
+			secretbindingregistry.Strategy.PrepareForCreate(context.TODO(), secretBinding)
+
+			Expect(secretBinding.GetName()).To(Equal("bar"))
+		})
+	})
+
+	Describe("#Validate", func() {
+		It("should forbid creating SecretBinding when provider is nil or empty", func() {
+			secretBinding.Provider = nil
+
+			errorList := secretbindingregistry.Strategy.Validate(context.TODO(), secretBinding)
+			Expect(errorList).To(ConsistOf(
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal("provider"),
+				})),
+			))
+
+			secretBinding.Provider = &core.SecretBindingProvider{}
+
+			errorList = secretbindingregistry.Strategy.Validate(context.TODO(), secretBinding)
+			Expect(errorList).To(ConsistOf(
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal("provider.type"),
+				})),
+			))
+		})
+
+		It("should allow creating SecretBinding when provider is valid", func() {
+			secretBinding.Provider = &core.SecretBindingProvider{
+				Type: "foo",
+			}
+
+			errorList := secretbindingregistry.Strategy.Validate(context.TODO(), secretBinding)
+			Expect(errorList).To(BeEmpty())
+		})
+	})
+
+	Describe("#WarningsOnCreate", func() {
+		It("should return deprecation warning", func() {
+			warnings := secretbindingregistry.Strategy.WarningsOnCreate(context.TODO(), secretBinding)
+			expected := "SecretBinding is deprecated in favour of CredentialsBinding. For migration instructions, see: https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/secretbinding-to-credentialsbinding-migration.md"
+			Expect(warnings).To(HaveLen(1))
+			Expect(warnings[0]).To(Equal(expected))
+		})
+	})
+
+	Describe("#WarningsOnUpdate", func() {
+		It("should return deprecation warning", func() {
+			warnings := secretbindingregistry.Strategy.WarningsOnUpdate(context.TODO(), secretBinding, secretBinding)
+			expected := "SecretBinding is deprecated in favour of CredentialsBinding. For migration instructions, see: https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/secretbinding-to-credentialsbinding-migration.md"
+			Expect(warnings).To(HaveLen(1))
+			Expect(warnings[0]).To(Equal(expected))
+		})
+	})
+
+	Describe("#ToSelectableFields", func() {
+		It("should return the secretRef name and namespace", func() {
+			result := secretbindingregistry.ToSelectableFields(secretBinding)
+
+			Expect(result.Get(core.SecretBindingSecretRefName)).To(Equal("my-secret"))
+			Expect(result.Get(core.SecretBindingSecretRefNamespace)).To(Equal("my-namespace"))
+			Expect(result.Get("metadata.name")).To(Equal("profile"))
+			Expect(result.Get("metadata.namespace")).To(Equal("garden"))
+		})
+	})
+
+	Describe("#GetAttrs", func() {
+		It("should return an error when the object is not a SecretBinding", func() {
+			_, _, err := secretbindingregistry.GetAttrs(&core.Seed{})
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should return the selectable fields", func() {
+			_, fs, err := secretbindingregistry.GetAttrs(secretBinding)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fs.Get(core.SecretBindingSecretRefName)).To(Equal("my-secret"))
+			Expect(fs.Get(core.SecretBindingSecretRefNamespace)).To(Equal("my-namespace"))
+		})
+	})
+
+	Describe("#MatchSecretBinding", func() {
+		It("should return the predicate with the given selectors", func() {
+			ls := labels.SelectorFromSet(labels.Set{"foo": "bar"})
+			fs := fields.OneTermEqualSelector(core.SecretBindingSecretRefName, "my-secret")
+
+			result := secretbindingregistry.MatchSecretBinding(ls, fs)
+
+			Expect(result.Label).To(Equal(ls))
+			Expect(result.Field).To(Equal(fs))
+		})
+	})
+})

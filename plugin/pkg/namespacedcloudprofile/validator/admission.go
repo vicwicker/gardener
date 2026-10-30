@@ -1,0 +1,372 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package validator
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"reflect"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/admission"
+	"k8s.io/utils/ptr"
+
+	gardencoreapi "github.com/gardener/gardener/pkg/api"
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
+	"github.com/gardener/gardener/pkg/api/core/validation"
+	gardencore "github.com/gardener/gardener/pkg/apis/core"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
+	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
+	gardencorev1beta1listers "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
+	"github.com/gardener/gardener/pkg/controllermanager/controller/namespacedcloudprofile"
+	"github.com/gardener/gardener/pkg/utils"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	plugin "github.com/gardener/gardener/plugin/pkg"
+)
+
+// Register registers a plugin.
+func Register(plugins *admission.Plugins) {
+	plugins.Register(plugin.PluginNameNamespacedCloudProfileValidator, func(_ io.Reader) (admission.Interface, error) {
+		return New()
+	})
+}
+
+// ValidateNamespacedCloudProfile contains listers and admission handler.
+type ValidateNamespacedCloudProfile struct {
+	*admission.Handler
+
+	cloudProfileLister gardencorev1beta1listers.CloudProfileLister
+	readyFunc          admission.ReadyFunc
+}
+
+var (
+	_          = admissioninitializer.WantsCoreInformerFactory(&ValidateNamespacedCloudProfile{})
+	readyFuncs []admission.ReadyFunc
+)
+
+// New creates a new ValidateNamespacedCloudProfile admission plugin.
+func New() (*ValidateNamespacedCloudProfile, error) {
+	return &ValidateNamespacedCloudProfile{
+		Handler: admission.NewHandler(admission.Create, admission.Update),
+	}, nil
+}
+
+// AssignReadyFunc assigns the ready function to the admission handler.
+func (v *ValidateNamespacedCloudProfile) AssignReadyFunc(f admission.ReadyFunc) {
+	v.readyFunc = f
+	v.SetReadyFunc(f)
+}
+
+// SetCoreInformerFactory gets Lister from SharedInformerFactory.
+func (v *ValidateNamespacedCloudProfile) SetCoreInformerFactory(f gardencoreinformers.SharedInformerFactory) {
+	cloudProfileInformer := f.Core().V1beta1().CloudProfiles()
+	v.cloudProfileLister = cloudProfileInformer.Lister()
+
+	readyFuncs = append(readyFuncs, cloudProfileInformer.Informer().HasSynced)
+}
+
+// ValidateInitialization checks whether the plugin was correctly initialized.
+func (v *ValidateNamespacedCloudProfile) ValidateInitialization() error {
+	if v.cloudProfileLister == nil {
+		return errors.New("missing cloudProfile lister")
+	}
+	return nil
+}
+
+var _ admission.ValidationInterface = (*ValidateNamespacedCloudProfile)(nil)
+
+// Validate validates the NamespacedCloudProfile.
+func (v *ValidateNamespacedCloudProfile) Validate(ctx context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {
+	// Wait until the caches have been synced
+	if v.readyFunc == nil {
+		v.AssignReadyFunc(func() bool {
+			for _, readyFunc := range readyFuncs {
+				if !readyFunc() {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	if !v.WaitForReady() {
+		return admission.NewForbidden(a, errors.New("not yet ready to handle request"))
+	}
+
+	if a.GetKind().GroupKind() != gardencore.Kind("NamespacedCloudProfile") {
+		return nil
+	}
+
+	if a.GetSubresource() != "" {
+		return nil
+	}
+
+	var oldNamespacedCloudProfile = &gardencore.NamespacedCloudProfile{}
+
+	namespacedCloudProfile, convertIsSuccessful := a.GetObject().(*gardencore.NamespacedCloudProfile)
+	if !convertIsSuccessful {
+		return apierrors.NewInternalError(errors.New("could not convert object to NamespacedCloudProfile"))
+	}
+
+	if a.GetOperation() == admission.Update || a.GetOperation() == admission.Delete {
+		var ok bool
+		oldNamespacedCloudProfile, ok = a.GetOldObject().(*gardencore.NamespacedCloudProfile)
+		if !ok {
+			return apierrors.NewInternalError(errors.New("could not convert old resource into NamespacedCloudProfile object"))
+		}
+	}
+
+	// Exit early if the spec hasn't changed
+	if a.GetOperation() == admission.Update {
+		// do not ignore metadata updates to detect and prevent removal of the gardener finalizer or unwanted changes to annotations
+		if reflect.DeepEqual(namespacedCloudProfile.Spec, oldNamespacedCloudProfile.Spec) &&
+			(reflect.DeepEqual(namespacedCloudProfile.ObjectMeta, oldNamespacedCloudProfile.ObjectMeta) ||
+				namespacedCloudProfile.DeletionTimestamp != nil) {
+			return nil
+		}
+	}
+
+	parentCloudProfileName := namespacedCloudProfile.Spec.Parent.Name
+	parentCloudProfile, err := v.cloudProfileLister.Get(parentCloudProfileName)
+	if err != nil {
+		return apierrors.NewBadRequest("parent CloudProfile could not be found")
+	}
+
+	if err := v.simulateTransformationToParentSpecFormat(namespacedCloudProfile, parentCloudProfile, oldNamespacedCloudProfile); err != nil {
+		return err
+	}
+
+	validationContext := &validationContext{
+		parentCloudProfile:        parentCloudProfile,
+		namespacedCloudProfile:    namespacedCloudProfile,
+		oldNamespacedCloudProfile: oldNamespacedCloudProfile,
+	}
+
+	if err := validationContext.validateKubernetesVersionOverrides(a); err != nil {
+		return err
+	}
+	if err := validationContext.validateMachineImageOverrides(ctx, a); err != nil {
+		return err
+	}
+	if err := validationContext.validateSimulatedCloudProfileStatusMergeResult(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// TODO(Roncossek): Remove simulateTransformationToParentSpecFormat once all CloudProfiles have been migrated to use CapabilityFlavors and the Architecture fields are effectively forbidden or have been removed.
+func (v *ValidateNamespacedCloudProfile) simulateTransformationToParentSpecFormat(namespacedCloudProfile *gardencore.NamespacedCloudProfile, parentCloudProfile *gardencorev1beta1.CloudProfile, oldNamespacedCloudProfile *gardencore.NamespacedCloudProfile) error {
+	var namespacedCloudProfileSpecV1beta1 gardencorev1beta1.NamespacedCloudProfileSpec
+	if err := gardencoreapi.Scheme.Convert(&namespacedCloudProfile.Spec, &namespacedCloudProfileSpecV1beta1, nil); err != nil {
+		return apierrors.NewInternalError(err)
+	}
+	// simulate status transformation if namespaced cloud profile controller would do it
+	uniformNamespacedCloudProfileSpec := gardenerutils.TransformSpecToParentFormat(namespacedCloudProfileSpecV1beta1, parentCloudProfile.Spec.MachineCapabilities)
+	if err := gardencoreapi.Scheme.Convert(&uniformNamespacedCloudProfileSpec, &namespacedCloudProfile.Spec, nil); err != nil {
+		return apierrors.NewInternalError(err)
+	}
+
+	var oldNamespacedCloudProfileSpecV1beta1 gardencorev1beta1.NamespacedCloudProfileSpec
+	if err := gardencoreapi.Scheme.Convert(&oldNamespacedCloudProfile.Spec, &oldNamespacedCloudProfileSpecV1beta1, nil); err != nil {
+		return apierrors.NewInternalError(err)
+	}
+	// simulate status transformation if namespaced cloud profile controller would do it
+	oldUniformNamespacedCloudProfileSpec := gardenerutils.TransformSpecToParentFormat(oldNamespacedCloudProfileSpecV1beta1, parentCloudProfile.Spec.MachineCapabilities)
+	if err := gardencoreapi.Scheme.Convert(&oldUniformNamespacedCloudProfileSpec, &oldNamespacedCloudProfile.Spec, nil); err != nil {
+		return apierrors.NewInternalError(err)
+	}
+	return nil
+}
+
+type validationContext struct {
+	parentCloudProfile        *gardencorev1beta1.CloudProfile
+	namespacedCloudProfile    *gardencore.NamespacedCloudProfile
+	oldNamespacedCloudProfile *gardencore.NamespacedCloudProfile
+}
+
+func (c *validationContext) validateKubernetesVersionOverrides(attr admission.Attributes) error {
+	if c.namespacedCloudProfile.Spec.Kubernetes == nil {
+		return nil
+	}
+
+	parentVersions := utils.CreateMapFromSlice(c.parentCloudProfile.Spec.Kubernetes.Versions, func(version gardencorev1beta1.ExpirableVersion) string { return version.Version })
+	currentVersionsMerged := make(map[string]gardencore.ExpirableVersion)
+	if attr.GetOperation() == admission.Update {
+		currentVersionsMerged = utils.CreateMapFromSlice(c.oldNamespacedCloudProfile.Status.CloudProfileSpec.Kubernetes.Versions, func(version gardencore.ExpirableVersion) string { return version.Version })
+	}
+	for _, newVersion := range c.namespacedCloudProfile.Spec.Kubernetes.Versions {
+		if _, exists := parentVersions[newVersion.Version]; !exists {
+			return fmt.Errorf("invalid kubernetes version specified: '%s' does not exist in parent CloudProfile and thus cannot be overridden", newVersion.Version)
+		}
+		if newVersion.ExpirationDate == nil {
+			return fmt.Errorf("specified version '%s' does not set expiration date", newVersion.Version)
+		}
+		if attr.GetOperation() == admission.Update && gardencorehelper.VersionIsExpired(newVersion) {
+			if override, exists := currentVersionsMerged[newVersion.Version]; !exists || !override.ExpirationDate.Equal(newVersion.ExpirationDate) {
+				return fmt.Errorf("expiration date for version %q is in the past", newVersion.Version)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *validationContext) validateMachineImageOverrides(ctx context.Context, attr admission.Attributes) error {
+	var (
+		allErrs      = field.ErrorList{}
+		parentImages = gardenerutils.NewV1beta1ImagesContext(c.parentCloudProfile.Spec.MachineImages)
+
+		oldVersionsSpec, oldVersionsMerged *gardenerutils.ImagesContext[gardencore.MachineImage, gardencore.MachineImageVersion]
+	)
+
+	if attr.GetOperation() == admission.Update {
+		oldVersionsSpec = gardenerutils.NewCoreImagesContext(c.oldNamespacedCloudProfile.Spec.MachineImages)
+		oldVersionsMerged = gardenerutils.NewCoreImagesContext(c.oldNamespacedCloudProfile.Status.CloudProfileSpec.MachineImages)
+	}
+
+	var parentCloudProfileSpecCore gardencore.CloudProfileSpec
+	if err := gardencoreapi.Scheme.Convert(&c.parentCloudProfile.Spec, &parentCloudProfileSpecCore, ctx); err != nil {
+		return apierrors.NewInternalError(err)
+	}
+	capabilities := gardencorehelper.CapabilityDefinitionsToCapabilities(parentCloudProfileSpecCore.MachineCapabilities)
+
+	for imageIndex, image := range c.namespacedCloudProfile.Spec.MachineImages {
+		imageIndexPath := field.NewPath("spec", "machineImages").Index(imageIndex)
+		_, imageExistsInParent := parentImages.GetImage(image.Name)
+		if imageExistsInParent {
+			// If in the meantime an image specified only in the NamespacedCloudProfile has been
+			// added to the parent CloudProfile, then ignore already existing fields otherwise invalid for a new override.
+			var imageAlreadyExistsInNamespacedCloudProfile bool
+			if oldVersionsSpec != nil {
+				var currentImage gardencore.MachineImage
+				currentImage, imageAlreadyExistsInNamespacedCloudProfile = oldVersionsSpec.GetImage(image.Name)
+
+				if imageAlreadyExistsInNamespacedCloudProfile && ptr.Deref(image.UpdateStrategy, "") != ptr.Deref(currentImage.UpdateStrategy, "") {
+					allErrs = append(allErrs, field.Forbidden(imageIndexPath.Child("updateStrategy"), fmt.Sprintf("cannot update the machine image update strategy of %q, as this version has been added to the parent CloudProfile by now", image.Name)))
+				}
+			}
+
+			for imageVersionIndex, imageVersion := range image.Versions {
+				imageVersionIndexPath := imageIndexPath.Child("versions").Index(imageVersionIndex)
+				if _, isExistingVersion := parentImages.GetImageVersion(image.Name, imageVersion.Version); isExistingVersion {
+					// An image with the specified version is already present in the parent CloudProfile.
+					// Ensure that only the expiration date is overridden.
+					// For new versions added to an existing image, the validation will be done on the simulated merge result.
+
+					// If in the meantime an image version specified only in the NamespacedCloudProfile has been
+					// added to the parent CloudProfile, then ignore already existing fields otherwise invalid for a new override.
+					var imageVersionAlreadyInNamespacedCloudProfile bool
+					if imageAlreadyExistsInNamespacedCloudProfile {
+						var oldMachineImageVersion gardencore.MachineImageVersion
+						oldMachineImageVersion, imageVersionAlreadyInNamespacedCloudProfile = oldVersionsSpec.GetImageVersion(image.Name, imageVersion.Version)
+
+						oldMachineImageVersionWithoutExpiration := oldMachineImageVersion.DeepCopy()
+						machineImageVersionWithoutExpiration := imageVersion.DeepCopy()
+						oldMachineImageVersionWithoutExpiration.ExpirationDate = nil
+						machineImageVersionWithoutExpiration.ExpirationDate = nil
+						// Compare the old and new image version without considering the expiration date.
+						// The expiration date is neglected here because it is the only field allowed to change for an existing image version.
+						// If the image versions are equal except for the expiration date, then the update is allowed.
+						if imageVersionAlreadyInNamespacedCloudProfile && !reflect.DeepEqual(oldMachineImageVersionWithoutExpiration, machineImageVersionWithoutExpiration) {
+							allErrs = append(allErrs, field.Forbidden(imageVersionIndexPath, fmt.Sprintf("cannot update the machine image version spec (except for the expiration date) of \"%s@%s\", as this version has been added to the parent CloudProfile by now", image.Name, imageVersion.Version)))
+						}
+					}
+
+					if !imageVersionAlreadyInNamespacedCloudProfile {
+						allErrs = append(allErrs, validateNamespacedCloudProfileExtendedMachineImages(imageVersion, imageVersionIndexPath)...)
+
+						if imageVersion.ExpirationDate == nil {
+							allErrs = append(allErrs, field.Invalid(imageVersionIndexPath.Child("expirationDate"), imageVersion.ExpirationDate, fmt.Sprintf("expiration date for version %q must be set", imageVersion.Version)))
+						}
+					}
+
+					if attr.GetOperation() == admission.Update && gardencorehelper.VersionIsExpired(imageVersion.ExpirableVersion) {
+						var (
+							override gardencore.MachineImageVersion
+							exists   bool
+						)
+						if oldVersionsMerged != nil {
+							override, exists = oldVersionsMerged.GetImageVersion(image.Name, imageVersion.Version)
+						}
+						if !exists || !override.ExpirationDate.Equal(imageVersion.ExpirationDate) {
+							allErrs = append(allErrs, field.Invalid(imageVersionIndexPath.Child("expirationDate"), imageVersion.ExpirationDate, fmt.Sprintf("expiration date for version %q is in the past", imageVersion.Version)))
+						}
+					}
+				} else {
+					// New image version added to an existing image.
+					allErrs = append(allErrs, validation.ValidateMachineImageVersion(image, imageVersion, capabilities, sets.Set[string]{}, imageVersionIndexPath)...)
+				}
+			}
+		} else {
+			allErrs = append(allErrs, validation.ValidateMachineImage(image, capabilities, sets.Set[string]{}, sets.Set[string]{}, false, imageIndexPath)...)
+			for index, machineVersion := range image.Versions {
+				versionsPath := imageIndexPath.Child("versions").Index(index)
+				allErrs = append(allErrs, validation.ValidateMachineImageAdditionalConfig(machineVersion, versionsPath, image, capabilities)...)
+			}
+		}
+	}
+	return allErrs.ToAggregate()
+}
+
+func validateNamespacedCloudProfileExtendedMachineImages(machineVersion gardencore.MachineImageVersion, versionsPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if len(ptr.Deref(machineVersion.Classification, "")) > 0 {
+		allErrs = append(allErrs, field.Forbidden(versionsPath.Child("classification"), "must not provide a classification to an extended machine image in NamespacedCloudProfile"))
+	}
+	if len(machineVersion.CRI) > 0 {
+		allErrs = append(allErrs, field.Forbidden(versionsPath.Child("cri"), "must not provide a cri to an extended machine image in NamespacedCloudProfile"))
+	}
+	if len(machineVersion.Architectures) > 0 {
+		allErrs = append(allErrs, field.Forbidden(versionsPath.Child("architectures"), "must not provide an architecture to an extended machine image in NamespacedCloudProfile"))
+	}
+	if len(machineVersion.CapabilityFlavors) > 0 {
+		allErrs = append(allErrs, field.Forbidden(versionsPath.Child("capabilityFlavors"), "must not provide capabilities to an extended machine image in NamespacedCloudProfile"))
+	}
+	if len(ptr.Deref(machineVersion.KubeletVersionConstraint, "")) > 0 {
+		allErrs = append(allErrs, field.Forbidden(versionsPath.Child("kubeletVersionConstraint"), "must not provide a kubelet version constraint to an extended machine image in NamespacedCloudProfile"))
+	}
+	if machineVersion.InPlaceUpdates != nil {
+		allErrs = append(allErrs, field.Forbidden(versionsPath.Child("inPlaceUpdates"), "must not provide inPlaceUpdates to an extended machine image in NamespacedCloudProfile"))
+	}
+
+	return allErrs
+}
+
+func (c *validationContext) validateSimulatedCloudProfileStatusMergeResult() error {
+	namespacedCloudProfile := &gardencorev1beta1.NamespacedCloudProfile{}
+	if err := gardencoreapi.Scheme.Convert(c.namespacedCloudProfile, namespacedCloudProfile, nil); err != nil {
+		return err
+	}
+	errs := ValidateSimulatedNamespacedCloudProfileStatus(c.parentCloudProfile, namespacedCloudProfile)
+	if len(errs) > 0 {
+		return fmt.Errorf("error while validating merged NamespacedCloudProfile: %+v", errs)
+	}
+	return nil
+}
+
+// ValidateSimulatedNamespacedCloudProfileStatus merges the parent CloudProfile and the created or updated NamespacedCloudProfile
+// to generate and validate the NamespacedCloudProfile status.
+func ValidateSimulatedNamespacedCloudProfileStatus(originalParentCloudProfile *gardencorev1beta1.CloudProfile, originalNamespacedCloudProfile *gardencorev1beta1.NamespacedCloudProfile) field.ErrorList {
+	parentCloudProfile := originalParentCloudProfile.DeepCopy()
+	namespacedCloudProfile := originalNamespacedCloudProfile.DeepCopy()
+
+	namespacedcloudprofile.MergeCloudProfiles(namespacedCloudProfile, parentCloudProfile)
+
+	coreNamespacedCloudProfile := &gardencore.NamespacedCloudProfile{}
+	if err := gardencoreapi.Scheme.Convert(namespacedCloudProfile, coreNamespacedCloudProfile, nil); err != nil {
+		return field.ErrorList{{
+			Type:     field.ErrorTypeInternal,
+			Field:    "",
+			BadValue: nil,
+			Detail:   "could not convert NamespacedCloudProfile from type core.gardener.cloud/v1beta1 to the internal core type",
+		}}
+	}
+	return validation.ValidateNamespacedCloudProfileStatus(&coreNamespacedCloudProfile.Status.CloudProfileSpec, field.NewPath("status.cloudProfileSpec"))
+}

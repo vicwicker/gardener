@@ -1,0 +1,72 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package app
+
+import (
+	extensionsbastioncontroller "github.com/gardener/gardener/extensions/pkg/controller/bastion"
+	extensionscmdcontroller "github.com/gardener/gardener/extensions/pkg/controller/cmd"
+	extensionscontrolplanecontroller "github.com/gardener/gardener/extensions/pkg/controller/controlplane"
+	extensionsdnsrecordcontroller "github.com/gardener/gardener/extensions/pkg/controller/dnsrecord"
+	extensionshealthcheckcontroller "github.com/gardener/gardener/extensions/pkg/controller/healthcheck"
+	extensionsheartbeatcontroller "github.com/gardener/gardener/extensions/pkg/controller/heartbeat"
+	extensionsinfrastructurecontroller "github.com/gardener/gardener/extensions/pkg/controller/infrastructure"
+	extensionsoperatingsystemconfigcontroller "github.com/gardener/gardener/extensions/pkg/controller/operatingsystemconfig"
+	extensionsselfhostedshootexposurecontroller "github.com/gardener/gardener/extensions/pkg/controller/selfhostedshootexposure"
+	extensionsworkercontroller "github.com/gardener/gardener/extensions/pkg/controller/worker"
+	extensionscmdwebhook "github.com/gardener/gardener/extensions/pkg/webhook/cmd"
+	extensionscontrolplanewebhook "github.com/gardener/gardener/extensions/pkg/webhook/controlplane"
+	extensionsshootwebhook "github.com/gardener/gardener/extensions/pkg/webhook/shoot"
+	backupbucketcontroller "github.com/gardener/gardener/pkg/provider-local/controller/backupbucket"
+	backupentrycontroller "github.com/gardener/gardener/pkg/provider-local/controller/backupentry"
+	bastioncontroller "github.com/gardener/gardener/pkg/provider-local/controller/bastion"
+	controlplanecontroller "github.com/gardener/gardener/pkg/provider-local/controller/controlplane"
+	dnsrecordcontroller "github.com/gardener/gardener/pkg/provider-local/controller/dnsrecord"
+	localextensionseedcontroller "github.com/gardener/gardener/pkg/provider-local/controller/extension/seed"
+	localextensionshootcontroller "github.com/gardener/gardener/pkg/provider-local/controller/extension/shoot"
+	localextensionshootafterworkercontroller "github.com/gardener/gardener/pkg/provider-local/controller/extension/shootafterworker"
+	healthcheckcontroller "github.com/gardener/gardener/pkg/provider-local/controller/healthcheck"
+	infrastructurecontroller "github.com/gardener/gardener/pkg/provider-local/controller/infrastructure"
+	operatingsystemconfigcontroller "github.com/gardener/gardener/pkg/provider-local/controller/operatingsystemconfig"
+	selfhostedshootexposurecontroller "github.com/gardener/gardener/pkg/provider-local/controller/selfhostedshootexposure"
+	workercontroller "github.com/gardener/gardener/pkg/provider-local/controller/worker"
+	calicoselfhostedshootwebhook "github.com/gardener/gardener/pkg/provider-local/webhook/calicoselfhostedshoot"
+	controlplanewebhook "github.com/gardener/gardener/pkg/provider-local/webhook/controlplane"
+	nodewebhook "github.com/gardener/gardener/pkg/provider-local/webhook/node"
+	prometheuswebhook "github.com/gardener/gardener/pkg/provider-local/webhook/prometheus"
+	rolloutspeedupwebhook "github.com/gardener/gardener/pkg/provider-local/webhook/rolloutspeedup"
+	shootwebhook "github.com/gardener/gardener/pkg/provider-local/webhook/shoot"
+)
+
+// ControllerSwitchOptions are the extensionscmdcontroller.SwitchOptions for the provider controllers.
+func ControllerSwitchOptions() *extensionscmdcontroller.SwitchOptions {
+	return extensionscmdcontroller.NewSwitchOptions(
+		extensionscmdcontroller.Switch(backupbucketcontroller.ControllerName, backupbucketcontroller.AddToManager),
+		extensionscmdcontroller.Switch(backupentrycontroller.ControllerName, backupentrycontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionsbastioncontroller.ControllerName, bastioncontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionscontrolplanecontroller.ControllerName, controlplanecontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionsdnsrecordcontroller.ControllerName, dnsrecordcontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionsinfrastructurecontroller.ControllerName, infrastructurecontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionsworkercontroller.ControllerName, workercontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionshealthcheckcontroller.ControllerName, healthcheckcontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionsoperatingsystemconfigcontroller.ControllerName, operatingsystemconfigcontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionsselfhostedshootexposurecontroller.ControllerName, selfhostedshootexposurecontroller.AddToManager),
+		extensionscmdcontroller.Switch(extensionsheartbeatcontroller.ControllerName, extensionsheartbeatcontroller.AddToManager),
+		extensionscmdcontroller.Switch(localextensionseedcontroller.ControllerName, localextensionseedcontroller.AddToManager),
+		extensionscmdcontroller.Switch(localextensionshootcontroller.ControllerName, localextensionshootcontroller.AddToManager),
+		extensionscmdcontroller.Switch(localextensionshootafterworkercontroller.ControllerName, localextensionshootafterworkercontroller.AddToManager),
+	)
+}
+
+// WebhookSwitchOptions are the extensionscmdwebhook.SwitchOptions for the provider webhooks.
+func WebhookSwitchOptions() *extensionscmdwebhook.SwitchOptions {
+	return extensionscmdwebhook.NewSwitchOptions(
+		extensionscmdwebhook.Switch(extensionscontrolplanewebhook.WebhookName, controlplanewebhook.AddToManager),
+		extensionscmdwebhook.Switch(extensionsshootwebhook.WebhookName, shootwebhook.AddToManager),
+		extensionscmdwebhook.Switch(rolloutspeedupwebhook.WebhookName, rolloutspeedupwebhook.AddToManager),
+		extensionscmdwebhook.Switch(calicoselfhostedshootwebhook.WebhookName, calicoselfhostedshootwebhook.AddToManager),
+		extensionscmdwebhook.Switch(nodewebhook.WebhookName, nodewebhook.AddToManager),
+		extensionscmdwebhook.Switch(prometheuswebhook.WebhookName, prometheuswebhook.AddToManager),
+	)
+}

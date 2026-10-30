@@ -1,0 +1,113 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist
+
+import (
+	"context"
+
+	"github.com/gardener/gardener/imagevector"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/autoscaling/vpa"
+	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
+)
+
+// DefaultVerticalPodAutoscaler returns a deployer for the Kubernetes Vertical Pod Autoscaler.
+func (b *Botanist) DefaultVerticalPodAutoscaler() (vpa.Interface, error) {
+	if b.Shoot.IsWorkerless {
+		return nil, nil
+	}
+
+	imageAdmissionController, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameVpaAdmissionController, imagevectorutils.RuntimeVersion(b.Shoot.RuntimeKubernetesVersion.String()), imagevectorutils.TargetVersion(b.ShootVersion()))
+	if err != nil {
+		return nil, err
+	}
+
+	imageRecommender, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameVpaRecommender, imagevectorutils.RuntimeVersion(b.Shoot.RuntimeKubernetesVersion.String()), imagevectorutils.TargetVersion(b.ShootVersion()))
+	if err != nil {
+		return nil, err
+	}
+
+	imageUpdater, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameVpaUpdater, imagevectorutils.RuntimeVersion(b.Shoot.RuntimeKubernetesVersion.String()), imagevectorutils.TargetVersion(b.ShootVersion()))
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		valuesAdmissionController = vpa.ValuesAdmissionController{
+			Image:                       imageAdmissionController.String(),
+			PriorityClassName:           v1beta1constants.PriorityClassNameShootControlPlane200,
+			Replicas:                    new(b.Shoot.GetReplicas(1)),
+			TopologyAwareRoutingEnabled: b.Shoot.TopologyAwareRoutingEnabled,
+		}
+		valuesRecommender = vpa.ValuesRecommender{
+			Image:             imageRecommender.String(),
+			PriorityClassName: v1beta1constants.PriorityClassNameShootControlPlane200,
+			Replicas:          new(b.Shoot.GetReplicas(1)),
+		}
+		valuesUpdater = vpa.ValuesUpdater{
+			Image:             imageUpdater.String(),
+			PriorityClassName: v1beta1constants.PriorityClassNameShootControlPlane200,
+			Replicas:          new(b.Shoot.GetReplicas(1)),
+		}
+		featureGates  map[string]bool
+		isManagedSeed = b.ManagedSeed != nil
+		clusterType   = component.ClusterTypeShoot
+	)
+
+	if b.Shoot.IsSelfHosted() {
+		clusterType = component.ClusterTypeSeed
+	}
+
+	if vpaConfig := b.Shoot.GetInfo().Spec.Kubernetes.VerticalPodAutoscaler; vpaConfig != nil {
+		valuesRecommender.Interval = vpaConfig.RecommenderInterval
+		valuesRecommender.RecommendationMarginFraction = vpaConfig.RecommendationMarginFraction
+		valuesRecommender.TargetCPUPercentile = vpaConfig.TargetCPUPercentile
+		valuesRecommender.RecommendationLowerBoundCPUPercentile = vpaConfig.RecommendationLowerBoundCPUPercentile
+		valuesRecommender.RecommendationUpperBoundCPUPercentile = vpaConfig.RecommendationUpperBoundCPUPercentile
+		valuesRecommender.CPUHistogramDecayHalfLife = vpaConfig.CPUHistogramDecayHalfLife
+		valuesRecommender.TargetMemoryPercentile = vpaConfig.TargetMemoryPercentile
+		valuesRecommender.RecommendationLowerBoundMemoryPercentile = vpaConfig.RecommendationLowerBoundMemoryPercentile
+		valuesRecommender.RecommendationUpperBoundMemoryPercentile = vpaConfig.RecommendationUpperBoundMemoryPercentile
+		valuesRecommender.MemoryHistogramDecayHalfLife = vpaConfig.MemoryHistogramDecayHalfLife
+		valuesRecommender.MemoryAggregationInterval = vpaConfig.MemoryAggregationInterval
+		valuesRecommender.MemoryAggregationIntervalCount = vpaConfig.MemoryAggregationIntervalCount
+		valuesRecommender.MaxAllowed = vpaConfig.MaxAllowed
+		valuesRecommender.UpdateWorkerCount = vpaConfig.RecommenderUpdateWorkerCount
+
+		valuesUpdater.EvictAfterOOMThreshold = vpaConfig.EvictAfterOOMThreshold
+		valuesUpdater.EvictionRateBurst = vpaConfig.EvictionRateBurst
+		valuesUpdater.EvictionRateLimit = vpaConfig.EvictionRateLimit
+		valuesUpdater.EvictionTolerance = vpaConfig.EvictionTolerance
+		valuesUpdater.Interval = vpaConfig.UpdaterInterval
+
+		featureGates = vpaConfig.FeatureGates
+	}
+
+	return vpa.New(
+		b.SeedClientSet.Client(),
+		b.Shoot.ControlPlaneNamespace,
+		b.SecretsManager,
+		vpa.Values{
+			ClusterType:              clusterType,
+			IsManagedSeed:            isManagedSeed,
+			SecretNameServerCA:       v1beta1constants.SecretNameCACluster,
+			RuntimeKubernetesVersion: b.Shoot.RuntimeKubernetesVersion,
+			AdmissionController:      valuesAdmissionController,
+			Recommender:              valuesRecommender,
+			Updater:                  valuesUpdater,
+			FeatureGates:             featureGates,
+		},
+	), nil
+}
+
+// DeployVerticalPodAutoscaler deploys or destroys the VPA to the shoot namespace in the seed.
+func (b *Botanist) DeployVerticalPodAutoscaler(ctx context.Context) error {
+	if !b.Shoot.WantsVerticalPodAutoscaler {
+		return b.Shoot.Components.ControlPlane.VerticalPodAutoscaler.Destroy(ctx)
+	}
+
+	return b.Shoot.Components.ControlPlane.VerticalPodAutoscaler.Deploy(ctx)
+}

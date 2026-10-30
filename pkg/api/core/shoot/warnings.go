@@ -1,0 +1,220 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package shoot
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
+
+	"github.com/gardener/gardener/pkg/api/core/helper"
+	"github.com/gardener/gardener/pkg/apis/core"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
+)
+
+// GetWarnings returns warnings for the given Shoot.
+func GetWarnings(_ context.Context, shoot, oldShoot *core.Shoot, credentialsRotationInterval time.Duration, ignoreWarningsForDNSIndexes []int) []string {
+	if shoot == nil {
+		return nil
+	}
+
+	var warnings []string
+
+	if oldShoot != nil {
+		warnings = append(warnings, getWarningsForDueCredentialsRotations(shoot, credentialsRotationInterval)...)
+		warnings = append(warnings, getWarningsForIncompleteCredentialsRotation(shoot, credentialsRotationInterval)...)
+	}
+
+	// TODO(AleksandarSavchev): Remove this after support for Kubernetes v1.33 is dropped.
+	// We do not check for the Kubernetes version here because the shoot validation code is called before this
+	// and forbids setting the etcd encryption key rotation start and complete annotations for kubernetes >= v1.34.
+	if shoot.Annotations[v1beta1constants.GardenerOperation] == v1beta1constants.OperationRotateETCDEncryptionKeyStart || shoot.Annotations[v1beta1constants.GardenerOperation] == v1beta1constants.OperationRotateETCDEncryptionKeyComplete {
+		warnings = append(warnings, fmt.Sprintf("you are setting the operation annotation to %s. This annotation has been deprecated and is forbidden to be set starting from Kubernetes 1.34. Instead, use the %s annotation, which performs a full rotation of the ETCD encryption key.", shoot.Annotations[v1beta1constants.GardenerOperation], v1beta1constants.OperationRotateETCDEncryptionKey))
+	}
+
+	kubernetesVersion, err := semver.NewVersion(shoot.Spec.Kubernetes.Version)
+	if ptr.Deref(shoot.Spec.CloudProfileName, "") != "" {
+		warnings = append(warnings, "you are setting the spec.cloudProfileName field. The field is deprecated and will be forcefully set empty starting with Kubernetes 1.34. Use the new spec.cloudProfile.name field instead.")
+	}
+
+	if shoot.Spec.Addons != nil {
+		warnings = append(warnings, "you are setting the spec.addons field. The field is deprecated and will be forbidden starting with Kubernetes 1.35.")
+	}
+
+	if helper.IsKubeProxyIPVSMode(shoot.Spec.Kubernetes.KubeProxy) {
+		if err == nil && versionutils.ConstraintK8sGreaterEqual135.Check(kubernetesVersion) {
+			warnings = append(warnings, "you are using IPVS mode for kube-proxy. The IPVS mode is deprecated starting with Kubernetes 1.35. Please switch to iptables or nftables mode.")
+		} else if oldShoot != nil && !helper.IsKubeProxyIPVSMode(oldShoot.Spec.Kubernetes.KubeProxy) {
+			warnings = append(warnings, "you have switched to IPVS mode for kube-proxy. The IPVS mode is deprecated starting with Kubernetes 1.35. Please switch to iptables or nftables mode.")
+		}
+	}
+
+	if shoot.Spec.Kubernetes.KubeScheduler != nil && shoot.Spec.Kubernetes.KubeScheduler.KubeMaxPDVols != nil {
+		warnings = append(warnings, "you are setting the spec.kubernetes.kubeScheduler.kubeMaxPDVols field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.35. The kubeMaxPDVols configuration is no longer necessary as values are set by the respective CSI driver.")
+	}
+
+	if shoot.Spec.SecretBindingName != nil {
+		warnings = append(warnings, "spec.secretBindingName is deprecated and will be disallowed starting with Kubernetes 1.34. For migration instructions, see: https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/secretbinding-to-credentialsbinding-migration.md")
+	}
+
+	if kubeAPIServer := shoot.Spec.Kubernetes.KubeAPIServer; kubeAPIServer != nil {
+		path := field.NewPath("spec", "kubernetes", "kubeAPIServer")
+		warnings = append(warnings, GetKubeAPIServerWarnings(kubeAPIServer, path)...)
+	}
+
+	if shoot.Spec.DNS != nil {
+		warnings = append(warnings, GetDNSProviderWarnings(shoot.Spec.DNS, field.NewPath("spec", "dns"), ignoreWarningsForDNSIndexes)...)
+	}
+
+	for i, worker := range shoot.Spec.Provider.Workers {
+		if worker.MachineControllerManagerSettings != nil {
+			if autoPreserveFailedMachineMax := ptr.Deref(worker.MachineControllerManagerSettings.AutoPreserveFailedMachineMax, 0); autoPreserveFailedMachineMax > 0 {
+				numZones := len(sets.New(worker.Zones...))
+				if int(autoPreserveFailedMachineMax) < numZones {
+					fldPath := field.NewPath("spec", "provider", "workers").Index(i).Child("machineControllerManagerSettings", "autoPreserveFailedMachineMax")
+					warnings = append(warnings,
+						fmt.Sprintf("you are setting the %s field to a value (%d) less than the number of zones for worker %q (%d) . This could cause some zones to have an effective autoPreserveFailedMachineMax of 0.",
+							fldPath.String(),
+							autoPreserveFailedMachineMax,
+							worker.Name,
+							numZones))
+				}
+			}
+		}
+	}
+
+	return warnings
+}
+
+// GetDNSProviderWarnings returns warnings for the given DNS configuration.
+func GetDNSProviderWarnings(dns *core.DNS, fldPath *field.Path, ignoreWarningsForDNSIndexes []int) []string {
+	var warnings []string
+
+	for i, provider := range dns.Providers {
+		if provider.SecretName == nil || slices.Contains(ignoreWarningsForDNSIndexes, i) {
+			continue
+		}
+
+		providerPath := fldPath.Child("providers").Index(i)
+		warnings = append(warnings, fmt.Sprintf(
+			"you are setting the %s field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use %s instead.",
+			providerPath.Child("secretName").String(),
+			providerPath.Child("credentialsRef").String(),
+		))
+	}
+
+	return warnings
+}
+
+// GetKubeAPIServerWarnings returns warnings for the given KubeAPIServerConfig.
+func GetKubeAPIServerWarnings(kubeAPIServer *core.KubeAPIServerConfig, fldPath *field.Path) []string {
+	if kubeAPIServer == nil {
+		return nil
+	}
+
+	var warnings []string
+	if kubeAPIServer.EnableAnonymousAuthentication != nil {
+		warnings = append(warnings, fmt.Sprintf("you are setting the %s field. The field is deprecated. Please use anonymous authentication configuration instead. See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration", fldPath.Child("enableAnonymousAuthentication").String()))
+	}
+	if kubeAPIServer.WatchCacheSizes != nil && kubeAPIServer.WatchCacheSizes.Default != nil {
+		warnings = append(warnings, fmt.Sprintf("you are setting the %s field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.35. The cache size is automatically sized by the kube-apiserver.", fldPath.Child("watchCacheSizes", "default").String()))
+	}
+
+	return warnings
+}
+
+func getWarningsForDueCredentialsRotations(shoot *core.Shoot, credentialsRotationInterval time.Duration) []string {
+	if !isOldEnough(shoot.CreationTimestamp.Time, credentialsRotationInterval) {
+		return nil
+	}
+
+	if shoot.Status.Credentials == nil || shoot.Status.Credentials.Rotation == nil {
+		return []string{"you should consider rotating the shoot credentials, see https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md#gardener-provided-credentials for details"}
+	}
+
+	var (
+		rotation = shoot.Status.Credentials.Rotation
+		warnings []string
+	)
+
+	if rotation.CertificateAuthorities == nil || initiationDue(rotation.CertificateAuthorities.LastInitiationTime, credentialsRotationInterval) {
+		warnings = append(warnings, "you should consider rotating the certificate authorities, see https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md#certificate-authorities for details")
+	}
+
+	if rotation.ETCDEncryptionKey == nil || initiationDue(rotation.ETCDEncryptionKey.LastInitiationTime, credentialsRotationInterval) {
+		warnings = append(warnings, "you should consider rotating the ETCD encryption key, see https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md#etcd-encryption-key for details")
+	}
+
+	if (shoot.Spec.Purpose == nil || *shoot.Spec.Purpose != core.ShootPurposeTesting) &&
+		(rotation.Observability == nil || initiationDue(rotation.Observability.LastInitiationTime, credentialsRotationInterval)) {
+		warnings = append(warnings, "you should consider rotating the observability passwords, see https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md#observability-passwords-for-plutono for details")
+	}
+
+	if rotation.ServiceAccountKey == nil || initiationDue(rotation.ServiceAccountKey.LastInitiationTime, credentialsRotationInterval) {
+		warnings = append(warnings, "you should consider rotating the ServiceAccount token signing key, see https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md#serviceaccount-token-signing-key for details")
+	}
+
+	if helper.ShootEnablesSSHAccess(shoot) && (rotation.SSHKeypair == nil || initiationDue(rotation.SSHKeypair.LastInitiationTime, credentialsRotationInterval)) {
+		warnings = append(warnings, "you should consider rotating the SSH keypair, see https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md#ssh-key-pair-for-worker-nodes for details")
+	}
+
+	return warnings
+}
+
+func getWarningsForIncompleteCredentialsRotation(shoot *core.Shoot, credentialsRotationInterval time.Duration) []string {
+	if shoot.Status.Credentials == nil || shoot.Status.Credentials.Rotation == nil {
+		return nil
+	}
+
+	var (
+		warnings                      []string
+		recommendedCompletionInterval = credentialsRotationInterval / 3
+		rotation                      = shoot.Status.Credentials.Rotation
+	)
+
+	// Only consider credentials for which completion must be triggered explicitly by the user. Credentials which are
+	// rotated in "one phase" are excluded.
+	if rotation.CertificateAuthorities != nil && completionDue(rotation.CertificateAuthorities.LastInitiationFinishedTime, rotation.CertificateAuthorities.LastCompletionTriggeredTime, recommendedCompletionInterval) {
+		warnings = append(warnings, completionWarning("certificate authorities", recommendedCompletionInterval))
+	}
+	if rotation.ETCDEncryptionKey != nil && completionDue(rotation.ETCDEncryptionKey.LastInitiationFinishedTime, rotation.ETCDEncryptionKey.LastCompletionTriggeredTime, recommendedCompletionInterval) {
+		warnings = append(warnings, completionWarning("ETCD encryption key", recommendedCompletionInterval))
+	}
+	if rotation.ServiceAccountKey != nil && completionDue(rotation.ServiceAccountKey.LastInitiationFinishedTime, rotation.ServiceAccountKey.LastCompletionTriggeredTime, recommendedCompletionInterval) {
+		warnings = append(warnings, completionWarning("ServiceAccount token signing key", recommendedCompletionInterval))
+	}
+
+	return warnings
+}
+
+func initiationDue(lastInitiationTime *metav1.Time, threshold time.Duration) bool {
+	return lastInitiationTime == nil || isOldEnough(lastInitiationTime.Time, threshold)
+}
+
+func completionDue(lastInitiationFinishedTime, lastCompletionTriggeredTime *metav1.Time, threshold time.Duration) bool {
+	if lastInitiationFinishedTime == nil {
+		return false
+	}
+	if lastCompletionTriggeredTime != nil && lastCompletionTriggeredTime.UTC().After(lastInitiationFinishedTime.UTC()) {
+		return false
+	}
+	return isOldEnough(lastInitiationFinishedTime.Time, threshold)
+}
+
+func isOldEnough(t time.Time, threshold time.Duration) bool {
+	return t.UTC().Add(threshold).Before(time.Now().UTC())
+}
+
+func completionWarning(credentials string, recommendedCompletionInterval time.Duration) string {
+	return fmt.Sprintf("the %s rotation initiation was finished more than %s ago and should be completed", credentials, recommendedCompletionInterval)
+}

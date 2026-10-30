@@ -1,0 +1,887 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package victorialogs_test
+
+import (
+	"context"
+	"fmt"
+
+	victoriametricsv1 "github.com/VictoriaMetrics/operator/api/operator/v1"
+	victoriametricsv1beta1 "github.com/VictoriaMetrics/operator/api/operator/v1beta1"
+	pvcautoscalerv1alpha1 "github.com/gardener/pvc-autoscaler/api/autoscaling/v1alpha1"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+	istionetworkingv1alpha3 "istio.io/api/networking/v1alpha3"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
+	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	componentpkg "github.com/gardener/gardener/pkg/component"
+	. "github.com/gardener/gardener/pkg/component/observability/logging/victorialogs"
+	victorialogsconstants "github.com/gardener/gardener/pkg/component/observability/logging/victorialogs/constants"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/garden"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/seed"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
+	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
+	componenttest "github.com/gardener/gardener/pkg/component/test"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
+	"github.com/gardener/gardener/pkg/utils/retry"
+	retryfake "github.com/gardener/gardener/pkg/utils/retry/fake"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
+	"github.com/gardener/gardener/pkg/utils/test"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+)
+
+const namespace = "some-namespace"
+
+var _ = Describe("VictoriaLogs", func() {
+	var (
+		ctx = context.Background()
+
+		imageRepository = "europe-docker.pkg.dev/gardener-project/releases/some-image"
+		imageTag        = "some-tag"
+		values          = Values{
+			ImageRepository:    imageRepository,
+			ImageTag:           imageTag,
+			SecretNameServerCA: "ca",
+		}
+
+		c         client.Client
+		component componentpkg.DeployWaiter
+		consistOf func(...client.Object) types.GomegaMatcher
+
+		customResourcesManagedResourceName   = "victoria-logs"
+		customResourcesManagedResource       *resourcesv1alpha1.ManagedResource
+		customResourcesManagedResourceSecret *corev1.Secret
+
+		vlSingle          *victoriametricsv1.VLSingle
+		vpa               *vpaautoscalingv1.VerticalPodAutoscaler
+		serviceMonitor    *monitoringv1.ServiceMonitor
+		prometheusRule    *monitoringv1.PrometheusRule
+		fakeSecretManager secretsmanager.Interface
+	)
+
+	BeforeEach(func() {
+		scheme := kubernetes.SeedScheme
+		// Register VictoriaMetrics VLSingle types
+		utilruntime.Must(victoriametricsv1.AddToScheme(scheme))
+
+		c = fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		fakeSecretManager = fakesecretsmanager.New(c, namespace)
+		component = New(c, namespace, fakeSecretManager, values)
+		consistOf = NewManagedResourceConsistOfObjectsMatcher(c, componenttest.CmpOptsForIstio()...)
+	})
+
+	JustBeforeEach(func() {
+		customResourcesManagedResource = &resourcesv1alpha1.ManagedResource{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "victoria-logs",
+				Namespace: namespace,
+			},
+		}
+		customResourcesManagedResourceSecret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "managedresource-" + customResourcesManagedResource.Name,
+				Namespace: namespace,
+			},
+		}
+
+		vlSingle = &victoriametricsv1.VLSingle{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      victorialogsconstants.VLSingleResourceName,
+				Namespace: namespace,
+			},
+			Spec: victoriametricsv1.VLSingleSpec{
+				PodMetadata: &victoriametricsv1beta1.EmbeddedObjectMetadata{
+					Labels: getLabels(),
+				},
+				CommonAppsParams: victoriametricsv1beta1.CommonAppsParams{
+					DisableSelfServiceScrape: new(true),
+					UseStrictSecurity:        new(true),
+					UseDefaultResources:      new(false),
+					Image: victoriametricsv1beta1.Image{
+						Repository: "europe-docker.pkg.dev/gardener-project/releases/some-image",
+						Tag:        "some-tag",
+					},
+					Port: "9429",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("10m"),
+							corev1.ResourceMemory: resource.MustParse("100M"),
+						},
+					},
+					ReplicaCount: new(int32(0)),
+					ExtraArgs: map[string]string{
+						"httpListenAddr": fmt.Sprintf(":%d,:%d", 9429, 9428),
+						"tls":            "true,false",
+						"tlsCertFile":    "/etc/victorialogs/tls/tls.crt",
+						"tlsKeyFile":     "/etc/victorialogs/tls/tls.key",
+					},
+					Volumes: []corev1.Volume{{
+						Name: "vl-server-tls",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{SecretName: "victoria-logs-server-tls"},
+						},
+					}},
+					VolumeMounts: []corev1.VolumeMount{{
+						Name:      "vl-server-tls",
+						MountPath: "/etc/victorialogs/tls",
+						ReadOnly:  true,
+					}},
+				},
+				RetentionPeriod: "15d",
+				Storage: &corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("30Gi"),
+						},
+					},
+				},
+				StorageMetadata: victoriametricsv1beta1.EmbeddedObjectMetadata{
+					Annotations: map[string]string{
+						"operator.victoriametrics.com/pvc-allow-volume-expansion": "false",
+					},
+				},
+				ServiceSpec: &victoriametricsv1beta1.AdditionalServiceSpec{
+					EmbeddedObjectMetadata: victoriametricsv1beta1.EmbeddedObjectMetadata{
+						Name: "logging-vl",
+					},
+					Spec: corev1.ServiceSpec{
+						Ports: []corev1.ServicePort{
+							{
+								Name:       "https",
+								Port:       9429,
+								TargetPort: intstr.FromInt32(9429),
+								Protocol:   corev1.ProtocolTCP,
+							},
+							{
+								Name:       "http",
+								Port:       9428,
+								TargetPort: intstr.FromInt32(9428),
+								Protocol:   corev1.ProtocolTCP,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "victoria-logs-vpa",
+				Namespace: namespace,
+				Labels:    getLabels(),
+			},
+			Spec: vpaautoscalingv1.VerticalPodAutoscalerSpec{
+				TargetRef: &autoscalingv1.CrossVersionObjectReference{
+					Kind:       "Deployment",
+					Name:       "vlsingle-" + victorialogsconstants.VLSingleResourceName,
+					APIVersion: appsv1.SchemeGroupVersion.String(),
+				},
+				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
+					UpdateMode: new(vpaautoscalingv1.UpdateModeInPlaceOrRecreate),
+				},
+				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
+					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+						{
+							ContainerName:    "vlsingle",
+							ControlledValues: new(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						},
+					},
+				},
+			},
+		}
+
+		serviceMonitor = &monitoringv1.ServiceMonitor{
+			ObjectMeta: monitoringutils.ConfigObjectMeta("victoria-logs", namespace, shoot.Label),
+			Spec: monitoringv1.ServiceMonitorSpec{
+				Selector: metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/name":                          "vlsingle",
+						"app.kubernetes.io/instance":                      victorialogsconstants.VLSingleResourceName,
+						"app.kubernetes.io/component":                     "monitoring",
+						"managed-by":                                      "vm-operator",
+						"operator.victoriametrics.com/additional-service": "managed",
+					},
+				},
+				Endpoints: []monitoringv1.Endpoint{{
+					Port: "https",
+					RelabelConfigs: []monitoringv1.RelabelConfig{
+						{
+							Action:      "replace",
+							Replacement: new("victoria-logs"),
+							TargetLabel: "job",
+						},
+						{
+							Action: "labelmap",
+							Regex:  `__meta_kubernetes_service_label_(.+)`,
+						},
+					},
+					Scheme: new(monitoringv1.SchemeHTTPS),
+					HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+						HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: new(true)}},
+						},
+					},
+				}},
+			},
+		}
+
+		prometheusRule = &monitoringv1.PrometheusRule{
+			ObjectMeta: monitoringutils.ConfigObjectMeta("victoria-logs", namespace, shoot.Label),
+			Spec: monitoringv1.PrometheusRuleSpec{
+				Groups: []monitoringv1.RuleGroup{{
+					Name: "victoria-logs.rules",
+					Rules: []monitoringv1.Rule{{
+						Alert: "VictoriaLogsDown",
+						Expr:  intstr.FromString(`absent(up{job="victoria-logs"} == 1)`),
+						For:   new(monitoringv1.Duration("30m")),
+						Labels: map[string]string{
+							"service":    "logging",
+							"severity":   "warning",
+							"type":       "seed",
+							"visibility": "operator",
+						},
+						Annotations: map[string]string{
+							"description": "There are no VictoriaLogs pods running on seed: {{ .ExternalLabels.seed }}. No logs will be collected.",
+							"summary":     "VictoriaLogs is down",
+						},
+					}},
+				}},
+			},
+		}
+	})
+
+	Describe("#Deploy", func() {
+		// TODO(rrhubenov): Remove this test once https://github.com/VictoriaMetrics/operator/pull/2401 is merged
+		// and we update to the release that includes it, together with the digest-only check in Deploy.
+		It("should return an error when the image reference is digest-only", func() {
+			for _, digestTag := range []string{
+				"sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+				"sha512:ee26b0dd4af7e749aa1a8ee3c10ae9923f618980772e473f8819a5d4940e0db27ac185f8a0e1d5f84f88bc887fd67b143732c304cc5fa9ad8e6f57f50028a8ff",
+			} {
+				component = New(c, namespace, fakeSecretManager, Values{ImageRepository: imageRepository, ImageTag: digestTag})
+				Expect(component.Deploy(ctx)).To(MatchError(ContainSubstring("digest-only image reference")))
+			}
+		})
+
+		It("should successfully deploy all resources for shoot cluster", func() {
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(BeNotFoundError())
+
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+			expectedMr := &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "victoria-logs",
+					Namespace: namespace,
+					Labels: map[string]string{
+						v1beta1constants.GardenRole:          "seed-system-component",
+						"care.gardener.cloud/condition-type": "ObservabilityComponentsHealthy",
+					},
+					ResourceVersion: "1",
+				},
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class: new("seed"),
+					SecretRefs: []corev1.LocalObjectReference{{
+						Name: customResourcesManagedResource.Spec.SecretRefs[0].Name,
+					}},
+					KeepObjects: new(false),
+				},
+			}
+			utilruntime.Must(references.InjectAnnotations(expectedMr))
+			Expect(customResourcesManagedResource).To(DeepEqual(expectedMr))
+
+			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+			Expect(customResourcesManagedResource).To(consistOf(
+				vlSingle,
+				vpa,
+				serviceMonitor,
+				prometheusRule,
+			))
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(Succeed())
+			Expect(customResourcesManagedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
+			Expect(customResourcesManagedResourceSecret.Immutable).To(Equal(new(true)))
+			Expect(customResourcesManagedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+		})
+
+		DescribeTable("should successfully deploy all resources including the PersistentVolumeClaimAutoscaler when PVC autoscaler is enabled",
+			func(maxCapacity resource.Quantity) {
+				values = Values{
+					ImageRepository:    imageRepository,
+					ImageTag:           imageTag,
+					SecretNameServerCA: "ca",
+					PVCAutoscaling: PVCAutoscalingConfig{
+						Enabled:     true,
+						MaxCapacity: maxCapacity,
+					},
+				}
+				component = New(c, namespace, fakeSecretManager, values)
+
+				Expect(component.Deploy(ctx)).To(Succeed())
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+				customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+				Expect(customResourcesManagedResource).To(consistOf(
+					vlSingle,
+					vpa,
+					serviceMonitor,
+					prometheusRule,
+					getPVCA(maxCapacity, ""),
+				))
+			},
+			Entry("shoot max capacity", resource.MustParse("40Gi")),
+			Entry("seed max capacity", resource.MustParse("200Gi")),
+		)
+
+		Context("when deployed in seed cluster", func() {
+			BeforeEach(func() {
+				values = Values{
+					ImageRepository:    imageRepository,
+					ImageTag:           imageTag,
+					SecretNameServerCA: "ca",
+					ClusterType:        componentpkg.ClusterTypeSeed,
+				}
+				component = New(c, namespace, fakeSecretManager, values)
+			})
+
+			It("should successfully deploy all resources with seed-specific configuration", func() {
+				Expect(component.Deploy(ctx)).To(Succeed())
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+
+				// Verify VLSingle has seed-specific network policy annotations
+				expectedVlSingle := vlSingle.DeepCopy()
+				expectedVlSingle.Spec.ManagedMetadata = &victoriametricsv1beta1.ManagedObjectsMetadata{
+					Annotations: map[string]string{
+						resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix + v1beta1constants.LabelNetworkPolicySeedScrapeTargets + resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"protocol":"TCP","port":9429}]`,
+					},
+				}
+
+				// Verify ServiceMonitor has seed prometheus label and name
+				expectedServiceMonitor := serviceMonitor.DeepCopy()
+				expectedServiceMonitor.ObjectMeta = monitoringutils.ConfigObjectMeta("victoria-logs", namespace, seed.Label)
+
+				// Verify PrometheusRule has seed prometheus label and name
+				expectedPrometheusRule := prometheusRule.DeepCopy()
+				expectedPrometheusRule.ObjectMeta = monitoringutils.ConfigObjectMeta("victoria-logs", namespace, seed.Label)
+
+				customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+				Expect(customResourcesManagedResource).To(consistOf(
+					expectedVlSingle,
+					vpa,
+					expectedServiceMonitor,
+					expectedPrometheusRule,
+				))
+
+				componenttest.PrometheusRule(getVictoriaLogsPrometheusRule(seed.Label), "testdata/seed-victoria-logs.prometheusrule.test.yaml")
+			})
+		})
+
+		Context("when deployed in garden cluster", func() {
+			BeforeEach(func() {
+				values = Values{
+					ImageRepository:    imageRepository,
+					ImageTag:           imageTag,
+					SecretNameServerCA: "ca",
+					ClusterType:        componentpkg.ClusterTypeSeed,
+					IsGardenCluster:    true,
+					PVCAutoscaling: PVCAutoscalingConfig{
+						Enabled:     true,
+						MaxCapacity: resource.MustParse("200Gi"),
+					},
+				}
+				component = New(c, namespace, fakeSecretManager, values)
+			})
+
+			It("should successfully deploy all resources with garden-specific configuration", func() {
+				Expect(component.Deploy(ctx)).To(Succeed())
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+
+				// Verify VLSingle has garden-specific network policy annotations
+				expectedVlSingle := vlSingle.DeepCopy()
+				expectedVlSingle.Spec.ManagedMetadata = &victoriametricsv1beta1.ManagedObjectsMetadata{
+					Annotations: map[string]string{
+						resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix + v1beta1constants.LabelNetworkPolicyGardenScrapeTargets + resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"protocol":"TCP","port":9429}]`,
+					},
+				}
+
+				// Verify ServiceMonitor has garden prometheus label and name
+				expectedServiceMonitor := serviceMonitor.DeepCopy()
+				expectedServiceMonitor.ObjectMeta = monitoringutils.ConfigObjectMeta("victoria-logs", namespace, garden.Label)
+
+				// Verify PrometheusRule has garden prometheus label and name
+				expectedPrometheusRule := prometheusRule.DeepCopy()
+				expectedPrometheusRule.ObjectMeta = monitoringutils.ConfigObjectMeta("victoria-logs", namespace, garden.Label)
+
+				customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+				Expect(customResourcesManagedResource).To(consistOf(
+					expectedVlSingle,
+					vpa,
+					expectedServiceMonitor,
+					expectedPrometheusRule,
+					getPVCA(resource.MustParse("200Gi"), "garden"),
+				))
+			})
+		})
+
+		Context("when deployed in shoot cluster", func() {
+			BeforeEach(func() {
+				values = Values{
+					ImageRepository:    imageRepository,
+					ImageTag:           imageTag,
+					SecretNameServerCA: "ca",
+					ClusterType:        componentpkg.ClusterTypeShoot,
+				}
+				component = New(c, namespace, fakeSecretManager, values)
+			})
+
+			It("should successfully deploy all resources with shoot-specific configuration", func() {
+				Expect(component.Deploy(ctx)).To(Succeed())
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+
+				// Verify VLSingle has shoot-specific network policy annotations
+				expectedVlSingle := vlSingle.DeepCopy()
+				expectedVlSingle.Spec.ManagedMetadata = &victoriametricsv1beta1.ManagedObjectsMetadata{
+					Annotations: map[string]string{
+						resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix + v1beta1constants.LabelNetworkPolicyScrapeTargets + resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"protocol":"TCP","port":9429}]`,
+						resourcesv1alpha1.NetworkingPodLabelSelectorNamespaceAlias: "all-shoots",
+						resourcesv1alpha1.NetworkingNamespaceSelectors:             `[{"matchLabels":{"kubernetes.io/metadata.name":"garden"}}]`,
+					},
+				}
+
+				// Verify ServiceMonitor has shoot prometheus label and name
+				expectedServiceMonitor := serviceMonitor.DeepCopy()
+				expectedServiceMonitor.ObjectMeta = monitoringutils.ConfigObjectMeta("victoria-logs", namespace, shoot.Label)
+
+				// Verify PrometheusRule has shoot prometheus label, name, and shoot-specific description
+				expectedPrometheusRule := prometheusRule.DeepCopy()
+				expectedPrometheusRule.ObjectMeta = monitoringutils.ConfigObjectMeta("victoria-logs", namespace, shoot.Label)
+				expectedPrometheusRule.Spec.Groups[0].Rules[0].Annotations["description"] = "There are no VictoriaLogs pods running. No logs will be collected."
+
+				customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+				Expect(customResourcesManagedResource).To(consistOf(
+					expectedVlSingle,
+					vpa,
+					expectedServiceMonitor,
+					expectedPrometheusRule,
+				))
+
+				componenttest.PrometheusRule(getVictoriaLogsPrometheusRule(shoot.Label), "testdata/shoot-victoria-logs.prometheusrule.test.yaml")
+			})
+		})
+	})
+
+	Describe("#Destroy", func() {
+		It("should successfully destroy all resources", func() {
+			Expect(c.Create(ctx, customResourcesManagedResource)).To(Succeed())
+			Expect(c.Create(ctx, customResourcesManagedResourceSecret)).To(Succeed())
+
+			Expect(component.Destroy(ctx)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(BeNotFoundError())
+		})
+	})
+
+	Context("with external exposure", func() {
+		const (
+			istioNamespace = "istio-ingress"
+			authSecret     = "monitoring-ingress-credentials-users"
+			host           = "vl-shoot.ingress.seed.example.com"
+		)
+
+		var (
+			tlsSecretInIstioNamespace *corev1.Secret
+			caBundleInIstioNamespace  *corev1.Secret
+			gateway                   *istionetworkingv1beta1.Gateway
+			virtualService            *istionetworkingv1beta1.VirtualService
+			destinationRule           *istionetworkingv1beta1.DestinationRule
+			exposedVlSingle           *victoriametricsv1.VLSingle
+		)
+
+		BeforeEach(func() {
+			// The CA secret must exist so secretsManager.Get("ca") succeeds in istioResources.
+			Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ca", Namespace: namespace}})).To(Succeed())
+			// Wildcard cert: created with no data so the copied secret in istio namespace also has nil Data.
+			Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "wildcard-tls", Namespace: namespace}})).To(Succeed())
+
+			values = Values{
+				ImageRepository:    imageRepository,
+				ImageTag:           imageTag,
+				SecretNameServerCA: "ca",
+				ExternalExposure: &ExposureValues{
+					AuthSecretName:               authSecret,
+					AuthSecretManaged:            true,
+					Host:                         host,
+					IstioIngressGatewayLabels:    map[string]string{"istio": "ingressgateway"},
+					IstioIngressGatewayNamespace: istioNamespace,
+					WildcardCertSecretName:       new("wildcard-tls"),
+				},
+			}
+			component = New(c, namespace, fakeSecretManager, values)
+
+			exposedVlSingle = vlSingle.DeepCopy()
+			exposedVlSingle.Spec.ServiceSpec.Annotations = map[string]string{
+				"networking.istio.io/exportTo": istioNamespace,
+			}
+
+			tlsSecretInIstioNamespace = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      namespace + "-victoria-logs-wildcard-tls",
+					Namespace: istioNamespace,
+					Labels:    getLabels(),
+				},
+			}
+
+			caBundleInIstioNamespace = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      namespace + "-victoria-logs-ca",
+					Namespace: istioNamespace,
+					Labels:    getLabels(),
+				},
+				Data: map[string][]byte{"cacert": nil},
+			}
+
+			gateway = &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "victoria-logs",
+					Namespace: namespace,
+					Labels:    getLabels(),
+				},
+				Spec: istionetworkingv1alpha3.Gateway{
+					Selector: map[string]string{"istio": "ingressgateway"},
+					Servers: []*istionetworkingv1alpha3.Server{{
+						Port: &istionetworkingv1alpha3.Port{
+							Name: "tls", Number: 443, Protocol: "HTTPS",
+						},
+						Hosts: []string{host},
+						Tls: &istionetworkingv1alpha3.ServerTLSSettings{
+							CredentialName: namespace + "-victoria-logs-wildcard-tls",
+							Mode:           istionetworkingv1alpha3.ServerTLSSettings_SIMPLE,
+						},
+					}},
+				},
+			}
+
+			destinationFQDN := "logging-vl." + namespace + ".svc.cluster.local"
+			virtualService = &istionetworkingv1beta1.VirtualService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "victoria-logs",
+					Namespace: namespace,
+					Labels: map[string]string{
+						v1beta1constants.LabelApp:                      "victoria-logs",
+						v1beta1constants.LabelRole:                     "observability",
+						v1beta1constants.GardenRole:                    "observability",
+						v1beta1constants.LabelObservabilityApplication: "victoria-logs",
+						v1beta1constants.LabelBasicAuthSecretName:      authSecret,
+						v1beta1constants.LabelBasicAuthServerName:      "istio-basic-auth-server",
+						v1beta1constants.LabelBasicAuthSecretManaged:   "true",
+					},
+				},
+				Spec: istionetworkingv1alpha3.VirtualService{
+					ExportTo: []string{istioNamespace},
+					Gateways: []string{"victoria-logs"},
+					Hosts:    []string{host},
+					Http: []*istionetworkingv1alpha3.HTTPRoute{
+						{
+							Name: "query",
+							Match: []*istionetworkingv1alpha3.HTTPMatchRequest{{
+								Uri: &istionetworkingv1alpha3.StringMatch{
+									MatchType: &istionetworkingv1alpha3.StringMatch_Prefix{Prefix: "/select/logsql/query"},
+								},
+							}},
+							Route: []*istionetworkingv1alpha3.HTTPRouteDestination{{
+								Destination: &istionetworkingv1alpha3.Destination{
+									Host: destinationFQDN,
+									Port: &istionetworkingv1alpha3.PortSelector{Number: 9429},
+								},
+							}},
+						},
+						{
+							DirectResponse: &istionetworkingv1alpha3.HTTPDirectResponse{Status: 403},
+						},
+					},
+				},
+			}
+
+			destinationRule = &istionetworkingv1beta1.DestinationRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "victoria-logs",
+					Namespace: namespace,
+					Labels:    getLabels(),
+				},
+				Spec: istionetworkingv1alpha3.DestinationRule{
+					Host: destinationFQDN,
+					TrafficPolicy: &istionetworkingv1alpha3.TrafficPolicy{
+						LoadBalancer: &istionetworkingv1alpha3.LoadBalancerSettings{
+							LocalityLbSetting: &istionetworkingv1alpha3.LocalityLoadBalancerSetting{
+								FailoverPriority: []string{"topology.kubernetes.io/zone"},
+								Enabled:          &wrapperspb.BoolValue{Value: true},
+							},
+						},
+						ConnectionPool: &istionetworkingv1alpha3.ConnectionPoolSettings{
+							Tcp: &istionetworkingv1alpha3.ConnectionPoolSettings_TCPSettings{
+								TcpKeepalive: &istionetworkingv1alpha3.ConnectionPoolSettings_TCPSettings_TcpKeepalive{
+									Time:     &durationpb.Duration{Seconds: 60},
+									Interval: &durationpb.Duration{Seconds: 30},
+									Probes:   5,
+								},
+								MaxConnectionDuration: &durationpb.Duration{Seconds: 86400},
+							},
+						},
+						OutlierDetection: &istionetworkingv1alpha3.OutlierDetection{},
+						Tls: &istionetworkingv1alpha3.ClientTLSSettings{
+							Mode:           istionetworkingv1alpha3.ClientTLSSettings_SIMPLE,
+							CredentialName: namespace + "-victoria-logs-ca",
+							Sni:            destinationFQDN,
+						},
+					},
+					ExportTo: []string{istioNamespace},
+				},
+			}
+		})
+
+		It("should deploy VLSingle with exportTo annotation and all istio resources", func() {
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+			Expect(customResourcesManagedResource).To(consistOf(
+				exposedVlSingle,
+				vpa,
+				serviceMonitor,
+				prometheusRule,
+				tlsSecretInIstioNamespace,
+				caBundleInIstioNamespace,
+				gateway,
+				virtualService,
+				destinationRule,
+			))
+		})
+
+		It("should generate a dedicated ingress TLS cert when no wildcard cert is provided", func() {
+			values.ExternalExposure.WildcardCertSecretName = nil
+			component = New(c, namespace, fakeSecretManager, values)
+
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+
+			generatedTLSSecretName := namespace + "-victoria-logs-victoria-logs-ingress-tls"
+			expectedGateway := gateway.DeepCopy()
+			expectedGateway.Spec.Servers[0].Tls.CredentialName = generatedTLSSecretName
+
+			consistOfIgnoringSecretData := NewManagedResourceConsistOfObjectsMatcher(c,
+				append(componenttest.CmpOptsForIstio(), cmpopts.IgnoreFields(corev1.Secret{}, "Data"))...,
+			)
+			Expect(customResourcesManagedResource).To(consistOfIgnoringSecretData(
+				exposedVlSingle,
+				vpa,
+				serviceMonitor,
+				prometheusRule,
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      generatedTLSSecretName,
+						Namespace: istioNamespace,
+						Labels:    getLabels(),
+					},
+				},
+				caBundleInIstioNamespace,
+				expectedGateway,
+				virtualService,
+				destinationRule,
+			))
+		})
+	})
+
+	Context("waiting functions", func() {
+		var fakeOps *retryfake.Ops
+
+		BeforeEach(func() {
+			fakeOps = &retryfake.Ops{MaxAttempts: 1}
+			DeferCleanup(test.WithVars(
+				&retry.Until, fakeOps.Until,
+				&retry.UntilTimeout, fakeOps.UntilTimeout,
+			))
+		})
+
+		Describe("#Wait", func() {
+			It("should fail because reading the ManagedResources fails", func() {
+				Expect(component.Wait(ctx)).To(MatchError(ContainSubstring("not found")))
+			})
+
+			It("should fail because the ManagedResources doesn't become healthy", func() {
+				fakeOps.MaxAttempts = 2
+
+				Expect(c.Create(ctx, &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       customResourcesManagedResourceName,
+						Namespace:  namespace,
+						Generation: 1,
+					},
+					Status: resourcesv1alpha1.ManagedResourceStatus{
+						ObservedGeneration: 1,
+						Conditions: []gardencorev1beta1.Condition{
+							{
+								Type:   resourcesv1alpha1.ResourcesApplied,
+								Status: gardencorev1beta1.ConditionFalse,
+							},
+							{
+								Type:   resourcesv1alpha1.ResourcesHealthy,
+								Status: gardencorev1beta1.ConditionFalse,
+							},
+						},
+					},
+				})).To(Succeed())
+
+				Expect(component.Wait(ctx)).To(MatchError(ContainSubstring("is not healthy")))
+			})
+
+			It("should successfully wait for the managed resources to become healthy", func() {
+				fakeOps.MaxAttempts = 2
+
+				Expect(c.Create(ctx, &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       customResourcesManagedResourceName,
+						Namespace:  namespace,
+						Generation: 1,
+					},
+					Status: resourcesv1alpha1.ManagedResourceStatus{
+						ObservedGeneration: 1,
+						Conditions: []gardencorev1beta1.Condition{
+							{
+								Type:   resourcesv1alpha1.ResourcesApplied,
+								Status: gardencorev1beta1.ConditionTrue,
+							},
+							{
+								Type:   resourcesv1alpha1.ResourcesHealthy,
+								Status: gardencorev1beta1.ConditionTrue,
+							},
+						},
+					},
+				})).To(Succeed())
+
+				Expect(component.Wait(ctx)).To(Succeed())
+			})
+		})
+
+		Describe("#WaitCleanup", func() {
+			It("should fail when the wait for the managed resources deletion times out", func() {
+				fakeOps.MaxAttempts = 2
+
+				customResourcesManagedResource := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      customResourcesManagedResourceName,
+						Namespace: namespace,
+					},
+				}
+				Expect(c.Create(ctx, customResourcesManagedResource)).To(Succeed())
+
+				Expect(component.WaitCleanup(ctx)).To(MatchError(ContainSubstring("still exists")))
+			})
+
+			It("should not return an error when it's already removed", func() {
+				Expect(component.WaitCleanup(ctx)).To(Succeed())
+			})
+		})
+	})
+})
+
+func getPVCA(maxCapacity resource.Quantity, autoscalerName string) *pvcautoscalerv1alpha1.PersistentVolumeClaimAutoscaler {
+	return &pvcautoscalerv1alpha1.PersistentVolumeClaimAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      victorialogsconstants.VLSingleResourceName,
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: pvcautoscalerv1alpha1.PersistentVolumeClaimAutoscalerSpec{
+			AutoscalerName: autoscalerName,
+			TargetRef: autoscalingv1.CrossVersionObjectReference{
+				APIVersion: appsv1.SchemeGroupVersion.String(),
+				Kind:       "Deployment",
+				Name:       "vlsingle-" + victorialogsconstants.VLSingleResourceName,
+			},
+			VolumePolicies: []pvcautoscalerv1alpha1.VolumePolicy{
+				{
+					MaxCapacity: maxCapacity,
+					ScaleUp: &pvcautoscalerv1alpha1.ScalingRules{
+						UtilizationThresholdPercent: new(70),
+						StepPercent:                 new(10),
+						MinStepAbsolute:             new(resource.MustParse("2Gi")),
+					},
+				},
+			},
+		},
+	}
+}
+
+func getLabels() map[string]string {
+	return map[string]string{
+		v1beta1constants.LabelApp:                      "victoria-logs",
+		v1beta1constants.LabelRole:                     "observability",
+		v1beta1constants.GardenRole:                    "observability",
+		v1beta1constants.LabelObservabilityApplication: "victoria-logs",
+	}
+}
+
+func getVictoriaLogsPrometheusRule(label string) *monitoringv1.PrometheusRule {
+	description := "There are no VictoriaLogs pods running on seed: {{ .ExternalLabels.seed }}. No logs will be collected."
+	if label == "shoot" {
+		description = "There are no VictoriaLogs pods running. No logs will be collected."
+	}
+
+	return &monitoringv1.PrometheusRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      label + "-victoria-logs",
+			Namespace: namespace,
+			Labels:    map[string]string{"prometheus": label},
+		},
+		Spec: monitoringv1.PrometheusRuleSpec{
+			Groups: []monitoringv1.RuleGroup{{
+				Name: "victoria-logs.rules",
+				Rules: []monitoringv1.Rule{{
+					Alert: "VictoriaLogsDown",
+					Expr:  intstr.FromString(`absent(up{job="victoria-logs"} == 1)`),
+					For:   new(monitoringv1.Duration("30m")),
+					Labels: map[string]string{
+						"service":    "logging",
+						"severity":   "warning",
+						"type":       "seed",
+						"visibility": "operator",
+					},
+					Annotations: map[string]string{
+						"description": description,
+						"summary":     "VictoriaLogs is down",
+					},
+				}},
+			}},
+		},
+	}
+}

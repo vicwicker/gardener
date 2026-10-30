@@ -1,0 +1,283 @@
+# SPDX-FileCopyrightText: Contributors to the Gardener project
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# This make file is supposed to be included in the top-level make file.
+# It can be reused by repos vendoring g/g to have some common make recipes for building and installing development
+# tools as needed.
+# Recipes in the top-level make file should declare dependencies on the respective tool recipes (e.g. $(CONTROLLER_GEN))
+# as needed. If the required tool (version) is not built/installed yet, make will make sure to build/install it.
+# The *_VERSION variables in this file contain the "default" values, but can be overwritten in the top level make file.
+
+# dependency on github.com/gardener/gardener is optional.
+# If other repos don't use it and the project doesn't depend on the package, silence the error to minimize confusion.
+IS_GARDENER := $(shell go list -f '{{.Main}}' -m github.com/gardener/gardener 2>/dev/null)
+
+ifeq ($(IS_GARDENER),true)
+GARDENER_HACK_DIR          := ./hack
+GARDENER_TOOL_DIR          := ./hack/tools
+GARDENER_LOGCHECK_DIR      := ./hack/tools/logcheck
+else
+GARDENER_HACK_DIR          := $(shell go list -m -f "{{.Dir}}" github.com/gardener/gardener 2>/dev/null)/hack
+GARDENER_TOOL_DIR          := $(shell go list -m -f "{{.Dir}}" github.com/gardener/gardener/hack/tools 2>/dev/null)
+GARDENER_LOGCHECK_DIR      := $(GARDENER_TOOL_DIR)/logcheck
+MODFILE_TOOL_MOD           := -modfile $(GARDENER_TOOL_DIR)/go.mod
+SET_GOWORK                 := GOWORK=off
+endif
+
+SYSTEM_NAME                := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+SYSTEM_ARCH                := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+TOOLS_BIN_DIR              := $(TOOLS_DIR)/bin/$(SYSTEM_NAME)-$(SYSTEM_ARCH)
+CONTROLLER_GEN             := $(TOOLS_BIN_DIR)/controller-gen
+EXTENSION_GEN              := $(TOOLS_BIN_DIR)/extension-generator
+CRD_REF_DOCS               := $(TOOLS_BIN_DIR)/crd-ref-docs
+GINKGO                     := $(TOOLS_BIN_DIR)/ginkgo
+GOIMPORTS                  := $(TOOLS_BIN_DIR)/goimports
+GOIMPORTSREVISER           := $(TOOLS_BIN_DIR)/goimports-reviser
+GOLANGCI_LINT              := $(TOOLS_BIN_DIR)/golangci-lint
+GOSEC                      := $(TOOLS_BIN_DIR)/gosec
+GO_ADD_LICENSE             := $(TOOLS_BIN_DIR)/addlicense
+GO_TO_PROTOBUF             := $(TOOLS_BIN_DIR)/go-to-protobuf
+HELM                       := $(TOOLS_BIN_DIR)/helm
+IMPORT_BOSS                := $(TOOLS_BIN_DIR)/import-boss
+KIND                       := $(TOOLS_BIN_DIR)/kind
+KUBECTL                    := $(TOOLS_BIN_DIR)/kubectl
+KUSTOMIZE                  := $(TOOLS_BIN_DIR)/kustomize
+MOCKGEN                    := $(TOOLS_BIN_DIR)/mockgen
+OPENAPI_GEN                := $(TOOLS_BIN_DIR)/openapi-gen
+PROMTOOL                   := $(TOOLS_BIN_DIR)/promtool
+PROTOC                     := $(TOOLS_BIN_DIR)/protoc
+PROTOC_GEN_GOGO            := $(TOOLS_BIN_DIR)/protoc-gen-gogo
+REPORT_COLLECTOR           := $(TOOLS_BIN_DIR)/report-collector
+OIDC_METADATA              := $(TOOLS_BIN_DIR)/oidcmeta
+SETUP_ENVTEST              := $(TOOLS_BIN_DIR)/setup-envtest
+SKAFFOLD                   := $(TOOLS_BIN_DIR)/skaffold
+YQ                         := $(TOOLS_BIN_DIR)/yq
+TYPOS                      := $(TOOLS_BIN_DIR)/typos
+GOBUILDCACHE               := $(TOOLS_BIN_DIR)/gobuildcache
+
+# plugin binaries loaded by golangci-lint
+LOGCHECK                   := $(TOOLS_BIN_DIR)/logcheck.so
+KUBE_API_LINTER            := $(TOOLS_BIN_DIR)/kube-api-linter.so
+
+# default tool versions
+# renovate: datasource=github-releases depName=helm/helm
+HELM_VERSION ?= v4.3.1
+# renovate: datasource=github-releases depName=kubernetes-sigs/kind
+KIND_VERSION ?= v0.33.0
+# renovate: datasource=github-releases depName=kubernetes/kubernetes
+KUBECTL_VERSION ?= v1.37.2
+# renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize\/(?<version>.*)$
+KUSTOMIZE_VERSION ?= v5.8.3
+# renovate: datasource=github-releases depName=prometheus/prometheus
+PROMTOOL_VERSION ?= 3.15.1
+# renovate: datasource=github-releases depName=protocolbuffers/protobuf
+PROTOC_VERSION ?= v36.2
+# renovate: datasource=github-releases depName=GoogleContainerTools/skaffold
+SKAFFOLD_VERSION ?= v2.25.0
+# renovate: datasource=github-releases depName=mikefarah/yq
+YQ_VERSION ?= v4.54.1
+# renovate: datasource=github-releases depName=crate-ci/typos
+TYPOS_VERSION ?= v1.51.1
+
+# tool versions from go.mod
+CONTROLLER_GEN_VERSION     ?= $(call version_gomod,sigs.k8s.io/controller-tools)
+GINKGO_VERSION             ?= $(call version_gomod,github.com/onsi/ginkgo/v2)
+CRD_REF_DOCS_VERSION       ?= $(call version_gomod,github.com/elastic/crd-ref-docs)
+CODE_GENERATOR_VERSION     ?= $(call version_gomod,k8s.io/code-generator)
+GOIMPORTS_VERSION          ?= $(call version_gomod,golang.org/x/tools)
+GOIMPORTSREVISER_VERSION   ?= $(call version_gomod,github.com/incu6us/goimports-reviser/v3)
+GOLANGCI_LINT_VERSION      ?= $(call version_gomod,github.com/golangci/golangci-lint/v2)
+GOSEC_VERSION              ?= $(call version_gomod,github.com/securego/gosec/v2)
+MOCKGEN_VERSION            ?= $(call version_gomod,go.uber.org/mock)
+OPENAPI_GEN_VERSION        ?= $(call version_gomod,k8s.io/kube-openapi)
+GOBUILDCACHE_VERSION       ?= $(call version_gomod,github.com/saracen/gobuildcache)
+GO_ADD_LICENSE_VERSION     ?= $(call version_gomod,github.com/google/addlicense)
+CONTROLLER_RUNTIME_VERSION ?= $(call version_gomod,sigs.k8s.io/controller-runtime)
+K8S_VERSION                ?= $(subst v0,v1,$(call version_gomod,k8s.io/api))
+
+# Hash of analyzer sources + golangci-lint version + main go.mod toolchain + Go toolchain version. Invalidates iff the bundled plugin would no longer match the bundled golangci-lint.
+LOGCHECK_VERSION           ?= $(shell { [ -n "$(GARDENER_LOGCHECK_DIR)" ] && find $(GARDENER_LOGCHECK_DIR) -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) | LC_ALL=C sort | xargs shasum -a 256; echo $(GOLANGCI_LINT_VERSION); echo $(GOTOOLCHAIN); grep -E '^(go|toolchain) ' go.mod; } | shasum -a 256 | cut -c1-12)
+# Hash of wrapper sources + pinned kube-api-linter version + golangci-lint version + main go.mod toolchain + Go toolchain version. Invalidates iff the bundled plugin would no longer match the bundled golangci-lint.
+KUBE_API_LINTER_VERSION    ?= $(shell { [ -n "$(GARDENER_TOOL_DIR)" ] && find $(GARDENER_TOOL_DIR)/kube-api-linter -type f -name '*.go' | LC_ALL=C sort | xargs shasum -a 256; echo $(call version_gomod,sigs.k8s.io/kube-api-linter); echo $(GOLANGCI_LINT_VERSION); echo $(GOTOOLCHAIN); grep -E '^(go|toolchain) ' go.mod; } | shasum -a 256 | cut -c1-12)
+
+# default dir for importing tool binaries
+TOOLS_BIN_SOURCE_DIR ?= /gardenertools
+
+export TOOLS_BIN_DIR := $(TOOLS_BIN_DIR)
+export PATH := $(abspath $(TOOLS_BIN_DIR)):$(PATH)
+
+#########################################
+# Common                                #
+#########################################
+
+# Tool targets should declare go.mod as a prerequisite, if the tool's version is managed via go modules. This causes
+# make to rebuild the tool in the desired version, when go.mod is changed.
+# For tools where the version is not managed via go.mod, we use a file per tool and version as an indicator for make
+# whether we need to install the tool or a different version of the tool (make doesn't rerun the rule if the rule is
+# changed).
+
+# Use this "function" to add the version file as a prerequisite for the tool target: e.g.
+#   $(HELM): $(call tool_version_file,$(HELM),$(HELM_VERSION))
+tool_version_file = $(TOOLS_BIN_DIR)/.version_$(subst $(TOOLS_BIN_DIR)/,,$(1))_$(2)_$(GOTOOLCHAIN)
+
+# Use this function to get the version of a go module from go.mod
+version_gomod = $(shell $(SET_GOWORK) go list $(MODFILE_TOOL_MOD) -f '{{ .Version }}' -m $(1))
+
+# Use this function to copy the tool binary built by Go to the location passed as arg.
+#   E.g., `$(call go_tool_copy,./path/to/tool)` will copy the tool binary built by Go to ./path/to/tool.
+# Set GOCACHEPROG to empty, this is required as `go tool -n` returns a wrong path when GOCACHEPROG is set.
+# https://github.com/golang/go/issues/72824
+go_tool_copy = $(shell cp $$( GOCACHEPROG= $(SET_GOWORK) go tool $(MODFILE_TOOL_MOD) -n $$(basename $(1))) $(1))
+
+# This target cleans up any previous version files for the given tool and creates the given version file.
+# This way, we can generically determine, which version was installed without calling each and every binary explicitly.
+$(TOOLS_BIN_DIR)/.version_%:
+	@version_file=$@; rm -f $${version_file%_*}*
+	@mkdir -p $(TOOLS_BIN_DIR)
+	@touch $@
+
+.PHONY: clean-tools-bin
+clean-tools-bin:
+	rm -rf $(TOOLS_BIN_DIR)/*
+
+.PHONY: import-tools-bin
+import-tools-bin:
+ifeq ($(shell if [ -d $(TOOLS_BIN_SOURCE_DIR) ]; then echo "found"; fi),found)
+	@echo "Copying tool binaries from $(TOOLS_BIN_SOURCE_DIR)"
+	@cp -rpT $(TOOLS_BIN_SOURCE_DIR) $(TOOLS_BIN_DIR)
+endif
+
+.PHONY: create-tools-bin
+create-tools-bin: $(CONTROLLER_GEN) $(CRD_REF_DOCS) $(GINKGO) $(GOIMPORTS) $(GOIMPORTSREVISER) $(GOLANGCI_LINT) $(GOSEC) $(GO_ADD_LICENSE) $(GO_TO_PROTOBUF) $(HELM) $(IMPORT_BOSS) $(KIND) $(KUBECTL) $(MOCKGEN) $(OPENAPI_GEN) $(PROMTOOL) $(PROTOC) $(PROTOC_GEN_GOGO) $(SETUP_ENVTEST) $(SKAFFOLD) $(YQ) $(KUSTOMIZE) $(TYPOS) $(GOBUILDCACHE) $(LOGCHECK) $(KUBE_API_LINTER)
+
+#########################################
+# Tools                                 #
+#########################################
+
+$(CONTROLLER_GEN): $(call tool_version_file,$(CONTROLLER_GEN),$(CONTROLLER_GEN_VERSION))
+	$(call go_tool_copy,$(CONTROLLER_GEN))
+
+$(CRD_REF_DOCS): $(call tool_version_file,$(CRD_REF_DOCS),$(CRD_REF_DOCS_VERSION))
+	$(call go_tool_copy,$(CRD_REF_DOCS))
+
+$(GINKGO): $(call tool_version_file,$(GINKGO),$(GINKGO_VERSION))
+	$(call go_tool_copy,$(GINKGO))
+
+$(GOIMPORTS): $(call tool_version_file,$(GOIMPORTS),$(GOIMPORTS_VERSION))
+	$(call go_tool_copy,$(GOIMPORTS))
+
+$(GOIMPORTSREVISER): $(call tool_version_file,$(GOIMPORTSREVISER),$(GOIMPORTSREVISER_VERSION))
+	$(call go_tool_copy,$(GOIMPORTSREVISER))
+
+# Include LOGCHECK_VERSION and KUBE_API_LINTER_VERSION in golangci-lint's marker so any input that invalidates either
+# bundled plugin also invalidates golangci-lint, forcing all to be (re)built from the same module graph and avoiding
+# plugin-vs-host x/tools/go/analysis mismatches.
+$(GOLANGCI_LINT): $(call tool_version_file,$(GOLANGCI_LINT),$(GOLANGCI_LINT_VERSION)-$(LOGCHECK_VERSION)-$(KUBE_API_LINTER_VERSION))
+	$(call go_tool_copy,$(GOLANGCI_LINT))
+
+$(GOSEC): $(call tool_version_file,$(GOSEC),$(GOSEC_VERSION))
+	$(call go_tool_copy,$(GOSEC))
+
+$(GO_TO_PROTOBUF): $(call tool_version_file,$(GO_TO_PROTOBUF),$(CODE_GENERATOR_VERSION))
+	$(call go_tool_copy,$(GO_TO_PROTOBUF))
+
+$(GOBUILDCACHE): $(call tool_version_file,$(GOBUILDCACHE),$(GOBUILDCACHE_VERSION))
+	$(call go_tool_copy,$(GOBUILDCACHE))
+
+$(GO_ADD_LICENSE):  $(call tool_version_file,$(GO_ADD_LICENSE),$(GO_ADD_LICENSE_VERSION))
+	$(call go_tool_copy,$(GO_ADD_LICENSE))
+
+$(MOCKGEN): $(call tool_version_file,$(MOCKGEN),$(MOCKGEN_VERSION))
+	$(call go_tool_copy,$(MOCKGEN))
+
+$(OPENAPI_GEN): $(call tool_version_file,$(OPENAPI_GEN),$(OPENAPI_GEN_VERSION))
+	$(call go_tool_copy,$(OPENAPI_GEN))
+
+$(PROTOC_GEN_GOGO): $(call tool_version_file,$(PROTOC_GEN_GOGO),$(CODE_GENERATOR_VERSION))
+	$(call go_tool_copy,$(PROTOC_GEN_GOGO))
+
+$(HELM): $(call tool_version_file,$(HELM),$(HELM_VERSION))
+	curl -sSfL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-4 | HELM_INSTALL_DIR=$(TOOLS_BIN_DIR) USE_SUDO=false bash -s -- --version $(HELM_VERSION)
+	@touch $(HELM)
+
+$(IMPORT_BOSS): $(call tool_version_file,$(IMPORT_BOSS),$(K8S_VERSION))
+	mkdir -p hack/tools/bin/work/import-boss
+	curl -L -o hack/tools/bin/work/import-boss/main.go https://raw.githubusercontent.com/kubernetes/kubernetes/$(K8S_VERSION)/cmd/import-boss/main.go
+	go build -o $(IMPORT_BOSS) ./hack/tools/bin/work/import-boss
+	rm -rf hack/tools/bin/work/import-boss
+
+$(KIND): $(call tool_version_file,$(KIND),$(KIND_VERSION))
+	curl -L -o $(KIND) https://kind.sigs.k8s.io/dl/$(KIND_VERSION)/kind-$(SYSTEM_NAME)-$(SYSTEM_ARCH)
+	chmod +x $(KIND)
+
+$(KUBECTL): $(call tool_version_file,$(KUBECTL),$(KUBECTL_VERSION))
+	curl -Lo $(KUBECTL) https://dl.k8s.io/release/$(KUBECTL_VERSION)/bin/$(SYSTEM_NAME)/$(SYSTEM_ARCH)/kubectl
+	chmod +x $(KUBECTL)
+
+$(KUSTOMIZE): $(call tool_version_file,$(KUSTOMIZE),$(KUSTOMIZE_VERSION))
+	curl -L -o - \
+		https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F$(KUSTOMIZE_VERSION)/kustomize_$(KUSTOMIZE_VERSION)_$(SYSTEM_NAME)_$(SYSTEM_ARCH).tar.gz | \
+	tar zxvf - -C $(abspath $(TOOLS_BIN_DIR))
+	touch $(KUSTOMIZE) && chmod +x $(KUSTOMIZE)
+
+# Build logcheck with the same toolchain as golangci-lint (required for plugin loading). Depending on $(GOLANGCI_LINT)
+# ensures the host binary is (re)built from the current main go.mod before the plugin is — see also the composite
+# marker on $(GOLANGCI_LINT), which guarantees both invalidate together.
+ifeq ($(IS_GARDENER),true)
+$(LOGCHECK): $(call tool_version_file,$(LOGCHECK),$(LOGCHECK_VERSION)) $(GOLANGCI_LINT)
+	cd $(GARDENER_LOGCHECK_DIR); GOTOOLCHAIN=$(shell go version -m -json $(GOLANGCI_LINT) | jq -r .GoVersion) CGO_ENABLED=1 go build -ldflags="-w" -o $(abspath $(LOGCHECK)) -buildmode=plugin ./plugin
+else
+$(LOGCHECK): $(call tool_version_file,$(LOGCHECK),$(LOGCHECK_VERSION)) $(GOLANGCI_LINT)
+	@[ -n "$(GARDENER_LOGCHECK_DIR)" ] || { echo "GARDENER_LOGCHECK_DIR is not set, cannot build logcheck plugin. Consider adding github.com/gardener/gardener/hack/tools/logcheck as dependency if errors occur." >&2; exit 1; }
+	GOTOOLCHAIN=$(shell go version -m -json $(GOLANGCI_LINT) | jq -r .GoVersion) CGO_ENABLED=1 go build -ldflags="-w" -o $(LOGCHECK) -buildmode=plugin $(GARDENER_LOGCHECK_DIR)/plugin
+endif
+
+# Build kube-api-linter plugin with the same toolchain as golangci-lint (required for plugin loading).
+$(KUBE_API_LINTER): $(call tool_version_file,$(KUBE_API_LINTER),$(KUBE_API_LINTER_VERSION)) $(GOLANGCI_LINT)
+	cd $(GARDENER_TOOL_DIR)/kube-api-linter; GOTOOLCHAIN=$(shell go version -m -json $(GOLANGCI_LINT) | jq -r .GoVersion) CGO_ENABLED=1 go build -ldflags="-w" -o $(abspath $(KUBE_API_LINTER)) -buildmode=plugin ./plugin
+
+$(PROMTOOL): $(call tool_version_file,$(PROMTOOL),$(PROMTOOL_VERSION))
+	@PROMTOOL_VERSION=$(PROMTOOL_VERSION) $(GARDENER_TOOL_DIR)/install-promtool.sh
+
+$(PROTOC): $(call tool_version_file,$(PROTOC),$(PROTOC_VERSION))
+	@PROTOC_VERSION=$(PROTOC_VERSION) $(GARDENER_TOOL_DIR)/install-protoc.sh
+
+$(TYPOS): $(call tool_version_file,$(TYPOS),$(TYPOS_VERSION))
+	@TYPOS_VERSION=$(TYPOS_VERSION) bash $(GARDENER_TOOL_DIR)/install-typos.sh
+
+ifeq ($(IS_GARDENER),true)
+$(REPORT_COLLECTOR): $(GARDENER_TOOL_DIR)/report-collector/*.go
+	go build -o $(REPORT_COLLECTOR) $(GARDENER_TOOL_DIR)/report-collector
+else
+$(REPORT_COLLECTOR): go.mod
+	go build -o $(REPORT_COLLECTOR) github.com/gardener/gardener/hack/tools/report-collector
+endif
+
+ifeq ($(IS_GARDENER),true)
+$(OIDC_METADATA): $(GARDENER_HACK_DIR)/generators/oidcmeta/*.go
+	go build -o $(OIDC_METADATA) $(GARDENER_HACK_DIR)/generators/oidcmeta
+else
+$(OIDC_METADATA): go.mod
+	go build -o $(OIDC_METADATA) github.com/gardener/gardener/hack/generators/oidcmeta
+endif
+
+ifeq ($(IS_GARDENER),true)
+$(EXTENSION_GEN): $(GARDENER_HACK_DIR)/generators/extension-generator/*.go
+	go build -o $(EXTENSION_GEN) $(GARDENER_HACK_DIR)/generators/extension-generator
+else
+$(EXTENSION_GEN): go.mod
+	go build -o $(EXTENSION_GEN) github.com/gardener/gardener/hack/generators/extension-generator
+endif
+
+$(SETUP_ENVTEST): $(call tool_version_file,$(SETUP_ENVTEST),$(CONTROLLER_RUNTIME_VERSION))
+	curl -Lo $(SETUP_ENVTEST) https://github.com/kubernetes-sigs/controller-runtime/releases/download/$(CONTROLLER_RUNTIME_VERSION)/setup-envtest-$(SYSTEM_NAME)-$(SYSTEM_ARCH)
+	chmod +x $(SETUP_ENVTEST)
+
+$(SKAFFOLD): $(call tool_version_file,$(SKAFFOLD),$(SKAFFOLD_VERSION))
+	curl -Lo $(SKAFFOLD) https://storage.googleapis.com/skaffold/releases/$(SKAFFOLD_VERSION)/skaffold-$(SYSTEM_NAME)-$(SYSTEM_ARCH)
+	chmod +x $(SKAFFOLD)
+
+$(YQ): $(call tool_version_file,$(YQ),$(YQ_VERSION))
+	curl -L -o $(YQ) https://github.com/mikefarah/yq/releases/download/$(YQ_VERSION)/yq_$(SYSTEM_NAME)_$(SYSTEM_ARCH)
+	chmod +x $(YQ)

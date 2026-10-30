@@ -1,0 +1,147 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package bootstrap_test
+
+import (
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/component"
+	. "github.com/gardener/gardener/pkg/component/etcd/bootstrap"
+	"github.com/gardener/gardener/pkg/component/etcd/bootstrap/backuprestore"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+)
+
+var _ = Describe("Etcd", func() {
+	var (
+		c           client.Client
+		sm          secretsmanager.Interface
+		etcd        component.Deployer
+		ctx         = context.Background()
+		namespace   = "shoot--foo--bar"
+		image       = "some-image"
+		statefulSet = &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "etcd-bootstrap-main",
+				Namespace: namespace,
+			},
+		}
+	)
+
+	BeforeEach(func() {
+		c = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+		sm = fakesecretsmanager.New(c, namespace)
+		etcd = New(c, namespace, sm, Values{Image: image, Role: "main"})
+
+		By("Create secrets managed outside of this package for whose secretsmanager.Get() will be called")
+		Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ca-etcd", Namespace: namespace}})).To(Succeed())
+		Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ca-etcd-peer", Namespace: namespace}})).To(Succeed())
+	})
+
+	Describe("#Deploy", func() {
+		It("should successfully deploy bootstrap etcd", func() {
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(statefulSet), statefulSet)).To(BeNotFoundError())
+			Expect(etcd.Deploy(ctx)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(statefulSet), statefulSet)).To(Succeed())
+			Expect(statefulSet.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(statefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal(image))
+			Expect(statefulSet.Spec.Template.Spec.Containers[0].VolumeMounts).To(HaveLen(6))
+			Expect(statefulSet.Spec.Template.Spec.Containers[0].VolumeMounts).Should(ContainElements(
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("data"), "MountPath": Equal("/var/etcd/data")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-ca"), "MountPath": Equal("/var/etcd/ssl/ca")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-server-tls"), "MountPath": Equal("/var/etcd/ssl/server")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-client-tls"), "MountPath": Equal("/var/etcd/ssl/client")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-peer-ca"), "MountPath": Equal("/var/etcd/ssl/peer/ca")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-peer-server-tls"), "MountPath": Equal("/var/etcd/ssl/peer/server")}),
+			))
+			Expect(statefulSet.Spec.Template.Spec.Volumes).To(HaveLen(6))
+			Expect(statefulSet.Spec.Template.Spec.Volumes).Should(ContainElements(
+				corev1.Volume{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/var/lib/etcd-main/data",
+							Type: new(corev1.HostPathDirectoryOrCreate),
+						},
+					},
+				},
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-ca")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-server-tls")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-client-tls")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-peer-ca")}),
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-peer-server-tls")}),
+			))
+		})
+
+		It("should create and mount etcd initialize config via ConfigMap", func() {
+			etcd = New(c, namespace, sm, Values{
+				Image: image,
+				Role:  "main",
+				BackupRestore: &backuprestore.Config{
+					EtcdbrctlImage:        "europe-docker.pkg.dev/gardener-project/public/gardener/etcdbrctl:v0.40.0",
+					StoreContainer:        "my-bucket",
+					StorePrefix:           "prefix",
+					BackupBucketsHostPath: "/etc/gardener/local-backupbuckets",
+				},
+			})
+
+			Expect(etcd.Deploy(ctx)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(statefulSet), statefulSet)).To(Succeed())
+
+			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "etcd-bootstrap-main-config", Namespace: namespace}}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(cm), cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("etcd.conf.yaml"))
+
+			Expect(statefulSet.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			Expect(statefulSet.Spec.Template.Spec.InitContainers[0].Name).To(Equal("etcdbrctl-initialize"))
+			Expect(statefulSet.Spec.Template.Spec.InitContainers[0].Args).To(Equal([]string{
+				"initialize",
+				"--storage-provider=Local",
+				"--store-container=my-bucket",
+				"--store-prefix=prefix",
+				"--data-dir=/var/lib/etcd-main/data/new.etcd",
+				"--restoration-temp-snapshots-dir=/tmp/restorationtmp",
+			}))
+			Expect(statefulSet.Spec.Template.Spec.InitContainers[0].VolumeMounts).To(ContainElement(
+				MatchFields(IgnoreExtras, Fields{"Name": Equal("etcd-conf"), "MountPath": Equal("/var/etcd/config")}),
+			))
+
+			var etcdConfVolume *corev1.Volume
+			for i := range statefulSet.Spec.Template.Spec.Volumes {
+				v := &statefulSet.Spec.Template.Spec.Volumes[i]
+				if v.Name == "etcd-conf" {
+					etcdConfVolume = v
+					break
+				}
+			}
+			Expect(etcdConfVolume).NotTo(BeNil())
+			Expect(etcdConfVolume.VolumeSource.ConfigMap).NotTo(BeNil())
+			Expect(etcdConfVolume.VolumeSource.ConfigMap.Name).To(Equal("etcd-bootstrap-main-config"))
+		})
+	})
+
+	Describe("#Destroy", func() {
+		It("should return nil as it's not implemented as of now", func() {
+			Expect(etcd.Destroy(ctx)).To(Succeed())
+		})
+	})
+
+	Describe("#Name", func() {
+		It("should return the expected name", func() {
+			Expect(Name("foo")).To(Equal("etcd-bootstrap-foo"))
+		})
+	})
+})

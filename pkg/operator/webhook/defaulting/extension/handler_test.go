@@ -1,0 +1,231 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package extension_test
+
+import (
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"gomodules.xyz/jsonpatch/v2"
+	admissionv1 "k8s.io/api/admission/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	operatorclient "github.com/gardener/gardener/pkg/operator/client"
+	. "github.com/gardener/gardener/pkg/operator/webhook/defaulting/extension"
+)
+
+var _ = Describe("Handler", func() {
+	var (
+		ctx     context.Context
+		encoder runtime.Encoder
+
+		handler   *Handler
+		extension *operatorv1alpha1.Extension
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		encoder = &json.Serializer{}
+
+		handler = &Handler{Decoder: admission.NewDecoder(operatorclient.RuntimeScheme)}
+		extension = &operatorv1alpha1.Extension{
+			Spec: operatorv1alpha1.ExtensionSpec{
+				Resources: []gardencorev1beta1.ControllerResource{
+					{Kind: "Worker", Type: "test", Primary: new(true)},
+				},
+				Deployment: &operatorv1alpha1.Deployment{
+					ExtensionDeployment: &operatorv1alpha1.ExtensionDeploymentSpec{
+						InjectGardenKubeconfig: new(true),
+					},
+				},
+			},
+		}
+	})
+
+	Describe("#Default", func() {
+		Context("injectGardenKubeconfig defaulting", func() {
+			It("should not default if the extension does not handle Worker resources", func() {
+				extension.Spec.Resources = nil
+				extension.Spec.Deployment.ExtensionDeployment.InjectGardenKubeconfig = nil
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed: true,
+					},
+				}))
+			})
+
+			It("should not default if the deployment section is not set", func() {
+				extension.Spec.Deployment = nil
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed: true,
+					},
+				}))
+			})
+
+			It("should not default if the extension deployment section is not set", func() {
+				extension.Spec.Deployment.ExtensionDeployment = nil
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed: true,
+					},
+				}))
+			})
+
+			It("should not default if injectGardenKubeconfig is already set", func() {
+				extension.Spec.Deployment.ExtensionDeployment.InjectGardenKubeconfig = new(false)
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed: true,
+					},
+				}))
+			})
+
+			It("should default the injectGardenKubeconfig to true", func() {
+				extension.Spec.Deployment.ExtensionDeployment.InjectGardenKubeconfig = nil
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{
+						{
+							Operation: "add",
+							Path:      "/spec/deployment/extension/injectGardenKubeconfig",
+							Value:     true,
+						},
+					},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed:   true,
+						PatchType: new(admissionv1.PatchTypeJSONPatch),
+					},
+				}))
+			})
+		})
+
+		Context("primary defaulting", func() {
+			It("should default the primary field to true", func() {
+				extension.Spec.Resources[0].Primary = nil
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{
+						{
+							Operation: "add",
+							Path:      "/spec/resources/0/primary",
+							Value:     true,
+						},
+					},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed:   true,
+						PatchType: new(admissionv1.PatchTypeJSONPatch),
+					},
+				}))
+			})
+
+			It("should not overwrite the primary field", func() {
+				extension.Spec.Resources[0].Primary = new(false)
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed: true,
+					},
+				}))
+			})
+		})
+
+		Context("autoEnable defaulting", func() {
+			When("kind == Extension", func() {
+				BeforeEach(func() {
+					extension.Spec.Resources[0].Kind = "Extension"
+				})
+
+				It("should not default the autoEnable field", func() {
+					Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+						Patches: []jsonpatch.JsonPatchOperation{},
+						AdmissionResponse: admissionv1.AdmissionResponse{
+							Allowed: true,
+						},
+					}))
+				})
+
+				It("should not default autoEnable field if configured for seed", func() {
+					extension.Spec.Resources[0].AutoEnable = []gardencorev1beta1.ClusterType{"seed"}
+
+					Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+						Patches: []jsonpatch.JsonPatchOperation{},
+						AdmissionResponse: admissionv1.AdmissionResponse{
+							Allowed: true,
+						},
+					}))
+				})
+			})
+
+			When("kind != Extension", func() {
+				It("should not default the autoEnable field", func() {
+					Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+						Patches: []jsonpatch.JsonPatchOperation{},
+						AdmissionResponse: admissionv1.AdmissionResponse{
+							Allowed: true,
+						},
+					}))
+				})
+			})
+		})
+
+		Context("clusterCompatibility defaulting", func() {
+			BeforeEach(func() {
+				extension.Spec.Resources[0].Kind = "Extension"
+			})
+
+			It("should not default the clusterCompatibility field", func() {
+				extension.Spec.Resources[0].AutoEnable = []gardencorev1beta1.ClusterType{"seed"}
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed: true,
+					},
+				}))
+			})
+
+			It("should default the clusterCompatibility field to shoot", func() {
+				extension.Spec.Resources[0].AutoEnable = []gardencorev1beta1.ClusterType{"shoot"}
+
+				Expect(handler.Handle(ctx, admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Object: runtime.RawExtension{Raw: mustEncodeObject(encoder, extension)}}})).To(Equal(admission.Response{
+					Patches: []jsonpatch.JsonPatchOperation{
+						{
+							Operation: "add",
+							Path:      "/spec/resources/0/clusterCompatibility",
+							Value:     []any{"shoot"},
+						},
+					},
+					AdmissionResponse: admissionv1.AdmissionResponse{
+						Allowed:   true,
+						PatchType: new(admissionv1.PatchTypeJSONPatch),
+					},
+				}))
+			})
+
+		})
+	})
+})
+
+func mustEncodeObject(encoder runtime.Encoder, obj runtime.Object) []byte {
+	GinkgoHelper()
+	data, err := runtime.Encode(encoder, obj)
+	Expect(err).ToNot(HaveOccurred())
+	return data
+}

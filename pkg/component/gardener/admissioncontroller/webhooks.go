@@ -1,0 +1,629 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package admissioncontroller
+
+import (
+	"fmt"
+
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	certificatesv1 "k8s.io/api/certificates/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/admissioncontroller/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
+	"github.com/gardener/gardener/pkg/utils/secrets"
+)
+
+func (a *gardenerAdmissionController) validatingWebhookConfiguration(caSecret *corev1.Secret) *admissionregistrationv1.ValidatingWebhookConfiguration {
+	var (
+		failurePolicyFail     = admissionregistrationv1.Fail
+		sideEffectsNone       = admissionregistrationv1.SideEffectClassNone
+		matchPolicyEquivalent = admissionregistrationv1.Equivalent
+
+		caBundle = caSecret.Data[secrets.DataKeyCertificateBundle]
+	)
+
+	validatingWebhook := &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: DeploymentName,
+		},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
+			{
+				Name:                    "validate-namespace-deletion.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Delete},
+					Rule: admissionregistrationv1.Rule{
+						APIGroups:   []string{corev1.GroupName},
+						APIVersions: []string{"v1"},
+						Resources:   []string{"namespaces"},
+					},
+				}},
+				FailurePolicy: &failurePolicyFail,
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						v1beta1constants.GardenRole: v1beta1constants.GardenRoleProject,
+					},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/validate-namespace-deletion", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			{
+				Name:                    "validate-kubeconfig-secrets.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule: admissionregistrationv1.Rule{
+						APIGroups:   []string{corev1.GroupName},
+						APIVersions: []string{"v1"},
+						Resources:   []string{"secrets"},
+					},
+				}},
+				FailurePolicy: &failurePolicyFail,
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{Key: v1beta1constants.GardenRole, Operator: metav1.LabelSelectorOpIn, Values: []string{v1beta1constants.GardenRoleProject}},
+						{Key: v1beta1constants.LabelApp, Operator: metav1.LabelSelectorOpNotIn, Values: []string{v1beta1constants.LabelGardener}},
+					},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/validate-kubeconfig-secrets", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			{
+				Name:                    "audit-policies.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"shoots"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"configmaps"},
+						},
+					},
+				},
+				FailurePolicy: &failurePolicyFail,
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						v1beta1constants.GardenRole: v1beta1constants.GardenRoleProject,
+					},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/audit-policies", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			{
+				Name:                    "authentication-configuration.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"shoots"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"configmaps"},
+						},
+					},
+				},
+				FailurePolicy: &failurePolicyFail,
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						v1beta1constants.GardenRole: v1beta1constants.GardenRoleProject,
+					},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/authentication-configuration", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			{
+				Name:                    "authorization-configuration.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"shoots"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"configmaps"},
+						},
+					},
+				},
+				FailurePolicy: &failurePolicyFail,
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						v1beta1constants.GardenRole: v1beta1constants.GardenRoleProject,
+					},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/authorization-configuration", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			{
+				Name:                    "shoot-kubeconfig-secret-ref.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"secrets"},
+						},
+					},
+				},
+				FailurePolicy: &failurePolicyFail,
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						v1beta1constants.GardenRole: v1beta1constants.GardenRoleProject,
+					},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/validate-shoot-kubeconfig-secret-ref", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			{
+				Name:                    "update-restriction.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{
+							admissionregistrationv1.Create,
+							admissionregistrationv1.Update,
+							admissionregistrationv1.Delete,
+						},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"secrets", "configmaps"},
+						},
+					},
+				},
+				FailurePolicy: &failurePolicyFail,
+				ObjectSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						v1beta1constants.LabelUpdateRestriction: "true",
+					},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/update-restriction", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			{
+				Name:                    "finalizer-restriction.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{
+							admissionregistrationv1.Create,
+							admissionregistrationv1.Update,
+						},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"*"},
+							Resources:   []string{"secrets", "configmaps"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{
+							admissionregistrationv1.Create,
+							admissionregistrationv1.Update,
+						},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"*"},
+							Resources:   []string{"shoots", "secretbindings", "quotas", "namespacedcloudprofiles"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{
+							admissionregistrationv1.Create,
+							admissionregistrationv1.Update,
+						},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{securityv1alpha1.GroupName},
+							APIVersions: []string{"*"},
+							Resources:   []string{"credentialsbindings", "workloadidentities"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{
+							admissionregistrationv1.Create,
+							admissionregistrationv1.Update,
+						},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{operationsv1alpha1.GroupName},
+							APIVersions: []string{"*"},
+							Resources:   []string{"bastions"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{
+							admissionregistrationv1.Create,
+							admissionregistrationv1.Update,
+						},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{rbacv1.GroupName},
+							APIVersions: []string{"*"},
+							Resources:   []string{"roles", "rolebindings"},
+						},
+					},
+				},
+				MatchConditions: []admissionregistrationv1.MatchCondition{
+					{
+						Name: "request-might-change-finalizers",
+						Expression: "(object != null && has(object.metadata.finalizers) && object.metadata.finalizers.size() > 0) || " +
+							"(oldObject != null && has(oldObject.metadata.finalizers) && oldObject.metadata.finalizers.size() > 0)",
+					},
+				},
+				FailurePolicy: &failurePolicyFail,
+				MatchPolicy:   &matchPolicyEquivalent,
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/finalizer-restriction", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+		},
+	}
+
+	if a.values.ResourceAdmissionConfiguration != nil {
+		validatingWebhook.Webhooks = append(validatingWebhook.Webhooks, admissionregistrationv1.ValidatingWebhook{
+			Name:                    "validate-resource-size.gardener.cloud",
+			AdmissionReviewVersions: []string{"v1", "v1beta1"},
+			TimeoutSeconds:          new(int32(10)),
+			Rules:                   buildWebhookConfigRulesForResourceSize(a.values.ResourceAdmissionConfiguration),
+			FailurePolicy:           &failurePolicyFail,
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{Key: v1beta1constants.GardenRole, Operator: metav1.LabelSelectorOpIn, Values: []string{v1beta1constants.GardenRoleProject}},
+					{Key: v1beta1constants.LabelApp, Operator: metav1.LabelSelectorOpNotIn, Values: []string{v1beta1constants.LabelGardener}},
+				},
+			},
+			ClientConfig: admissionregistrationv1.WebhookClientConfig{
+				URL:      buildClientConfigURL("/webhooks/validate-resource-size", a.namespace),
+				CABundle: caBundle,
+			},
+			SideEffects: &sideEffectsNone,
+		})
+	}
+
+	if a.values.AuthorizerRestrictionsEnabled {
+		validatingWebhook.Webhooks = append(validatingWebhook.Webhooks,
+			admissionregistrationv1.ValidatingWebhook{
+				Name:                    "seed-restriction.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"configmaps", "secrets", "serviceaccounts"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{rbacv1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"clusterrolebindings"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{coordinationv1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"leases"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{certificatesv1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"certificatesigningrequests"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"internalsecrets", "shootstates"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"backupentries"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update, admissionregistrationv1.Delete},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"backupbuckets"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update, admissionregistrationv1.Delete},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"seeds"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{operationsv1alpha1.GroupName},
+							APIVersions: []string{"v1alpha1"},
+							Resources:   []string{"bastions"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"controllerinstallations"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{seedmanagementv1alpha1.GroupName},
+							APIVersions: []string{"v1alpha1"},
+							Resources:   []string{"gardenlets", "managedseeds"},
+						},
+					},
+				},
+				MatchConditions: []admissionregistrationv1.MatchCondition{
+					{Name: "spec-changed-or-not-update", Expression: `request.operation != 'UPDATE' || object.spec != oldObject.spec`},
+				},
+				FailurePolicy: &failurePolicyFail,
+				MatchPolicy:   &matchPolicyEquivalent,
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/admission/seedrestriction", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			admissionregistrationv1.ValidatingWebhook{
+				Name:                    "shoot-restriction.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"configmaps", "secrets"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{gardencorev1beta1.SchemeGroupVersion.Version},
+							Resources:   []string{"backupbuckets", "backupentries", "internalsecrets", "projects", "shoots"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{gardencorev1beta1.SchemeGroupVersion.Version},
+							Resources:   []string{"backupbuckets", "backupentries", "controllerinstallations"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{operationsv1alpha1.GroupName},
+							APIVersions: []string{"v1alpha1"},
+							Resources:   []string{"bastions"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{seedmanagementv1alpha1.GroupName},
+							APIVersions: []string{"v1alpha1"},
+							Resources:   []string{"gardenlets"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{seedmanagementv1alpha1.GroupName},
+							APIVersions: []string{"v1alpha1"},
+							Resources:   []string{"managedseeds"},
+						},
+					},
+				},
+				MatchConditions: []admissionregistrationv1.MatchCondition{
+					{Name: "spec-changed-or-not-update", Expression: `request.operation != 'UPDATE' || object.spec != oldObject.spec`},
+				},
+				FailurePolicy: &failurePolicyFail,
+				MatchPolicy:   &matchPolicyEquivalent,
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/admission/shootrestriction", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+			admissionregistrationv1.ValidatingWebhook{
+				Name:                    "self-hosted-shoot-extension-serviceaccounts.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+					Rule: admissionregistrationv1.Rule{
+						APIGroups:   []string{corev1.GroupName},
+						APIVersions: []string{"v1"},
+						Resources:   []string{"serviceaccounts", "serviceaccounts/token"},
+					},
+				}},
+				FailurePolicy: &failurePolicyFail,
+				MatchPolicy:   &matchPolicyEquivalent,
+				MatchConditions: []admissionregistrationv1.MatchCondition{{
+					Name:       "self-hosted-shoot-extension-serviceaccount-prefix",
+					Expression: fmt.Sprintf("request.name.startsWith('%s')", v1beta1constants.ExtensionShootServiceAccountPrefix),
+				}},
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key:      v1beta1constants.GardenRole,
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{v1beta1constants.GardenRoleProject},
+					}},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/admission/shootserviceaccounts", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+		)
+	}
+
+	return validatingWebhook
+}
+
+func (a *gardenerAdmissionController) mutatingWebhookConfiguration(caSecret *corev1.Secret) *admissionregistrationv1.MutatingWebhookConfiguration {
+	var (
+		failurePolicyFail = admissionregistrationv1.Fail
+		sideEffectsNone   = admissionregistrationv1.SideEffectClassNone
+
+		caBundle = caSecret.Data[secrets.DataKeyCertificateBundle]
+	)
+
+	return &admissionregistrationv1.MutatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: DeploymentName,
+		},
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
+			{
+				Name:                    "sync-provider-secret-labels.gardener.cloud",
+				AdmissionReviewVersions: []string{"v1", "v1beta1"},
+				TimeoutSeconds:          new(int32(10)),
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{corev1.SchemeGroupVersion.Version},
+							Resources:   []string{"secrets"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{gardencorev1beta1.SchemeGroupVersion.Version},
+							Resources:   []string{"internalsecrets"},
+						},
+					},
+				},
+				FailurePolicy: &failurePolicyFail,
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						v1beta1constants.GardenRole: v1beta1constants.GardenRoleProject,
+					},
+				},
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					URL:      buildClientConfigURL("/webhooks/sync-provider-secret-labels", a.namespace),
+					CABundle: caBundle,
+				},
+				SideEffects: &sideEffectsNone,
+			},
+		},
+	}
+}
+
+func buildWebhookConfigRulesForResourceSize(config *admissioncontrollerconfigv1alpha1.ResourceAdmissionConfiguration) []admissionregistrationv1.RuleWithOperations {
+	if config == nil || len(config.Limits) == 0 {
+		return nil
+	}
+	rules := make([]admissionregistrationv1.RuleWithOperations, 0, len(config.Limits))
+
+	for _, limit := range config.Limits {
+		rules = append(rules, admissionregistrationv1.RuleWithOperations{
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+			Rule: admissionregistrationv1.Rule{
+				APIGroups:   limit.APIGroups,
+				APIVersions: limit.APIVersions,
+				Resources:   limit.Resources,
+			},
+		})
+	}
+
+	return rules
+}
+
+func buildClientConfigURL(webhookPath, namespace string) *string {
+	return new(fmt.Sprintf("https://%s.%s%s", ServiceName, namespace, webhookPath))
+}

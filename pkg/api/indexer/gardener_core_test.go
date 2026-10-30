@@ -1,0 +1,399 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package indexer_test
+
+import (
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	gomegatypes "github.com/onsi/gomega/types"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	. "github.com/gardener/gardener/pkg/api/indexer"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+)
+
+var _ = Describe("Core", func() {
+	var indexer *fakeFieldIndexer
+
+	BeforeEach(func() {
+		indexer = &fakeFieldIndexer{}
+	})
+
+	DescribeTable("#AddProjectNamespace",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddProjectNamespace(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.Project{}))
+			Expect(indexer.field).To(Equal("spec.namespace"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no Project", &corev1.Secret{}, ConsistOf("")),
+		Entry("Project w/o namespace", &gardencorev1beta1.Project{}, ConsistOf("")),
+		Entry("Project w/ namespace", &gardencorev1beta1.Project{Spec: gardencorev1beta1.ProjectSpec{Namespace: new("namespace")}}, ConsistOf("namespace")),
+	)
+
+	DescribeTable("#AddShootAuditPolicyConfigMapName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddShootAuditPolicyConfigMapName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.Shoot{}))
+			Expect(indexer.field).To(Equal("spec.kubernetes.kubeAPIServer.auditConfig.auditPolicy.configMapRef.name"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no Shoot", &corev1.Secret{}, ConsistOf("")),
+		Entry("Shoot w/o kubeAPIServer", &gardencorev1beta1.Shoot{}, ConsistOf("")),
+		Entry("Shoot w/ kubeAPIServer but w/o auditConfig", &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{}}}}, ConsistOf("")),
+		Entry("Shoot w/ auditConfig but w/o configMapRef", &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{AuditConfig: &gardencorev1beta1.AuditConfig{AuditPolicy: &gardencorev1beta1.AuditPolicy{}}}}}}, ConsistOf("")),
+		Entry("Shoot w/ configMapRef", &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{AuditConfig: &gardencorev1beta1.AuditConfig{AuditPolicy: &gardencorev1beta1.AuditPolicy{ConfigMapRef: &corev1.ObjectReference{Name: "audit-policy"}}}}}}}, ConsistOf("audit-policy")),
+	)
+
+	DescribeTable("#AddShootAuthenticationConfigMapName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddShootAuthenticationConfigMapName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.Shoot{}))
+			Expect(indexer.field).To(Equal("spec.kubernetes.kubeAPIServer.structuredAuthentication.configMapName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no Shoot", &corev1.Secret{}, ConsistOf("")),
+		Entry("Shoot w/o kubeAPIServer", &gardencorev1beta1.Shoot{}, ConsistOf("")),
+		Entry("Shoot w/ kubeAPIServer but w/o structuredAuthentication", &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{}}}}, ConsistOf("")),
+		Entry("Shoot w/ structuredAuthentication", &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{StructuredAuthentication: &gardencorev1beta1.StructuredAuthentication{ConfigMapName: "auth-config"}}}}}, ConsistOf("auth-config")),
+	)
+
+	DescribeTable("#AddShootAuthorizationConfigMapName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddShootAuthorizationConfigMapName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.Shoot{}))
+			Expect(indexer.field).To(Equal("spec.kubernetes.kubeAPIServer.structuredAuthorization.configMapName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no Shoot", &corev1.Secret{}, ConsistOf("")),
+		Entry("Shoot w/o kubeAPIServer", &gardencorev1beta1.Shoot{}, ConsistOf("")),
+		Entry("Shoot w/ kubeAPIServer but w/o structuredAuthorization", &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{}}}}, ConsistOf("")),
+		Entry("Shoot w/ structuredAuthorization", &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{StructuredAuthorization: &gardencorev1beta1.StructuredAuthorization{ConfigMapName: "authz-config"}}}}}, ConsistOf("authz-config")),
+	)
+
+	DescribeTable("#AddShootSeedName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddShootSeedName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.Shoot{}))
+			Expect(indexer.field).To(Equal("spec.seedName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no Shoot", &corev1.Secret{}, ConsistOf("")),
+		Entry("Shoot w/o seedName", &gardencorev1beta1.Shoot{}, ConsistOf("")),
+		Entry("Shoot w/ seedName", &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{SeedName: new("seed")}}, ConsistOf("seed")),
+	)
+
+	DescribeTable("#AddShootStatusSeedName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddShootStatusSeedName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.Shoot{}))
+			Expect(indexer.field).To(Equal("status.seedName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no Shoot", &corev1.Secret{}, ConsistOf("")),
+		Entry("Shoot w/o seedName", &gardencorev1beta1.Shoot{}, ConsistOf("")),
+		Entry("Shoot w/ seedName", &gardencorev1beta1.Shoot{Status: gardencorev1beta1.ShootStatus{SeedName: new("seed")}}, ConsistOf("seed")),
+	)
+
+	DescribeTable("#AddBackupBucketSeedName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddBackupBucketSeedName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.BackupBucket{}))
+			Expect(indexer.field).To(Equal("spec.seedName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no BackupBucket", &corev1.Secret{}, ConsistOf("")),
+		Entry("BackupBucket w/o seedName", &gardencorev1beta1.BackupBucket{}, ConsistOf("")),
+		Entry("BackupBucket w/ seedName", &gardencorev1beta1.BackupBucket{Spec: gardencorev1beta1.BackupBucketSpec{SeedName: new("seed")}}, ConsistOf("seed")),
+	)
+
+	DescribeTable("#AddBackupBucketShootRefName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddBackupBucketShootRefName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.BackupBucket{}))
+			Expect(indexer.field).To(Equal("spec.shootRef.name"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no BackupBucket", &corev1.Secret{}, ConsistOf("")),
+		Entry("BackupBucket w/o shootRef", &gardencorev1beta1.BackupBucket{}, ConsistOf("")),
+		Entry("BackupBucket w/ shootRef", &gardencorev1beta1.BackupBucket{Spec: gardencorev1beta1.BackupBucketSpec{ShootRef: &corev1.ObjectReference{Name: "shoot-name", Namespace: "shoot-namespace"}}}, ConsistOf("shoot-name")),
+	)
+
+	DescribeTable("#AddBackupBucketShootRefNamespace",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddBackupBucketShootRefNamespace(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.BackupBucket{}))
+			Expect(indexer.field).To(Equal("spec.shootRef.namespace"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no BackupBucket", &corev1.Secret{}, ConsistOf("")),
+		Entry("BackupBucket w/o shootRef", &gardencorev1beta1.BackupBucket{}, ConsistOf("")),
+		Entry("BackupBucket w/ shootRef", &gardencorev1beta1.BackupBucket{Spec: gardencorev1beta1.BackupBucketSpec{ShootRef: &corev1.ObjectReference{Name: "shoot-name", Namespace: "shoot-namespace"}}}, ConsistOf("shoot-namespace")),
+	)
+
+	DescribeTable("#AddBackupEntrySeedName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddBackupEntrySeedName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.BackupEntry{}))
+			Expect(indexer.field).To(Equal("spec.seedName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no BackupEntry", &corev1.Secret{}, ConsistOf("")),
+		Entry("BackupEntry w/o seedName", &gardencorev1beta1.BackupEntry{}, ConsistOf("")),
+		Entry("BackupEntry w/ seedName", &gardencorev1beta1.BackupEntry{Spec: gardencorev1beta1.BackupEntrySpec{SeedName: new("seed")}}, ConsistOf("seed")),
+	)
+
+	DescribeTable("#AddBackupEntryShootRefName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddBackupEntryShootRefName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.BackupEntry{}))
+			Expect(indexer.field).To(Equal("spec.shootRef.name"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no BackupEntry", &corev1.Secret{}, ConsistOf("")),
+		Entry("BackupEntry w/o shootRef", &gardencorev1beta1.BackupEntry{}, ConsistOf("")),
+		Entry("BackupEntry w/ shootRef", &gardencorev1beta1.BackupEntry{Spec: gardencorev1beta1.BackupEntrySpec{ShootRef: &corev1.ObjectReference{Name: "shoot-name", Namespace: "shoot-namespace"}}}, ConsistOf("shoot-name")),
+	)
+
+	DescribeTable("#AddBackupEntryShootRefNamespace",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddBackupEntryShootRefNamespace(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.BackupEntry{}))
+			Expect(indexer.field).To(Equal("spec.shootRef.namespace"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no BackupEntry", &corev1.Secret{}, ConsistOf("")),
+		Entry("BackupEntry w/o shootRef", &gardencorev1beta1.BackupEntry{}, ConsistOf("")),
+		Entry("BackupEntry w/ shootRef", &gardencorev1beta1.BackupEntry{Spec: gardencorev1beta1.BackupEntrySpec{ShootRef: &corev1.ObjectReference{Name: "shoot-name", Namespace: "shoot-namespace"}}}, ConsistOf("shoot-namespace")),
+	)
+
+	DescribeTable("#AddBackupEntryBucketName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddBackupEntryBucketName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.BackupEntry{}))
+			Expect(indexer.field).To(Equal("spec.bucketName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no BackupEntry", &corev1.Secret{}, ConsistOf("")),
+		Entry("BackupEntry w/o bucketName", &gardencorev1beta1.BackupEntry{}, ConsistOf("")),
+		Entry("BackupEntry w/ bucketName", &gardencorev1beta1.BackupEntry{Spec: gardencorev1beta1.BackupEntrySpec{BucketName: "bucket"}}, ConsistOf("bucket")),
+	)
+
+	DescribeTable("#AddControllerInstallationSeedRefName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddControllerInstallationSeedRefName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.ControllerInstallation{}))
+			Expect(indexer.field).To(Equal("spec.seedRef.name"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no ControllerInstallation", &corev1.Secret{}, ConsistOf("")),
+		Entry("ControllerInstallation w/o seedRef", &gardencorev1beta1.ControllerInstallation{}, ConsistOf("")),
+		Entry("ControllerInstallation w/ seedRef", &gardencorev1beta1.ControllerInstallation{Spec: gardencorev1beta1.ControllerInstallationSpec{SeedRef: &corev1.ObjectReference{Name: "seed"}}}, ConsistOf("seed")),
+	)
+
+	DescribeTable("#AddControllerInstallationShootRefName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddControllerInstallationShootRefName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.ControllerInstallation{}))
+			Expect(indexer.field).To(Equal("spec.shootRef.name"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no ControllerInstallation", &corev1.Secret{}, ConsistOf("")),
+		Entry("ControllerInstallation w/o shootRef", &gardencorev1beta1.ControllerInstallation{}, ConsistOf("")),
+		Entry("ControllerInstallation w/ shootRef", &gardencorev1beta1.ControllerInstallation{Spec: gardencorev1beta1.ControllerInstallationSpec{ShootRef: &corev1.ObjectReference{Name: "shoot"}}}, ConsistOf("shoot")),
+	)
+
+	DescribeTable("#AddControllerInstallationRegistrationRefName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddControllerInstallationRegistrationRefName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.ControllerInstallation{}))
+			Expect(indexer.field).To(Equal("spec.registrationRef.name"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no ControllerInstallation", &corev1.Secret{}, ConsistOf("")),
+		Entry("ControllerInstallation w/o registrationRef", &gardencorev1beta1.ControllerInstallation{}, ConsistOf("")),
+		Entry("ControllerInstallation w/ registrationRef", &gardencorev1beta1.ControllerInstallation{Spec: gardencorev1beta1.ControllerInstallationSpec{RegistrationRef: corev1.ObjectReference{Name: "registration"}}}, ConsistOf("registration")),
+	)
+
+	DescribeTable("#AddInternalSecretType",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddInternalSecretType(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.InternalSecret{}))
+			Expect(indexer.field).To(Equal("type"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no InternalSecret", &corev1.Secret{}, ConsistOf("")),
+		Entry("InternalSecret w/o type", &gardencorev1beta1.InternalSecret{}, ConsistOf("")),
+		Entry("InternalSecret w/ type", &gardencorev1beta1.InternalSecret{Type: corev1.SecretTypeBootstrapToken}, ConsistOf("bootstrap.kubernetes.io/token")),
+	)
+
+	DescribeTable("#AddControllerInstallationShootRefNamespace",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddControllerInstallationShootRefNamespace(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.ControllerInstallation{}))
+			Expect(indexer.field).To(Equal("spec.shootRef.namespace"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no ControllerInstallation", &corev1.Secret{}, ConsistOf("")),
+		Entry("ControllerInstallation w/o shootRef", &gardencorev1beta1.ControllerInstallation{}, ConsistOf("")),
+		Entry("ControllerInstallation w/ shootRef", &gardencorev1beta1.ControllerInstallation{Spec: gardencorev1beta1.ControllerInstallationSpec{ShootRef: &corev1.ObjectReference{Name: "shoot", Namespace: "shoot-ns"}}}, ConsistOf("shoot-ns")),
+	)
+
+	DescribeTable("#AddNamespacedCloudProfileParentRefName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddNamespacedCloudProfileParentRefName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.NamespacedCloudProfile{}))
+			Expect(indexer.field).To(Equal("spec.parent.name"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no NamespacedCloudProfile", &corev1.Secret{}, ConsistOf("")),
+		Entry("NamespacedCloudProfile w/ parent", &gardencorev1beta1.NamespacedCloudProfile{Spec: gardencorev1beta1.NamespacedCloudProfileSpec{Parent: gardencorev1beta1.CloudProfileReference{Name: "parent-profile"}}}, ConsistOf("parent-profile")),
+	)
+
+	DescribeTable("#AddSecretBindingSecretRefName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddSecretBindingSecretRefName(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.SecretBinding{}))
+			Expect(indexer.field).To(Equal("spec.secretRef.name"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no SecretBinding", &corev1.Secret{}, ConsistOf("")),
+		Entry("SecretBinding w/ secretRef", &gardencorev1beta1.SecretBinding{SecretRef: corev1.SecretReference{Name: "secret", Namespace: "ns"}}, ConsistOf("secret")),
+	)
+
+	DescribeTable("#AddSecretBindingSecretRefNamespace",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddSecretBindingSecretRefNamespace(context.TODO(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.SecretBinding{}))
+			Expect(indexer.field).To(Equal("spec.secretRef.namespace"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no SecretBinding", &corev1.Secret{}, ConsistOf("")),
+		Entry("SecretBinding w/ secretRef", &gardencorev1beta1.SecretBinding{SecretRef: corev1.SecretReference{Name: "secret", Namespace: "ns"}}, ConsistOf("ns")),
+	)
+
+	DescribeTable("#AddShootAdmissionPluginKubeconfigSecretName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddShootAdmissionPluginKubeconfigSecretName(context.Background(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.Shoot{}))
+			Expect(indexer.field).To(Equal("spec.kubernetes.kubeAPIServer.admissionPlugins.kubeconfigSecretName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no Shoot", &corev1.Secret{}, BeEmpty()),
+		Entry("Shoot w/o kubeAPIServer", &gardencorev1beta1.Shoot{}, BeEmpty()),
+		Entry("Shoot w/o admission plugin kubeconfig references",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{
+				AdmissionPlugins: []gardencorev1beta1.AdmissionPlugin{{Name: "PodNodeSelector"}},
+			}}}},
+			BeEmpty(),
+		),
+		Entry("Shoot w/ admission plugin kubeconfig references",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{
+				AdmissionPlugins: []gardencorev1beta1.AdmissionPlugin{
+					{Name: "plugin-1", KubeconfigSecretName: new("secret-1")},
+					{Name: "plugin-2"},
+					{Name: "plugin-3", KubeconfigSecretName: new("secret-2")},
+				},
+			}}}},
+			ConsistOf("secret-1", "secret-2"),
+		),
+	)
+
+	DescribeTable("#AddShootStructuredAuthorizationKubeconfigSecretName",
+		func(obj client.Object, matcher gomegatypes.GomegaMatcher) {
+			Expect(AddShootStructuredAuthorizationKubeconfigSecretName(context.Background(), indexer)).To(Succeed())
+
+			Expect(indexer.obj).To(Equal(&gardencorev1beta1.Shoot{}))
+			Expect(indexer.field).To(Equal("spec.kubernetes.kubeAPIServer.structuredAuthorization.kubeconfigs.secretName"))
+			Expect(indexer.extractValue).NotTo(BeNil())
+			Expect(indexer.extractValue(obj)).To(matcher)
+		},
+
+		Entry("no Shoot", &corev1.Secret{}, BeEmpty()),
+		Entry("Shoot w/o kubeAPIServer", &gardencorev1beta1.Shoot{}, BeEmpty()),
+		Entry("Shoot w/o structured authorization",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{}}}},
+			BeEmpty(),
+		),
+		Entry("Shoot w/ structured authorization kubeconfig references",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{
+				StructuredAuthorization: &gardencorev1beta1.StructuredAuthorization{Kubeconfigs: []gardencorev1beta1.AuthorizerKubeconfigReference{
+					{AuthorizerName: "webhook-1", SecretName: "secret-1"},
+					{AuthorizerName: "webhook-2", SecretName: "secret-2"},
+				}},
+			}}}},
+			ConsistOf("secret-1", "secret-2"),
+		),
+	)
+})

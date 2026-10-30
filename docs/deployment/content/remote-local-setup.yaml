@@ -1,0 +1,589 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: remote-local-setup
+  labels: {component: remote-local-setup}
+spec:
+  selector:
+    matchLabels: {component: remote-local-setup}
+  template:
+    metadata:
+      labels: {component: remote-local-setup}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+      - name: dev
+        image: docker:29-dind
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -ex -o pipefail
+          cd
+          mkdir -p ~/.cache/apk
+          ln -s ~/.cache/apk /etc/apk/cache
+          apk add apache2-utils bash bash-completion bat bind-tools conntrack-tools coreutils curl \
+                  diffutils dnsmasq docker-bash-completion findutils fzf g++ gawk gcompat git      \
+                  git-prompt grep helm inotify-tools jq k9s less lsof make mandoc mc moreutils     \
+                  mount ncurses neovim parallel procps sed strace tar tcpdump tmux tmux-doc tzdata \
+                  util-linux vim wget yq perl-utils
+          mkdir -p ~/.cache/wget
+          cd ~/.cache/wget
+          echo golang
+               VERSION=$(curl -sL https://golang.org/VERSION?m=text | awk 'NR==1{print}')
+               wget -N "https://go.dev/dl/$VERSION.linux-amd64.tar.gz"
+               tar -C /usr/local -xzf "$VERSION.linux-amd64.tar.gz"
+               ln -s /usr/local/go/bin/go /usr/local/bin/go
+               ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+          echo gardenlogin
+               VERSION=$(curl -sL https://raw.githubusercontent.com/gardener/gardenlogin/master/LATEST)
+               wget -N "https://github.com/gardener/gardenlogin/releases/download/$VERSION/gardenlogin_linux_amd64"
+               cp gardenlogin_linux_amd64 /usr/local/bin/gardenlogin
+               chmod +x /usr/local/bin/gardenlogin
+               ln -s "$(which gardenlogin)" /usr/local/bin/kubectl-gardenlogin
+          echo gardenctl
+               VERSION=$(curl -sL https://raw.githubusercontent.com/gardener/gardenctl-v2/master/LATEST)
+               wget -N "https://github.com/gardener/gardenctl-v2/releases/download/$VERSION/gardenctl_v2_linux_amd64"
+               cp gardenctl_v2_linux_amd64 /usr/local/bin/gardenctl
+               chmod +x /usr/local/bin/gardenctl
+               ln -s "$(which gardenctl)" /usr/local/bin/g
+          echo kind
+               VERSION=$(curl -sL https://api.github.com/repos/kubernetes-sigs/kind/releases/latest | jq '.tag_name // "v0.24.0"' -r)
+               wget -N "https://kind.sigs.k8s.io/dl/$VERSION/kind-linux-amd64"
+               cp kind-linux-amd64 /usr/local/bin/kind
+               chmod +x /usr/local/bin/kind
+          echo kns
+               wget -N "https://raw.githubusercontent.com/blendle/kns/master/bin/kns"
+               cp kns /usr/local/bin/kns
+               chmod +x /usr/local/bin/kns
+          echo krew
+               VERSION=$(curl -sL https://api.github.com/repos/kubernetes-sigs/krew/releases/latest | jq '.tag_name // "v0.4.4"' -r)
+               wget -N "https://github.com/kubernetes-sigs/krew/releases/download/$VERSION/krew-linux_amd64.tar.gz"
+               tar --no-same-owner -xzf krew-linux_amd64.tar.gz ./krew-linux_amd64
+               mv krew-linux_amd64 /usr/local/bin/krew
+          echo ktx
+               wget -N "https://raw.githubusercontent.com/blendle/kns/master/bin/ktx"
+               cp ktx /usr/local/bin/ktx
+               chmod +x /usr/local/bin/ktx
+          echo kube-ps1
+               wget -N "https://raw.githubusercontent.com/jonmosco/kube-ps1/master/kube-ps1.sh"
+               cp kube-ps1.sh /usr/local/bin/kube-ps1.sh
+          echo kubectl
+               VERSION=$(curl -sL https://dl.k8s.io/release/stable.txt)
+               wget -N "https://dl.k8s.io/release/$VERSION/bin/linux/amd64/kubectl"
+               cp kubectl /usr/local/bin/kubectl
+               chmod +x /usr/local/bin/kubectl
+               ln -s "$(which kubectl)" /usr/local/bin/k
+          echo tmux-completion
+               wget -N "https://raw.githubusercontent.com/imomaliev/tmux-bash-completion/master/completions/tmux"
+               cp tmux /usr/share/bash-completion/completions/tmux
+          echo yaml2json
+               VERSION=$(curl -sL https://api.github.com/repos/bronze1man/yaml2json/releases/latest | jq '.tag_name // "v1.3.3"' -r)
+               wget -N "https://github.com/bronze1man/yaml2json/releases/download/$VERSION/yaml2json_linux_amd64"
+               cp yaml2json_linux_amd64 /usr/local/bin/yaml2json
+               chmod +x /usr/local/bin/yaml2json
+          cd
+          echo delve           && go install github.com/go-delve/delve/cmd/dlv@latest
+          echo gron            && go install github.com/tomnomnom/gron@latest
+          echo ginkgo          && go install github.com/onsi/ginkgo/v2/ginkgo@latest
+          echo stern           && go install github.com/stern/stern@latest
+          echo neat            && krew install neat
+          echo node-shell      && krew install node-shell
+
+          # Resolve local.gardener.cloud domains using local DNS server (conditional forwarding to bind9)
+          mkdir -p /etc/dnsmasq.d
+          echo '
+          listen-address=127.0.0.1
+          bind-interfaces
+          server=/.local.gardener.cloud/172.18.255.53
+          ' > /etc/dnsmasq.d/gardener.conf
+          sed '1inameserver 127.0.0.1' /etc/resolv.conf > /tmp/resolv.conf && cat /tmp/resolv.conf > /etc/resolv.conf
+          nice dnsmasq --no-daemon --log-debug --log-queries 2>&1 | ts > ~/.dnsmasq.log &
+
+          ln -s /usr/share/zoneinfo/Europe/Berlin /etc/localtime
+
+          cat > ~/greeting.sh <<"EOF"
+          [ -n "$TMUX" ] && exit
+          export LANG=C.UTF-8
+          export TERM=xterm-256color
+          normal='\e[0m'; green='\e[1;32m'; yellow='\e[1;33m'; cyan='\e[1;36m'; n=$normal; g=$green; y=$yellow; c=$cyan
+          echo -e "$(
+          cat <<GREETING_EOF
+          ${c}Welcome${y} to the remote local setup pod of ${c}Gardener${y}!${n}
+
+          ${c}Documentation:${n} https://github.com/gardener/gardener/blob/master/docs/deployment/getting_started_locally.md
+          ${y}To ${c}exec${y} into this pod, run '${g}kubectl exec -it remote-local-setup-0 -- sh${y}'${n}
+
+          There are multiple variants of the local setup of Gardener
+          that can be prepared in a tmux session for convenience:
+
+          - '${g}prepare-gardener.sh${n}'                        A basic 'make kind-up gardener-up' setup
+          - '${g}prepare-operator.sh${n}'                        A 'make kind-multi-zone-up operator-up' setup
+             ${g}                   ${n}                         with several tmux windows
+          - '${g}prepare-operator-complete.sh${n}'               A 'make kind-multi-zone-up gardener-up' setup,
+             ${g}                            ${n}                a complete local "development landscape"
+          - '${g}IPFAMILY=ipv6 prepare-operator-complete.sh${n}' As 'prepare-operator-complete.sh' but using IPv6. It requires
+             ${g}                                          ${n}  a shoot with IPv6 enabled.
+
+          The "Gardener HA" tmux session is prepared by default.
+          To switch to another tmux session, please run the respective script.
+          For simplicity, only one tmux session is supported at a time,
+          so the other tmux session is going to be purged when switching.
+
+          ${y}To attach to the ${c}tmux${y} session, run '${g}tmux a${y}'${n}.
+          - ${y}mouse${n} support is enabled
+            - use the mouse to select panes or windows and to resize panes
+            - scroll the pane content with the mouse,
+              leave the "scroll mode" with '${y}q${n}' or scroll to the very bottom
+            - after selecting some text, copy it with '${y}right-click${n}' or
+              cancel the selection with '${y}q${n}'
+            - paste the copied text with '${y}⌘ right-click${n}'
+          - '${y}CTRL-b${n}, ?' is the tmux prefix: press and hold the 'CTRL' key,
+              press the 'b' key, let go of both keys and then
+              press e.g. the '?' key to show the keyboard shortcuts.
+            '${y}d${n}' - detach from the tmux session
+            '${y}c${n}' - new window
+            '${y}%${n}' or '${y}\"${n}' - new pane (horizontal or vertical split)
+            '${y}z${n}' - zoom in/out
+            '${y},${n}' - rename the window
+            '${y}]${n}','${y}=${n}' - paste (with history).
+              The ${y}clipboard${n} is managed by tmux:
+              copy with the ${y}mouse${n}, paste with these shortcuts or the mouse.
+              You can turn off mouse reporting in the terminal emulator
+              (⌘-R in the default Mac OS Terminal app) for native copy/paste.
+          - '${y}CTRL-d${n}' - exit a bash session. Not be confused with 'CTRL-b, d'
+
+          ${y}When this remote local setup pod is not needed, consider ${c}stopping${y} it
+          by scaling the StatefulSet to zero replicas:${n}
+            kubectl scale statefulset remote-local-setup --replicas 0
+
+          ${y}To ${c}start${y} it, simply scale it to 1 replica:${n}
+            kubectl scale statefulset remote-local-setup --replicas 1
+
+          Note that the persistent disk with the home folder,
+          the Gardener git repository, the go build cache and
+          the local container registry is retained between restarts.
+
+          ${y}The purge this environment, delete both the StatefulSet and the pvc:${n}
+            kubectl delete statefulset remote-local-setup
+            kubectl delete pvc    home-remote-local-setup-0
+          GREETING_EOF
+          )"
+          if grep -q server ~/.kube/config 2>/dev/null; then
+            echo
+            echo -e "$(
+          cat <<GREETING_EOF
+          ${y}To connect to the ${c}KinD${y} cluster from your ${c}laptop${y} with kubectl, run:${n}
+            kubectl exec remote-local-setup-0 -- sh -c 'cat ~/.kube/config' > kubeconfig
+            kubectl port-forward remote-local-setup-0 $(< ~/.kube/config grep server | awk -F : '{print $4}')
+            # in another terminal:
+            export KUBECONFIG=\$PWD/kubeconfig
+          GREETING_EOF
+            )"
+          fi
+          echo
+          if [ ! -f /tmp/ready ]; then
+            echo -n "Please wait a few more seconds for the initialization of the remote local setup to complete"
+            while [ ! -f /tmp/ready ]; do echo -n .; sleep 1; done
+            echo
+            echo
+          fi
+          EOF
+          kubectl completion bash > /usr/share/bash-completion/completions/kubectl
+          gardenctl completion bash > /usr/share/bash-completion/completions/gardenctl
+          ~/go/bin/stern --completion=bash > /usr/share/bash-completion/completions/stern
+          cat > ~/.bash_profile <<"EOF"
+            source /etc/bash/bashrc
+            source ~/.bashrc
+          EOF
+          cat > ~/.bashrc <<"EOF"
+            [ -z "$TMUX" ] && export TERM=xterm-256color
+            export GOPATH=~/go
+            export PATH=$PATH:$GOPATH/bin:~/.krew/bin:~/go/src/github.com/gardener/gardener/hack/usage
+            export XDG_CONFIG_HOME=~/.config
+            export EDITOR=nvim
+            export KUBE_EDITOR=nvim
+            export HISTFILESIZE=10000
+            export HISTSIZE=10000
+            export HISTTIMEFORMAT="%F %T "
+            export HISTCONTROL=ignorespace
+            export PROMPT_COMMAND='history -a'
+            shopt -s histappend
+            source /usr/share/bash-completion/completions/kubectl
+            source /usr/share/bash-completion/completions/gardenctl
+            complete -o default -F __start_kubectl k
+            complete -o default -F __start_gardenctl g
+            source /usr/local/bin/kube-ps1.sh
+            source /usr/share/git-core/git-prompt.sh
+            export PS1='[\w $(printf "$(kube_ps1)")] $(__git_ps1 "(%s)") [$(date +%H:%M)]\$ '
+            stty -ixon
+            [ -n "$GCTL_SESSION_ID" ] || [ -n "$TERM_SESSION_ID" ] || export GCTL_SESSION_ID=$(uuidgen)
+            cd ~/go/src/github.com/gardener/gardener
+            function pr {
+              if [ "$#" -ne 1 ]; then
+                echo "Usage: pr <id> - checkout the HEAD of PR <id>"
+                exit 1
+              fi
+              git fetch origin pull/$1/head 2>/dev/null
+              git checkout FETCH_HEAD
+              git tag pr_$1_$(git log --format=%h -1 HEAD) 2>/dev/null
+              git log -1 --oneline
+            }
+            function pr_base {
+              if [ "$#" -ne 1 ]; then
+                  echo "Usage: pr_base <id> - checkout the BASE of PR <id>"
+                  exit 1
+              fi
+              git fetch origin 2>/dev/null
+              git fetch origin pull/$1/head 2>/dev/null
+              git checkout $(git merge-base FETCH_HEAD origin/master)
+              git tag pr_base_$1_$(git log --format=%h -1 HEAD) 2>/dev/null
+              git log -1 --oneline
+            }
+            # copy the kubeconfig that is created by make kind.*-up to ~/.kube/config
+            # the namespace can be set with kns in this copied kubeconfig without affecting the original kubeconfig
+            function sync_kubeconfig {
+              FOLDER=$1
+              while true; do
+                if grep -q current-context $FOLDER/kubeconfig 2>/dev/null; then
+                  echo "[cp_kubeconfig] Copying $FOLDER/kubeconfig to the default path: ~/.kube/config."
+                  cp $FOLDER/kubeconfig ~/.kube/config
+                fi
+                if ! inotifywait -qq --include kubeconfig -e close_write,delete $FOLDER 2>/dev/null; then
+                  echo "[cp_kubeconfig] Waiting for $FOLDER to be created"
+                  sleep 1
+                fi
+              done
+            }
+          EOF
+          cat > ~/.tmux.conf <<"EOF"
+            set -g mouse on
+            bind -T copy-mode-vi MouseDown3Pane send -X copy-selection-and-cancel
+            bind -T copy-mode-vi MouseDown2Pane send -X copy-selection # Command right-click to copy without leaving the copy mode
+            bind -T copy-mode-vi MouseDragEnd1Pane send -X select-pane
+            set -g mode-keys vi
+            set -g default-shell /bin/bash
+            set -g pane-border-status top
+            set -g pane-border-format " #{pane_index} #{pane_title} - #{pane_current_command} "
+            set -g window-size smallest
+            set -g history-limit 100000
+          EOF
+          mkdir -p ~/go/src/github.com/gardener
+          cd ~/go/src/github.com/gardener
+          [ -d gardener/.git ] || git clone -q https://github.com/gardener/gardener
+          mkdir -p /etc/docker
+          echo '{"insecure-registries":["registry.local.gardener.cloud:5001"]}' > /etc/docker/daemon.json
+          nice dockerd-entrypoint.sh 2>&1 | tee ~/.dockerd.log &
+          until docker ps >/dev/null 2>&1; do sleep 1; done
+
+          cat > /usr/local/bin/tmux_functions.sh <<"SCRIPT_EOF"
+          function wait_for_prompt {
+            # wait for the character '#' to appear in the last non empty line of the tmux pane indicating that the bash prompt is ready
+            while ! tmux capture-pane -p | grep -v ^$ | tail -n 1 | grep '#$' >/dev/null; do sleep .3; done
+          }
+
+          function wait_for_line {
+            # wait for a line to appear in the last non empty line of the tmux pane indicating that the input was echoed back by bash
+            while ! tmux capture-pane -p | grep -v ^$ | tail -n 1 | grep -F "$1" >/dev/null; do sleep .3; done
+          }
+
+          function send_commands {
+            wait_for_prompt
+            read -r line
+            tmux send "$line"
+            wait_for_line "$line"
+            while read -r line; do
+              tmux send Enter
+              wait_for_prompt
+              tmux send "$line"
+              wait_for_line "$line"
+            done
+            tmux send "$@"
+          }
+
+          function new_window {
+            tmux new-window -n "$1"
+            tmux select-pane -T "$2"
+            shift; shift
+            send_commands "$@"
+          }
+
+          function new_pane {
+            tmux split-window
+            tmux select-pane -T "$1"
+            tmux select-layout even-vertical
+            shift
+            send_commands "$@"
+          }
+
+          function new_horizontal_pane {
+            tmux split-window -h
+            tmux select-pane -T "$1"
+            shift
+            send_commands "$@"
+          }
+          SCRIPT_EOF
+
+          cat > /usr/local/bin/prepare-gardener.sh <<"SCRIPT_EOF"
+          tmux kill-session 2>/dev/null || true
+          cd ~/go/src/github.com/gardener/gardener
+          make kind-down kind-multi-zone-down >/dev/null 2>&1
+          cd - >/dev/null
+          mkdir -p ~/.kube
+          echo '{"current-context": "kind-gardener-local"}' > ~/.kube/config
+          source /usr/local/bin/tmux_functions.sh
+          tmux new -d -s gardener -n gardener -x 2000 -y 2000
+          tmux select-pane -T top; rm -f ~/.config/procps/toprc
+          for k in top Enter z Z T 1 Enter C c i t t m m V s 5 Enter E e W; do sleep .2; tmux send $k; done
+          new_pane "Set up the KinD cluster (Garden and Seed)" <<"EOF"
+            sync_kubeconfig dev-setup/kubeconfigs/runtime & sleep 1
+            nice make kind-down kind-up && kubectl wait --for=condition=ready pod -A --all --timeout=-1s
+          EOF
+          new_pane "Set up Gardener" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig
+            nice make gardener-up
+          EOF
+          new_pane "Create a shoot cluster" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            kubectl apply -f example/provider-local/shoot.yaml
+          EOF
+          new_pane "Access the shoot cluster" <<"EOF"
+            KUBECONFIG=<(generate-kubeconfig.sh) kubectl get pods -A
+          EOF
+          new_pane "Run simple e2e test (create and delete shoot)" <<"EOF"
+            GOFLAGS="-tags=musl" make test-e2e-local-simple
+          EOF
+          new_window "ad-hoc" "ad-hoc" Enter <<"EOF"
+            # Use this pane for ad-hoc commands
+          EOF
+          tmux select-window -t 0
+          tmux select-pane -t 1
+          SCRIPT_EOF
+
+          cat > /usr/local/bin/prepare-operator.sh <<"SCRIPT_EOF"
+          tmux kill-session 2>/dev/null || true
+          cd ~/go/src/github.com/gardener/gardener
+          make kind-down kind-multi-zone-down >/dev/null 2>&1
+          cd - >/dev/null
+          mkdir -p ~/.kube
+          echo '{"current-context": "kind-gardener-local"}' > ~/.kube/config
+          source /usr/local/bin/tmux_functions.sh
+          tmux new -d -s operator -n make -x 2000 -y 2000
+          tmux select-pane -T top; rm -f ~/.config/procps/toprc
+          for k in top Enter z Z T 1 Enter C c i t t m m V s 5 Enter E e W; do sleep .2; tmux send $k; done
+          new_pane "make kind-multi-zone-up" <<"EOF"
+            sync_kubeconfig dev-setup/kubeconfigs/runtime & sleep 1
+            nice make kind-multi-zone-down kind-multi-zone-up && kubectl wait --for=condition=ready pod -A --all --timeout=-1s
+          EOF
+          new_pane "make operator-up" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig
+            nice make operator-up
+          EOF
+          new_window "lifecycle" "Create" <<"EOF"
+            k apply -f example/operator/20-garden.yaml
+          EOF
+          new_pane "Reconcile" <<"EOF"
+            k annotate garden local 'gardener.cloud/operation=reconcile'
+          EOF
+          new_window "garden" "garden" Enter <<"EOF"
+            watch k get garden
+          EOF
+          new_pane "last operations" <<"EOF"
+            k get garden local -o json -w | jq -r --unbuffered '.status.lastOperation | [.progress, .description] | join(" ")' | awk '{if (prev!=$0) print; fflush(); prev=$0}' | sed --unbuffered 's/,/, \n/g; s/$/\n/' | ts
+          EOF
+          new_pane "garden conditions" Enter <<"EOF"
+            watch -c "k get garden local -o yaml | yq -P -C '[.status.conditions[] | del(.lastTransitionTime, .lastUpdateTime)]' | grep --color=Always -E '\"False\"| Unknown| Progressing|$'"
+          EOF
+          new_window "pods" "pods" Enter <<"EOF"
+            # the while loop is used instead of watch to allow for scrolling a longer list in the tmux pane
+            while true; do clear; k get pods -A -o wide; sleep 10s; done
+          EOF
+          new_pane "not ready pods" Enter <<"EOF"
+            watch "k get pods -A -o wide | awk '{split(\$3, a, \"/\"); if (a[1]!=a[2] || \$4 != \"Running\") {print}}'"
+          EOF
+          new_window "virtual-garden" "virtual-garden" <<"EOF"
+            hack/usage/generate-kubeconfig.sh virtual-garden > /tmp/virtual-garden-kubeconfig && export KUBECONFIG=/tmp/virtual-garden-kubeconfig
+          EOF
+          new_window "git" "git" Enter <<"EOF"
+            # Use 'pr' or 'pr_base' to checkout the head or base commit of a PR
+            git log --oneline -1
+          EOF
+          new_window "make generate" "make generate" <<"EOF"
+            GOFLAGS-"-tags=musl" nice make generate check test test-integration
+          EOF
+          new_window "ad-hoc" "ad-hoc" Enter <<"EOF"
+            # Use this pane for ad-hoc commands
+          EOF
+          tmux select-window -t 0
+          tmux select-pane -t 1
+          SCRIPT_EOF
+
+          cat > /usr/local/bin/prepare-operator-complete.sh <<"SCRIPT_EOF"
+          tmux kill-session 2>/dev/null || true
+          cd ~/go/src/github.com/gardener/gardener
+          make kind-down kind-multi-zone-down >/dev/null 2>&1
+          cd - >/dev/null
+          mkdir -p ~/.kube
+          echo '{"current-context": "kind-gardener-local"}' > ~/.kube/config
+          source /usr/local/bin/tmux_functions.sh
+          tmux new -d -s operator-complete -n make -x 2000 -y 2000
+          tmux select-pane -T top; rm -f ~/.config/procps/toprc
+          for k in top Enter z Z T 1 Enter C c i t t m m V s 5 Enter E e W; do sleep .2; tmux send $k; done
+          new_pane "make kind-multi-zone-up" <<"EOF"
+            sync_kubeconfig dev-setup/kubeconfigs/runtime & sleep 1
+            nice make kind-multi-zone-down kind-multi-zone-up && kubectl wait --for=condition=ready pod -A --all --timeout=-1s
+          EOF
+          new_pane "make operator-up" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig
+            nice make operator-up
+          EOF
+          new_pane "make gardener-up" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig
+            nice make gardener-up
+          EOF
+          new_window "garden" "garden" Enter <<"EOF"
+            watch k get garden
+          EOF
+          new_pane "last operations" <<"EOF"
+            k get garden local -o json -w | jq -r --unbuffered '.status.lastOperation | [.progress, .description] | join(" ")' | awk '{if (prev!=$0) print; fflush(); prev=$0}' | sed --unbuffered 's/,/, \n/g; s/$/\n/' | ts
+          EOF
+          new_pane "garden conditions" Enter <<"EOF"
+            watch -c "k get garden local -o yaml | yq -P -C '[.status.conditions[] | del(.lastTransitionTime, .lastUpdateTime)]' | grep --color=Always -E '\"False\"| Unknown| Progressing|$'"
+          EOF
+          new_window "seed&shoots" "seed&shoots" Enter <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            watch k get -A seeds,shoots
+          EOF
+          new_pane "last operations" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            k -n garden-local get shoot local -o json -w | jq -r --unbuffered '.status.lastOperation.description' | awk '{if (prev!=$0) print; fflush(); prev=$0}' | sed --unbuffered 's/,/, \n/g; s/$/\n/' | ts
+          EOF
+          new_pane "seed conditions" Enter <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            watch -c "k get seed local -o yaml | yq -P -C '[.status.conditions[] | del(.lastTransitionTime, .lastUpdateTime)]' | grep --color=Always -E '\"False\"| Unknown| Progressing|$'"
+          EOF
+          new_horizontal_pane "shoot conditions" Enter <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            watch -c "k get -n garden-local shoot local -o yaml | yq -P -C '[.status.conditions[] | del(.lastTransitionTime, .lastUpdateTime)]' | grep --color=Always -E '\"False\"| Unknown| Progressing|$'"
+          EOF
+          if [[ "$IPFAMILY" == "ipv6" ]]; then
+            new_window "shoot lifecycle" "Create" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/shoot-ipv6.yaml
+          EOF
+          else
+            new_window "shoot lifecycle" "Create" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/shoot.yaml
+          EOF
+          fi
+          new_pane "Reconcile" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            k annotate shoot local -n garden-local 'gardener.cloud/operation=reconcile'
+          EOF
+          new_pane "Delete" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            k annotate shoot local -n garden-local 'confirmation.gardener.cloud/deletion=true' && k delete shoot local -n garden-local
+          EOF
+          new_window "managed seed" "managed seed" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            watch k get -A seeds,shoots,managedseeds
+          EOF
+          if [[ "$IPFAMILY" == "ipv6" ]]; then
+            new_pane "create shoot" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/managedseeds/shoot-managedseed-ipv6.yaml
+          EOF
+          else
+            new_pane "create shoot" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/managedseeds/shoot-managedseed.yaml
+          EOF
+          fi
+          if [[ "$IPFAMILY" == "ipv6" ]]; then
+            new_pane "create managed seed" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/managedseeds/managedseed-ipv6.yaml
+          EOF
+          else
+            new_pane "create managed seed" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/managedseeds/managedseed.yaml
+          EOF
+          fi
+          new_pane "managed seed pods" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            generate-kubeconfig.sh --namespace garden --shoot-name managedseed > /tmp/shoot.kubeconfig && while true; do clear; k --kubeconfig /tmp/shoot.kubeconfig get pods -A -o wide; sleep 10s; done
+          EOF
+          new_window "runtime&seed pods" "pods" Enter <<"EOF"
+            # the while loop is used instead of watch to allow for scrolling a longer list in the tmux pane
+            while true; do clear; k get pods -A -o wide; sleep 10s; done
+          EOF
+          new_pane "not ready pods" Enter <<"EOF"
+            watch "k get pods -A -o wide | awk '{split(\$3, a, \"/\"); if (a[1]!=a[2] || \$4 != \"Running\") {print}}'"
+          EOF
+          new_window "shoot pods" "pods" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            generate-kubeconfig.sh > /tmp/shoot.kubeconfig && watch k --kubeconfig /tmp/shoot.kubeconfig get pods -A
+          EOF
+          new_pane "not ready pods" <<"EOF"
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            generate-kubeconfig.sh > /tmp/shoot.kubeconfig && watch "k --kubeconfig /tmp/shoot.kubeconfig get pods -A -o wide | awk '{split(\$3, a, \"/\"); if (a[1]!=a[2] || \$4 != \"Running\") {print}}'"
+          EOF
+          new_window "gardenctl" "gardenctl" <<"EOF"
+            gardenctl config set-garden local --kubeconfig $PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+            eval $(gardenctl kubectl-env bash)
+            g target --garden local --shoot local
+          EOF
+          new_window "git" "git" Enter <<"EOF"
+            # Use 'pr' or 'pr_base' to checkout the head or base commit of a PR
+            git log --oneline -1
+          EOF
+          new_window "make generate" "make generate" <<"EOF"
+            GOFLAGS="-tags=musl" nice make generate check test test-integration
+          EOF
+          new_window "ad-hoc" "ad-hoc" Enter <<"EOF"
+            # Use this pane for ad-hoc commands
+          EOF
+          tmux select-window -t 0
+          tmux select-pane -t 1
+          SCRIPT_EOF
+
+          chmod +x /usr/local/bin/prepare-*.sh
+
+          touch /tmp/ready
+          wait
+        startupProbe:
+          exec: {command: [cat, /tmp/ready]}
+          failureThreshold: 18
+        env: [{name: ENV, value: /root/greeting.sh}] # ash sources the ENV file
+        resources:
+          requests: {cpu: 14, memory: 28G}
+          limits:   {cpu: 14, memory: 28G}
+        securityContext:
+          privileged: true
+        volumeMounts:
+        # Without bind mounting `/sys/fs/cgroup` the nested shoot worker node failed in this DinD pod.
+        # Due to bind mounting `/sys/fs/cgroup` from the host, the docker containers in this DinD pod (i.e. the KinD cluster)
+        # use a top level cgroup and hence are not constrained by the resource limits of this pod.
+        # The host cgroups might leak until the nodes are recreated e.g. when the hosting Gardener dev shoot cluster is hibernated.
+        # To avoid conflicts on the top level docker cgroup, only one remote-local-setup pod per node is recommended which is enforced by the high resource requests.
+        # See
+        # https://github.com/kubernetes-sigs/kind/issues/303
+        # https://github.com/kubernetes/test-infra/blob/dcf27e157932c3e8680be4ae6cb8a4e2c7acf8cf/config/prow/config.yaml#L978-L988
+        # https://github.com/gardener/ci-infra/blob/dff565bced0f386dd1acb0743beb3831dae6c10d/config/prow/config.yaml#L288-L298
+        - {name: cgroup,  mountPath: /sys/fs/cgroup}
+        - {name: home,    mountPath: /root}
+        - {name: home,    mountPath: /var/lib/docker, subPath: .docker}
+        - {name: modules, mountPath: /lib/modules, readOnly: true}
+      volumes:
+      - {name: cgroup,  hostPath: {type: Directory, path: /sys/fs/cgroup}}
+      - {name: modules, hostPath: {type: Directory, path: /lib/modules}}
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata: {name: home}
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources: {requests: {storage: 80Gi}}
+      volumeMode: Filesystem

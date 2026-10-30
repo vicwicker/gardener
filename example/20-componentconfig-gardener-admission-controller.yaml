@@ -1,0 +1,38 @@
+---
+apiVersion: admissioncontroller.config.gardener.cloud/v1alpha1
+kind: AdmissionControllerConfiguration
+gardenClientConnection:
+  qps: 100
+  burst: 130
+logLevel: info
+logFormat: json
+server:
+  webhooks:
+    port: 2721
+    tls:
+      serverCertDir: dev/tls/gardener-admission-controller
+  healthProbes:
+    port: 2722
+  metrics:
+    port: 2723
+  resourceAdmissionConfiguration:
+    limits:
+    - apiGroups: ["core.gardener.cloud"]
+      apiVersions: ["*"]
+      resources: ["shoots"]
+      size: 100k
+    - apiGroups: [ "core.gardener.cloud" ]
+      apiVersions: [ "*" ]
+      resources: [ "projects" ]
+      count: 200
+    unrestrictedSubjects:
+    - kind: Group
+      name: gardener.cloud:system:seeds
+      apiGroup: rbac.authorization.k8s.io
+    operationMode: block
+  enableDebugHandlers: true
+debugging:
+  enableProfiling: false
+  enableContentionProfiling: false
+# featureGates:
+#   StrictAuditPolicyValidation: true

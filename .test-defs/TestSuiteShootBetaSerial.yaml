@@ -1,0 +1,26 @@
+apiVersion: testmachinery.sapcloud.io
+kind: TestDefinition
+metadata:
+  name: shoot-beta-serial-test-suite
+spec:
+  owner: gardener-oq@listserv.sap.com
+  description: shoot test suites that includes all serial beta tests
+
+  activeDeadlineSeconds: 7200
+  labels: ["shoot", "beta"]
+  behavior:
+  - serial
+
+  command: [bash, -c]
+  args:
+    - >-
+      go test -timeout=0 ./test/testmachinery/suites/shoot
+      --v -ginkgo.v -ginkgo.show-node-events -ginkgo.no-color
+      --report-file=$TM_EXPORT_PATH/report.json
+      -kubecfg=$TM_KUBECONFIG_PATH/gardener.config
+      -shoot-name=$SHOOT_NAME
+      -project-namespace=$PROJECT_NAMESPACE
+      -fenced=$FENCED
+      -ginkgo.focus="\[BETA\].*\[SERIAL\]"
+
+  image: golang:1.26.10

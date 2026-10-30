@@ -1,0 +1,170 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package garden
+
+import (
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+	. "github.com/gardener/gardener/test/e2e/gardener"
+)
+
+var _ = Describe("Garden Tests", Label("Garden", "default"), func() {
+	Describe("Create, Delete Garden", Label("simple"), Ordered, func() {
+		tc := NewGardenContext()
+
+		BeforeAll(func() {
+			tc.Init()
+
+			tc.SetGarden(defaultGarden(true))
+		})
+
+		ItShouldCreateGarden(tc)
+		ItShouldWaitForGardenToBeReconciledAndHealthy(tc)
+		ItShouldVerifyGardenManagedResourcesAndAwaitHealthiness(tc)
+		ItShouldVerifyIstioManagedResourcesAndAwaitHealthiness(tc)
+		ItShouldInitializeVirtualClusterClient(tc)
+
+		It("Verify Gardener APIs availability", func(ctx SpecContext) {
+			Eventually(ctx, tc.VirtualClusterKomega.List(&gardencorev1beta1.ShootList{})).Should(Succeed())
+			Eventually(ctx, tc.VirtualClusterKomega.List(&seedmanagementv1alpha1.ManagedSeedList{})).Should(Succeed())
+			Eventually(ctx, tc.VirtualClusterKomega.List(&operationsv1alpha1.BastionList{})).Should(Succeed())
+		}, SpecTimeout(time.Minute))
+
+		It("Verify virtual cluster extension installations", func(ctx SpecContext) {
+			controllerRegistrationList := &gardencorev1beta1.ControllerRegistrationList{}
+			Eventually(ctx, tc.VirtualClusterKomega.List(controllerRegistrationList)).Should(Succeed())
+			Expect(controllerRegistrationList.Items).To(ContainElement(MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("provider-local")})})))
+
+			controllerDeploymentList := &gardencorev1.ControllerDeploymentList{}
+			Eventually(ctx, tc.VirtualClusterKomega.List(controllerDeploymentList)).Should(Succeed())
+			Expect(controllerDeploymentList.Items).To(ContainElement(MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("provider-local")})})))
+		}, SpecTimeout(time.Minute))
+
+		It("Verify 'gardener-system-public' namespace and 'gardener-info' configmap exist", func(ctx SpecContext) {
+			namespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: gardencorev1beta1.GardenerSystemPublicNamespace,
+				},
+			}
+			Eventually(ctx, tc.VirtualClusterKomega.Get(namespace)).Should(Succeed())
+
+			configMap := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gardener-info",
+					Namespace: gardencorev1beta1.GardenerSystemPublicNamespace,
+				},
+			}
+			Eventually(ctx, tc.VirtualClusterKomega.Get(configMap)).Should(Succeed())
+			Expect(configMap.Data).To(HaveKey("gardenerAPIServer"))
+		}, SpecTimeout(time.Minute))
+
+		itShouldVerifyPrometheusHealthCheck(tc, "garden")
+		itShouldVerifyPrometheusHealthCheck(tc, "longterm")
+
+		ItShouldDeleteGarden(tc)
+		ItShouldWaitForGardenToBeDeleted(tc)
+		ItShouldCleanUp(tc)
+
+		It("Verify no leftover secrets", func(ctx SpecContext) {
+			secretList := &corev1.SecretList{}
+			Eventually(ctx, tc.GardenKomega.List(secretList, client.InNamespace(v1beta1constants.GardenNamespace), client.MatchingLabels{
+				secretsmanager.LabelKeyManagedBy:       secretsmanager.LabelValueSecretsManager,
+				secretsmanager.LabelKeyManagerIdentity: operatorv1alpha1.SecretManagerIdentityOperator,
+			})).Should(Succeed())
+
+			Expect(secretList.Items).To(BeEmpty())
+		}, SpecTimeout(time.Minute))
+
+		It("Verify CRD still present", func(ctx SpecContext) {
+			crdList := &apiextensionsv1.CustomResourceDefinitionList{}
+			Eventually(ctx, tc.GardenKomega.List(crdList)).Should(Succeed())
+			Expect(crdList.Items).To(ContainElement(MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("gardens.operator.gardener.cloud")})})))
+		}, SpecTimeout(time.Minute))
+
+		It("Verify gardener-resource-manager was deleted", func(ctx SpecContext) {
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      v1beta1constants.DeploymentNameGardenerResourceManager,
+					Namespace: v1beta1constants.GardenNamespace,
+				},
+			}
+
+			Eventually(ctx, tc.GardenKomega.Get(deployment)).Should(BeNotFoundError())
+		}, SpecTimeout(time.Minute))
+
+		ItShouldWaitForExtensionToReportDeletion(tc, "provider-local")
+
+	})
+})
+
+func itShouldVerifyPrometheusHealthCheck(tc *GardenContext, prometheusName string) {
+	rule := &monitoringv1.PrometheusRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      prometheusName + "-test-job-down",
+			Namespace: "garden",
+			Labels:    map[string]string{"prometheus": prometheusName},
+		},
+		Spec: monitoringv1.PrometheusRuleSpec{
+			Groups: []monitoringv1.RuleGroup{
+				{
+					Name: prometheusName + "-test-job-down",
+					Rules: []monitoringv1.Rule{
+						{
+							Record: "up",
+							Expr:   intstr.FromString("vector(0)"),
+							Labels: map[string]string{"job": "test"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ItShouldCreatePrometheusRuleForGarden(tc, rule)
+
+	It("Wait until ObservabilityComponentsHealthy is false", func(ctx SpecContext) {
+		Eventually(ctx, tc.GardenKomega.Object(tc.Garden)).Should(
+			HaveField("Status.Conditions", ContainElement(MatchFields(IgnoreExtras, Fields{
+				"Type":   Equal(gardencorev1beta1.ConditionType(v1beta1constants.ObservabilityComponentsHealthy)),
+				"Status": Equal(gardencorev1beta1.ConditionFalse),
+				"Reason": Equal("PrometheusHealthCheckDown"),
+				"Message": Equal(`There are health issues in Prometheus pod "garden/prometheus-` + prometheusName + `-0". ` +
+					`Access Prometheus UI and query for "healthcheck:up" for more details: healthcheck:up{job="test", task="target:down"} => 0`),
+			}))),
+		)
+	}, SpecTimeout(10*time.Minute))
+
+	ItShouldDeletePrometheusRuleForGarden(tc, rule)
+
+	It("Wait until ObservabilityComponentsHealthy is true", func(ctx SpecContext) {
+		Eventually(ctx, tc.GardenKomega.Object(tc.Garden)).Should(
+			HaveField("Status.Conditions", ContainElement(MatchFields(IgnoreExtras, Fields{
+				"Type":    Equal(gardencorev1beta1.ConditionType(v1beta1constants.ObservabilityComponentsHealthy)),
+				"Status":  Equal(gardencorev1beta1.ConditionTrue),
+				"Reason":  Equal("ObservabilityComponentsRunning"),
+				"Message": Equal("All observability components are healthy."),
+			}))),
+		)
+	}, SpecTimeout(10*time.Minute))
+}

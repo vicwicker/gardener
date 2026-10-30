@@ -1,0 +1,1590 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package vali_test
+
+import (
+	"context"
+
+	pvcautoscalerv1alpha1 "github.com/gardener/pvc-autoscaler/api/autoscaling/v1alpha1"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
+	gomegatypes "github.com/onsi/gomega/types"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+	istionetworkingv1alpha3 "istio.io/api/networking/v1alpha3"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
+	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	. "github.com/gardener/gardener/pkg/component/observability/logging/vali"
+	"github.com/gardener/gardener/pkg/component/test"
+	"github.com/gardener/gardener/pkg/features"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
+	"github.com/gardener/gardener/pkg/utils"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
+	testutils "github.com/gardener/gardener/pkg/utils/test"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+)
+
+const (
+	namespace                          = "shoot--foo--bar"
+	managedResourceName                = "vali"
+	managedResourceSecretName          = "managedresource-vali"
+	managedResourceNameTarget          = "vali-target"
+	managedResourceSecretNameTarget    = "managedresource-vali-target"
+	valiName                           = "vali"
+	valiConfigMapName                  = "vali-config-9a41ed42"
+	telegrafConfigMapName              = "telegraf-config-b4c38756"
+	valiImage                          = "vali:0.0.1"
+	curatorImage                       = "curator:0.0.1"
+	initLargeDirImage                  = "tune2fs:0.0.1"
+	telegrafImage                      = "telegraf-iptables:0.0.1"
+	kubeRBACProxyImage                 = "kube-rbac-proxy:0.0.1"
+	priorityClassName                  = "foo-bar"
+	valiHost                           = "vali.foo.bar"
+	valitailShootAccessSecretName      = "shoot-access-valitail"
+	kubeRBACProxyShootAccessSecretName = "shoot-access-kube-rbac-proxy"
+)
+
+var _ = Describe("Vali", func() {
+	Describe("#Deploy", func() {
+		var (
+			ctx = context.Background()
+
+			c                           client.Client
+			managedResource             *resourcesv1alpha1.ManagedResource
+			managedResourceSecret       *corev1.Secret
+			managedResourceTarget       *resourcesv1alpha1.ManagedResource
+			managedResourceSecretTarget *corev1.Secret
+			consistOf                   func(...client.Object) gomegatypes.GomegaMatcher
+
+			fakeSecretManager secretsmanager.Interface
+			storage           = resource.MustParse("60Gi")
+		)
+
+		BeforeEach(func() {
+			var err error
+			c = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+			fakeSecretManager = fakesecretsmanager.New(c, namespace)
+			consistOf = NewManagedResourceConsistOfObjectsMatcher(c, test.CmpOptsForIstio()...)
+
+			Expect(err).ToNot(HaveOccurred())
+
+			DeferCleanup(testutils.WithFeatureGate(features.DefaultFeatureGate, features.OpenTelemetryCollector, false))
+
+			By("Create secrets managed outside of this package for which secretsmanager.Get() will be called")
+			Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "generic-token-kubeconfig", Namespace: namespace}})).To(Succeed())
+		})
+
+		JustBeforeEach(func() {
+			managedResource = &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      managedResourceName,
+					Namespace: namespace,
+				},
+			}
+			managedResourceSecret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      managedResourceSecretName,
+					Namespace: namespace,
+				},
+			}
+
+			managedResourceTarget = &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      managedResourceNameTarget,
+					Namespace: namespace,
+				},
+			}
+			managedResourceSecretTarget = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      managedResourceSecretNameTarget,
+					Namespace: namespace,
+				},
+			}
+		})
+
+		Context("OpenTelemetryCollector featuregate disabled", func() {
+			It("should successfully deploy all resources for shoot", func() {
+				valiDeployer := New(
+					c,
+					namespace,
+					fakeSecretManager,
+					Values{
+						Replicas:                     1,
+						Storage:                      &storage,
+						ShootNodeLoggingEnabled:      true,
+						ValiImage:                    valiImage,
+						CuratorImage:                 curatorImage,
+						InitLargeDirImage:            initLargeDirImage,
+						TelegrafImage:                telegrafImage,
+						KubeRBACProxyImage:           kubeRBACProxyImage,
+						WithRBACProxy:                true,
+						PriorityClassName:            priorityClassName,
+						ClusterType:                  "shoot",
+						IngressHost:                  valiHost,
+						IstioIngressGatewayNamespace: "istio-ingress",
+						IsGardenCluster:              false,
+					},
+				)
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(BeNotFoundError())
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(BeNotFoundError())
+
+				Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+				Expect(c.Get(ctx, client.ObjectKey{Name: valitailShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(Succeed())
+				Expect(c.Get(ctx, client.ObjectKey{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(Succeed())
+
+				tlsSecret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vali-tls",
+						Namespace: namespace,
+					},
+				}
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret)).To(Succeed())
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+				expectedMr := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:            managedResourceName,
+						Namespace:       namespace,
+						Labels:          map[string]string{"care.gardener.cloud/condition-type": "ObservabilityComponentsHealthy"},
+						ResourceVersion: "1",
+					},
+					Spec: resourcesv1alpha1.ManagedResourceSpec{
+						Class: new("seed"),
+						SecretRefs: []corev1.LocalObjectReference{{
+							Name: managedResource.Spec.SecretRefs[0].Name,
+						}},
+						KeepObjects: new(false),
+					},
+				}
+				utilruntime.Must(references.InjectAnnotations(expectedMr))
+				Expect(managedResource).To(DeepEqual(expectedMr))
+				Expect(managedResource).To(consistOf(
+					getTelegrafConfigMap(),
+					getValiConfigMap(),
+					getVPA(),
+					getGateway(),
+					getVirtualService(),
+					getDestinationRule(),
+					getTLSSecret(tlsSecret),
+					getService(true, "shoot"),
+					getStatefulSet(true),
+					getServiceMonitor("shoot", true),
+					getPrometheusRule("shoot"),
+				))
+
+				managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+				Expect(managedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
+				Expect(managedResourceSecret.Immutable).To(Equal(new(true)))
+				Expect(managedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceTarget), managedResourceTarget)).To(Succeed())
+				expectedTargetMr := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:            managedResourceNameTarget,
+						Namespace:       namespace,
+						ResourceVersion: "1",
+						Labels:          map[string]string{"origin": "gardener"},
+					},
+					Spec: resourcesv1alpha1.ManagedResourceSpec{
+						InjectLabels: map[string]string{"shoot.gardener.cloud/no-cleanup": "true"},
+						SecretRefs: []corev1.LocalObjectReference{{
+							Name: managedResourceTarget.Spec.SecretRefs[0].Name,
+						}},
+						KeepObjects: new(false),
+					},
+				}
+				utilruntime.Must(references.InjectAnnotations(expectedTargetMr))
+				Expect(managedResourceTarget).To(DeepEqual(expectedTargetMr))
+				Expect(managedResourceTarget).To(consistOf(
+					getKubeRBACProxyClusterRoleBinding(),
+					getValitailClusterRole("gardener.cloud:logging:valitail", "gardener-valitail", "/vali/api/v1/push"),
+					getValitailClusterRoleBinding("gardener.cloud:logging:valitail", "gardener-valitail", "gardener.cloud:logging:valitail", "gardener-valitail"),
+				))
+
+				managedResourceSecretTarget.Name = managedResourceTarget.Spec.SecretRefs[0].Name
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecretTarget), managedResourceSecretTarget)).To(Succeed())
+				Expect(managedResourceSecretTarget.Type).To(Equal(corev1.SecretTypeOpaque))
+				Expect(managedResourceSecretTarget.Immutable).To(Equal(new(true)))
+				Expect(managedResourceSecretTarget.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+
+				test.PrometheusRule(getPrometheusRule("shoot"), "testdata/shoot-vali.prometheusrule.test.yaml")
+			})
+		})
+
+		Context("OpenTelemetryCollector featuregate enabled", func() {
+			BeforeEach(func() {
+				DeferCleanup(testutils.WithFeatureGate(features.DefaultFeatureGate, features.OpenTelemetryCollector, true))
+			})
+
+			It("should successfully deploy all resources except ShootLogging ones", func() {
+				valiDeployer := New(
+					c,
+					namespace,
+					fakeSecretManager,
+					Values{
+						Replicas:                     1,
+						Storage:                      &storage,
+						ShootNodeLoggingEnabled:      true,
+						ValiImage:                    valiImage,
+						CuratorImage:                 curatorImage,
+						InitLargeDirImage:            initLargeDirImage,
+						TelegrafImage:                telegrafImage,
+						KubeRBACProxyImage:           kubeRBACProxyImage,
+						WithRBACProxy:                false,
+						PriorityClassName:            priorityClassName,
+						ClusterType:                  "shoot",
+						IngressHost:                  valiHost,
+						IstioIngressGatewayNamespace: "istio-ingress",
+						IsGardenCluster:              false,
+					},
+				)
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(BeNotFoundError())
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(BeNotFoundError())
+
+				Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+				expectedMr := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:            managedResourceName,
+						Namespace:       namespace,
+						Labels:          map[string]string{"care.gardener.cloud/condition-type": "ObservabilityComponentsHealthy"},
+						ResourceVersion: "1",
+					},
+					Spec: resourcesv1alpha1.ManagedResourceSpec{
+						Class: new("seed"),
+						SecretRefs: []corev1.LocalObjectReference{{
+							Name: managedResource.Spec.SecretRefs[0].Name,
+						}},
+						KeepObjects: new(false),
+					},
+				}
+				utilruntime.Must(references.InjectAnnotations(expectedMr))
+				Expect(managedResource).To(DeepEqual(expectedMr))
+				Expect(managedResource).To(consistOf(
+					getValiConfigMap(),
+					getVPA(),
+					getService(true, "shoot"),
+					getStatefulSet(false),
+					getServiceMonitor("shoot", true),
+					getPrometheusRule("shoot"),
+				))
+
+				managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+				Expect(managedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
+				Expect(managedResourceSecret.Immutable).To(Equal(new(true)))
+				Expect(managedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceTarget), managedResourceTarget)).To(BeNotFoundError())
+				test.PrometheusRule(getPrometheusRule("shoot"), "testdata/shoot-vali.prometheusrule.test.yaml")
+			})
+		})
+
+		It("should successfully deploy all resources for seed", func() {
+			valiDeployer := New(
+				c,
+				namespace,
+				fakeSecretManager,
+				Values{
+					Replicas:                     1,
+					Storage:                      &storage,
+					ValiImage:                    valiImage,
+					CuratorImage:                 curatorImage,
+					InitLargeDirImage:            initLargeDirImage,
+					PriorityClassName:            priorityClassName,
+					ClusterType:                  "seed",
+					IstioIngressGatewayNamespace: "istio-ingress",
+					IsGardenCluster:              false,
+				},
+			)
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(BeNotFoundError())
+
+			Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: valitailShootAccessSecretName, Namespace: namespace}})).To(Succeed())
+			Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}})).To(Succeed())
+			Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: managedResourceSecretNameTarget, Namespace: namespace}})).To(Succeed())
+			Expect(c.Create(ctx, &resourcesv1alpha1.ManagedResource{ObjectMeta: metav1.ObjectMeta{Name: managedResourceNameTarget, Namespace: namespace}})).To(Succeed())
+
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKey{Name: valitailShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKey{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKey{Name: managedResourceSecretNameTarget, Namespace: namespace}, &corev1.Secret{})).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKey{Name: managedResourceNameTarget, Namespace: namespace}, &resourcesv1alpha1.ManagedResource{})).To(BeNotFoundError())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+			expectedMr := &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            managedResourceName,
+					Namespace:       namespace,
+					Labels:          map[string]string{"care.gardener.cloud/condition-type": "ObservabilityComponentsHealthy"},
+					ResourceVersion: "1",
+				},
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class: new("seed"),
+					SecretRefs: []corev1.LocalObjectReference{{
+						Name: managedResource.Spec.SecretRefs[0].Name,
+					}},
+					KeepObjects: new(false),
+				},
+			}
+			utilruntime.Must(references.InjectAnnotations(expectedMr))
+			Expect(managedResource).To(DeepEqual(expectedMr))
+			Expect(managedResource).To(consistOf(
+				getValiConfigMap(),
+				getService(false, "seed"),
+				getVPA(),
+				getStatefulSet(false),
+				getServiceMonitor("aggregate", false),
+				getPrometheusRule("aggregate"),
+			))
+
+			managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+			Expect(managedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
+			Expect(managedResourceSecret.Immutable).To(Equal(new(true)))
+			Expect(managedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+
+			test.PrometheusRule(getPrometheusRule("aggregate"), "testdata/aggregate-vali.prometheusrule.test.yaml")
+		})
+
+		DescribeTable("should deploy the PersistentVolumeClaimAutoscaler when PVCAutoscaler is enabled",
+			func(maxCapacity resource.Quantity, isGardenCluster bool) {
+				valiDeployer := New(
+					c,
+					namespace,
+					fakeSecretManager,
+					Values{
+						Replicas:                     1,
+						Storage:                      &storage,
+						ShootNodeLoggingEnabled:      true,
+						ValiImage:                    valiImage,
+						CuratorImage:                 curatorImage,
+						InitLargeDirImage:            initLargeDirImage,
+						TelegrafImage:                telegrafImage,
+						KubeRBACProxyImage:           kubeRBACProxyImage,
+						WithRBACProxy:                true,
+						PriorityClassName:            priorityClassName,
+						ClusterType:                  "shoot",
+						IngressHost:                  valiHost,
+						IstioIngressGatewayNamespace: "istio-ingress",
+						IsGardenCluster:              isGardenCluster,
+						PVCAutoscaling: PVCAutoscalingConfig{
+							Enabled:     true,
+							MaxCapacity: maxCapacity,
+						},
+					},
+				)
+
+				autoscalerName := ""
+				if isGardenCluster {
+					autoscalerName = "garden"
+				}
+
+				Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+
+				Expect(managedResource).To(NewManagedResourceContainsObjectsMatcher(c)(getPVCA(maxCapacity, autoscalerName)))
+			},
+			Entry("shoot max capacity", resource.MustParse("40Gi"), false),
+			Entry("seed max capacity", resource.MustParse("200Gi"), false),
+			Entry("garden max capacity", resource.MustParse("200Gi"), true),
+		)
+	})
+
+	Describe("#ResizeOrDeleteValiDataVolumeIfStorageNotTheSame", func() {
+		const (
+			valiPVCName         = "vali-vali-0"
+			valiStatefulSetName = "vali"
+			gardenNamespace     = "garden"
+		)
+
+		var (
+			ctx = context.TODO()
+
+			valiPVC         *corev1.PersistentVolumeClaim
+			sts             *appsv1.StatefulSet
+			managedResource *resourcesv1alpha1.ManagedResource
+
+			errNotFound             = &apierrors.StatusError{ErrStatus: metav1.Status{Reason: metav1.StatusReasonNotFound}}
+			errForbidden            = &apierrors.StatusError{ErrStatus: metav1.Status{Reason: metav1.StatusReasonForbidden}}
+			new200GiStorageQuantity = resource.MustParse("200Gi")
+			new100GiStorageQuantity = resource.MustParse("100Gi")
+			new80GiStorageQuantity  = resource.MustParse("80Gi")
+
+			fakeClient client.Client
+		)
+
+		BeforeEach(func() {
+			valiPVC = &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      valiPVCName,
+					Namespace: gardenNamespace,
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: map[corev1.ResourceName]resource.Quantity{
+							"storage": resource.MustParse("100Gi"),
+						},
+					},
+				},
+			}
+
+			sts = &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: valiStatefulSetName, Namespace: gardenNamespace, Generation: 2},
+				Spec:       appsv1.StatefulSetSpec{Replicas: new(int32(2))},
+			}
+
+			managedResource = &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{Name: managedResourceName, Namespace: gardenNamespace},
+			}
+
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithObjects(valiPVC.DeepCopy(), managedResource.DeepCopy(), sts.DeepCopy()).
+				Build()
+
+			DeferCleanup(testutils.WithVar(
+				&kubernetesutils.WaitUntilStatefulSetScaled, func(_ context.Context, _ client.Client, _ types.NamespacedName, _ int32) error {
+					return nil
+				},
+			))
+		})
+
+		It("should patch garden/vali's PVC when new size is greater than the current one", func() {
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			pvcResult := &corev1.PersistentVolumeClaim{}
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: valiPVCName}, pvcResult)).To(Succeed())
+			Expect(pvcResult.Spec.Resources.Requests.Storage()).To(PointTo(Equal(new200GiStorageQuantity)))
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(sts), sts)).To(Succeed())
+			Expect(sts.Spec.Replicas).To(PointTo(Equal(int32(0))))
+
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, managedResource)).To(Succeed())
+			Expect(managedResource.Annotations).NotTo(HaveKey(resourcesv1alpha1.Ignore))
+		})
+
+		It("should delete garden/vali's PVC when new size is less than the current one", func() {
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: valiPVCName}, &corev1.PersistentVolumeClaim{})).To(BeNotFoundError())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(sts), sts)).To(Succeed())
+			Expect(sts.Spec.Replicas).To(PointTo(Equal(int32(0))))
+
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, managedResource)).To(Succeed())
+			Expect(managedResource.Annotations).NotTo(HaveKey(resourcesv1alpha1.Ignore))
+		})
+
+		It("shouldn't do anything when PVCAutoscaler is enabled", func() {
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity, PVCAutoscaling: PVCAutoscalingConfig{Enabled: true}})
+
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			pvcResult := &corev1.PersistentVolumeClaim{}
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: valiPVCName}, pvcResult)).To(Succeed())
+			Expect(pvcResult.Spec.Resources.Requests.Storage()).To(PointTo(Equal(resource.MustParse("100Gi"))))
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(sts), sts)).To(Succeed())
+			Expect(sts.Spec.Replicas).To(PointTo(Equal(int32(2))))
+		})
+
+		It("shouldn't do anything when garden/vali's PVC is missing", func() {
+			Expect(fakeClient.Delete(ctx, valiPVC)).To(Succeed())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+			managedResource.Annotations = map[string]string{resourcesv1alpha1.Ignore: "true"}
+			Expect(fakeClient.Update(ctx, managedResource)).To(Succeed())
+
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, managedResource)).To(Succeed())
+			Expect(managedResource.Annotations).NotTo(HaveKey(resourcesv1alpha1.Ignore))
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(sts), sts)).To(Succeed())
+			Expect(sts.Spec.Replicas).To(PointTo(Equal(int32(2))))
+		})
+
+		It("shouldn't do anything when garden/vali's PVC storage is the same as the new one", func() {
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new100GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			pvcResult := &corev1.PersistentVolumeClaim{}
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: valiPVCName}, pvcResult)).To(Succeed())
+			Expect(pvcResult.Spec.Resources.Requests.Storage()).To(PointTo(Equal(new100GiStorageQuantity)))
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(sts), sts)).To(Succeed())
+			Expect(sts.Spec.Replicas).To(PointTo(Equal(int32(2))))
+		})
+
+		It("should proceed with the garden/vali's PVC resizing when Vali StatefulSet is missing", func() {
+			Expect(fakeClient.Delete(ctx, sts)).To(Succeed())
+
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			pvcResult := &corev1.PersistentVolumeClaim{}
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: valiPVCName}, pvcResult)).To(Succeed())
+			Expect(pvcResult.Spec.Resources.Requests.Storage()).To(PointTo(Equal(new200GiStorageQuantity)))
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(sts), &appsv1.StatefulSet{})).To(BeNotFoundError())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, managedResource)).To(Succeed())
+			Expect(managedResource.Annotations).NotTo(HaveKey(resourcesv1alpha1.Ignore))
+		})
+
+		It("should not fail with patching garden/vali's PVC when the PVC itself was deleted during function execution", func() {
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithObjects(valiPVC.DeepCopy(), managedResource.DeepCopy(), sts.DeepCopy()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+							return errNotFound
+						}
+						return c.Patch(ctx, obj, patch, opts...)
+					},
+				}).
+				Build()
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			stsResult := &appsv1.StatefulSet{}
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(sts), stsResult)).To(Succeed())
+			Expect(stsResult.Spec.Replicas).To(PointTo(Equal(int32(0))))
+
+			mrResult := &resourcesv1alpha1.ManagedResource{}
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, mrResult)).To(Succeed())
+			Expect(mrResult.Annotations).NotTo(HaveKey(resourcesv1alpha1.Ignore))
+		})
+
+		It("should not fail with deleting garden/vali's PVC when the PVC itself was deleted during function execution", func() {
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithObjects(valiPVC.DeepCopy(), managedResource.DeepCopy(), sts.DeepCopy()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+							return errNotFound
+						}
+						return c.Delete(ctx, obj, opts...)
+					},
+				}).
+				Build()
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(Succeed())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: valiPVCName}, &corev1.PersistentVolumeClaim{})).To(Succeed())
+
+			stsResult := &appsv1.StatefulSet{}
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(sts), stsResult)).To(Succeed())
+			Expect(stsResult.Spec.Replicas).To(PointTo(Equal(int32(0))))
+
+			mrResult := &resourcesv1alpha1.ManagedResource{}
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, mrResult)).To(Succeed())
+			Expect(mrResult.Annotations).NotTo(HaveKey(resourcesv1alpha1.Ignore))
+		})
+
+		It("should not neglect errors when getting garden/vali's PVC", func() {
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+							return errForbidden
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}).
+				Build()
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(MatchError(errForbidden))
+		})
+
+		It("should not neglect errors when patching garden/vali's StatefulSet", func() {
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithObjects(valiPVC.DeepCopy(), managedResource.DeepCopy()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					SubResourcePatch: func(_ context.Context, _ client.Client, _ string, _ client.Object, _ client.Patch, _ ...client.SubResourcePatchOption) error {
+						return errForbidden
+					},
+				}).
+				Build()
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(MatchError(errForbidden))
+		})
+
+		It("should not neglect errors when getting garden/vali's StatefulSet", func() {
+			DeferCleanup(testutils.WithVar(
+				&kubernetesutils.WaitUntilStatefulSetScaled, func(_ context.Context, _ client.Client, _ types.NamespacedName, _ int32) error {
+					return errForbidden
+				},
+			))
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(MatchError(errForbidden))
+		})
+
+		It("should not neglect errors when patching garden/vali's PVC", func() {
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithObjects(valiPVC.DeepCopy(), managedResource.DeepCopy(), sts.DeepCopy()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+							return errForbidden
+						}
+						return c.Patch(ctx, obj, patch, opts...)
+					},
+				}).
+				Build()
+
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(MatchError(errForbidden))
+		})
+
+		It("should not neglect errors when deleting garden/vali's PVC", func() {
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithObjects(valiPVC.DeepCopy(), managedResource.DeepCopy(), sts.DeepCopy()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+							return errForbidden
+						}
+						return c.Delete(ctx, obj, opts...)
+					},
+				}).
+				Build()
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(MatchError(errForbidden))
+		})
+
+		It("should not neglect errors when cannot get Vali ManagedResource", func() {
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithObjects(valiPVC.DeepCopy()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if _, ok := obj.(*resourcesv1alpha1.ManagedResource); ok {
+							return errForbidden
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}).
+				Build()
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(MatchError(errForbidden))
+		})
+
+		It("should not neglect errors when cannot patch Vali ManagedResource", func() {
+			fakeClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithObjects(valiPVC.DeepCopy(), managedResource.DeepCopy()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						if _, ok := obj.(*resourcesv1alpha1.ManagedResource); ok {
+							return errForbidden
+						}
+						return c.Patch(ctx, obj, patch, opts...)
+					},
+				}).
+				Build()
+			valiDeployer := New(fakeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
+
+			Expect(valiDeployer.Deploy(ctx)).To(MatchError(errForbidden))
+		})
+	})
+})
+
+func getService(isRBACProxyEnabled bool, clusterType string) *corev1.Service {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "logging",
+			Namespace:   namespace,
+			Labels:      getLabels(),
+			Annotations: map[string]string{"networking.istio.io/exportTo": "istio-ingress"},
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{
+				{
+					Port:       3100,
+					Protocol:   corev1.ProtocolTCP,
+					TargetPort: intstr.FromInt32(3100),
+					Name:       "metrics",
+				},
+			},
+			Selector: getLabels(),
+		},
+	}
+
+	if isRBACProxyEnabled {
+		svc.Spec.Ports = append(svc.Spec.Ports, []corev1.ServicePort{
+			{
+				Port:       8080,
+				Protocol:   corev1.ProtocolTCP,
+				TargetPort: intstr.FromInt32(8080),
+				Name:       "external",
+			},
+			{
+				Port:       9273,
+				Protocol:   corev1.ProtocolTCP,
+				TargetPort: intstr.FromInt32(9273),
+				Name:       "telegraf",
+			},
+		}...)
+	}
+
+	switch clusterType {
+	case "seed":
+		if isRBACProxyEnabled {
+			svc.Annotations["networking.resources.gardener.cloud/from-all-seed-scrape-targets-allowed-ports"] = `[{"protocol":"TCP","port":3100},{"protocol":"TCP","port":9273}]`
+		} else {
+			svc.Annotations["networking.resources.gardener.cloud/from-all-seed-scrape-targets-allowed-ports"] = `[{"protocol":"TCP","port":3100}]`
+		}
+	case "shoot":
+		if isRBACProxyEnabled {
+			svc.Annotations["networking.resources.gardener.cloud/from-all-scrape-targets-allowed-ports"] = `[{"protocol":"TCP","port":3100},{"protocol":"TCP","port":9273}]`
+		} else {
+			svc.Annotations["networking.resources.gardener.cloud/from-all-scrape-targets-allowed-ports"] = `[{"protocol":"TCP","port":3100}]`
+		}
+		svc.Annotations["networking.resources.gardener.cloud/pod-label-selector-namespace-alias"] = "all-shoots"
+		svc.Annotations["networking.resources.gardener.cloud/namespace-selectors"] = `[{"matchLabels":{"kubernetes.io/metadata.name":"garden"}}]`
+	}
+
+	return svc
+}
+
+func getServiceMonitor(label string, withTelegraf bool) *monitoringv1.ServiceMonitor {
+	obj := &monitoringv1.ServiceMonitor{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      label + "-vali",
+			Namespace: namespace,
+			Labels:    map[string]string{"prometheus": label},
+		},
+		Spec: monitoringv1.ServiceMonitorSpec{
+			Selector: metav1.LabelSelector{MatchLabels: getLabels()},
+			Endpoints: []monitoringv1.Endpoint{{
+				Port: "metrics",
+				RelabelConfigs: []monitoringv1.RelabelConfig{
+					{
+						Action:      "replace",
+						Replacement: new("vali"),
+						TargetLabel: "job",
+					},
+					{
+						Action: "labelmap",
+						Regex:  `__meta_kubernetes_service_label_(.+)`,
+					},
+				},
+				MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
+					SourceLabels: []monitoringv1.LabelName{"__name__"},
+					Action:       "keep",
+					Regex:        `^(vali_ingester_blocks_per_chunk_sum|vali_ingester_blocks_per_chunk_count|vali_ingester_chunk_age_seconds_sum|vali_ingester_chunk_age_seconds_count|vali_ingester_chunk_bounds_hours_sum|vali_ingester_chunk_bounds_hours_count|vali_ingester_chunk_compression_ratio_sum|vali_ingester_chunk_compression_ratio_count|vali_ingester_chunk_encode_time_seconds_sum|vali_ingester_chunk_encode_time_seconds_count|vali_ingester_chunk_entries_sum|vali_ingester_chunk_entries_count|vali_ingester_chunk_size_bytes_sum|vali_ingester_chunk_size_bytes_count|vali_ingester_chunk_utilization_sum|vali_ingester_chunk_utilization_count|vali_ingester_memory_chunks|vali_ingester_received_chunks|vali_ingester_samples_per_chunk_sum|vali_ingester_samples_per_chunk_count|vali_ingester_sent_chunks|vali_panic_total|vali_logql_querystats_duplicates_total|vali_logql_querystats_ingester_sent_lines_total|prometheus_target_scrapes_sample_out_of_order_total)$`,
+				}},
+			}},
+		},
+	}
+
+	if withTelegraf {
+		obj.Spec.Endpoints = append(obj.Spec.Endpoints, monitoringv1.Endpoint{
+			Port: "telegraf",
+			RelabelConfigs: []monitoringv1.RelabelConfig{
+				{
+					Action:      "replace",
+					Replacement: new("vali-telegraf"),
+					TargetLabel: "job",
+				},
+				{
+					Action: "labelmap",
+					Regex:  `__meta_kubernetes_service_label_(.+)`,
+				},
+			},
+			MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
+				SourceLabels: []monitoringv1.LabelName{"__name__"},
+				TargetLabel:  "__name__",
+				Regex:        `iptables_(.+)`,
+				Action:       "replace",
+				Replacement:  new("shoot_node_logging_incoming_$1"),
+			}},
+		})
+	}
+
+	return obj
+}
+
+func getPrometheusRule(label string) *monitoringv1.PrometheusRule {
+	description := "There are no vali pods running on seed: {{ .ExternalLabels.seed }}. No logs will be collected."
+	if label == "shoot" {
+		description = "There are no vali pods running. No logs will be collected."
+	}
+
+	return &monitoringv1.PrometheusRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      label + "-vali",
+			Namespace: namespace,
+			Labels:    map[string]string{"prometheus": label},
+		},
+		Spec: monitoringv1.PrometheusRuleSpec{
+			Groups: []monitoringv1.RuleGroup{{
+				Name: "vali.rules",
+				Rules: []monitoringv1.Rule{{
+					Alert: "ValiDown",
+					Expr:  intstr.FromString(`absent(up{job="vali"} == 1)`),
+					For:   new(monitoringv1.Duration("30m")),
+					Labels: map[string]string{
+						"service":    "logging",
+						"severity":   "warning",
+						"type":       "seed",
+						"visibility": "operator",
+					},
+					Annotations: map[string]string{
+						"description": description,
+						"summary":     "Vali is down",
+					},
+				}},
+			}},
+		},
+	}
+}
+
+func getValiConfigMap() *corev1.ConfigMap {
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vali-config",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Data: map[string]string{
+			"vali.yaml": `auth_enabled: false
+ingester:
+  chunk_target_size: 1536000
+  chunk_idle_period: 3m
+  chunk_block_size: 262144
+  chunk_retain_period: 3m
+  max_transfer_retries: 3
+  lifecycler:
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+    min_ready_duration: 1s
+limits_config:
+  enforce_metric_name: false
+  reject_old_samples: false
+  reject_old_samples_max_age: 168h
+  ingestion_rate_mb: 12
+  ingestion_burst_size_mb: 16
+schema_config:
+  configs:
+  - from: 2018-04-15
+    store: boltdb
+    object_store: filesystem
+    schema: v11
+    index:
+      prefix: index_
+      period: 24h
+server:
+  http_listen_port: 3100
+storage_config:
+  boltdb:
+    directory: /data/vali/index
+  filesystem:
+    directory: /data/vali/chunks
+chunk_store_config:
+  max_look_back_period: 360h
+table_manager:
+  retention_deletes_enabled: true
+  retention_period: 360h
+`,
+			"curator.yaml": `LogLevel: info
+DiskPath: /data/vali/chunks
+TriggerInterval: 1h
+InodeConfig:
+  MinFreePercentages: 10
+  TargetFreePercentages: 15
+  PageSizeForDeletionPercentages: 1
+StorageConfig:
+  MinFreePercentages: 10
+  TargetFreePercentages: 15
+  PageSizeForDeletionPercentages: 1
+`,
+			"vali-init.sh": `#!/bin/bash
+set -o errexit
+
+function error() {
+    exit_code=$?
+    echo "${BASH_COMMAND} failed, exit code $exit_code"
+}
+
+trap error ERR
+
+tune2fs -O large_dir $(mount | gawk '{if($3=="/data") {print $1}}')
+`,
+		},
+	}
+
+	utilruntime.Must(kubernetesutils.MakeUnique(configMap))
+	return configMap
+}
+
+func getTelegrafConfigMap() *corev1.ConfigMap {
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "telegraf-config",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Data: map[string]string{
+			"telegraf.conf": `[[outputs.prometheus_client]]
+## Address to listen on.
+listen = ":9273"
+metric_version = 2
+# Gather packets and bytes throughput from iptables
+[[inputs.iptables]]
+## iptables require root access on most systems.
+## Setting 'use_sudo' to true will make use of sudo to run iptables.
+## Users must configure sudo to allow telegraf user to run iptables with no password.
+## iptables can be restricted to only list command "iptables -nvL".
+use_sudo = true
+## defines the table to monitor:
+table = "filter"
+## defines the chains to monitor.
+## NOTE: iptables rules without a comment will not be monitored.
+## Read the plugin documentation for more information.
+chains = [ "INPUT" ]
+`,
+			"start.sh": `#/bin/bash
+
+trap 'kill %1; wait' SIGTERM
+iptables -A INPUT -p tcp --dport 8080 -j ACCEPT -m comment --comment "valitail"
+/usr/bin/telegraf --config /etc/telegraf/telegraf.conf &
+wait
+`,
+		},
+	}
+
+	utilruntime.Must(kubernetesutils.MakeUnique(configMap))
+
+	return configMap
+}
+
+func getVPA() *vpaautoscalingv1.VerticalPodAutoscaler {
+	vpa := &vpaautoscalingv1.VerticalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      valiName + "-vpa",
+			Namespace: namespace,
+			Labels: utils.MergeStringMaps(getLabels(), map[string]string{
+				v1beta1constants.LabelObservabilityApplication: valiName,
+			}),
+		},
+		Spec: vpaautoscalingv1.VerticalPodAutoscalerSpec{
+			TargetRef: &autoscalingv1.CrossVersionObjectReference{
+				Kind:       "StatefulSet",
+				Name:       valiName,
+				APIVersion: appsv1.SchemeGroupVersion.String(),
+			},
+			UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
+				UpdateMode: new(vpaautoscalingv1.UpdateModeInPlaceOrRecreate),
+			},
+			ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
+				ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+					{
+						ContainerName:    valiName,
+						ControlledValues: new(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+					},
+					{
+						ContainerName: "*",
+						Mode:          new(vpaautoscalingv1.ContainerScalingModeOff),
+					},
+				},
+			},
+		},
+	}
+
+	return vpa
+}
+
+func getGateway() *istionetworkingv1beta1.Gateway {
+	return &istionetworkingv1beta1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vali",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: istionetworkingv1alpha3.Gateway{
+			Servers: []*istionetworkingv1alpha3.Server{{
+				Port: &istionetworkingv1alpha3.Port{
+					Number:   443,
+					Protocol: "HTTPS",
+					Name:     "tls",
+				},
+				Hosts: []string{"vali.foo.bar"},
+				Tls: &istionetworkingv1alpha3.ServerTLSSettings{
+					Mode:           istionetworkingv1alpha3.ServerTLSSettings_SIMPLE,
+					CredentialName: "shoot--foo--bar-vali-vali-tls",
+				},
+			}},
+		},
+	}
+}
+
+func getVirtualService() *istionetworkingv1beta1.VirtualService {
+	return &istionetworkingv1beta1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vali",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: istionetworkingv1alpha3.VirtualService{
+			ExportTo: []string{"istio-ingress"},
+			Gateways: []string{"vali"},
+			Hosts:    []string{"vali.foo.bar"},
+			Http: []*istionetworkingv1alpha3.HTTPRoute{{
+				Match: []*istionetworkingv1alpha3.HTTPMatchRequest{{
+					Uri: &istionetworkingv1alpha3.StringMatch{
+						MatchType: &istionetworkingv1alpha3.StringMatch_Prefix{Prefix: "/vali/api/v1/push"},
+					},
+				}},
+				Route: []*istionetworkingv1alpha3.HTTPRouteDestination{{
+					Destination: &istionetworkingv1alpha3.Destination{
+						Host: "logging.shoot--foo--bar.svc.cluster.local",
+						Port: &istionetworkingv1alpha3.PortSelector{Number: 8080},
+					},
+				}},
+			}},
+		},
+	}
+}
+
+func getDestinationRule() *istionetworkingv1beta1.DestinationRule {
+	return &istionetworkingv1beta1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vali",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: istionetworkingv1alpha3.DestinationRule{
+			ExportTo: []string{"istio-ingress"},
+			Host:     "logging.shoot--foo--bar.svc.cluster.local",
+			TrafficPolicy: &istionetworkingv1alpha3.TrafficPolicy{
+				LoadBalancer: &istionetworkingv1alpha3.LoadBalancerSettings{
+					LocalityLbSetting: &istionetworkingv1alpha3.LocalityLoadBalancerSetting{
+						FailoverPriority: []string{"topology.kubernetes.io/zone"},
+						Enabled:          wrapperspb.Bool(true),
+					},
+				},
+				ConnectionPool: &istionetworkingv1alpha3.ConnectionPoolSettings{
+					Tcp: &istionetworkingv1alpha3.ConnectionPoolSettings_TCPSettings{
+						TcpKeepalive: &istionetworkingv1alpha3.ConnectionPoolSettings_TCPSettings_TcpKeepalive{
+							Time:     &durationpb.Duration{Seconds: 60},
+							Interval: &durationpb.Duration{Seconds: 30},
+							Probes:   5,
+						},
+						MaxConnectionDuration: &durationpb.Duration{Seconds: 86400},
+					},
+				},
+				OutlierDetection: &istionetworkingv1alpha3.OutlierDetection{},
+				Tls:              &istionetworkingv1alpha3.ClientTLSSettings{},
+			},
+		},
+	}
+}
+
+func getTLSSecret(tlsSecret *corev1.Secret) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "shoot--foo--bar-vali-vali-tls",
+			Namespace: "istio-ingress",
+			Labels:    getLabels(),
+		},
+		Data: tlsSecret.Data,
+	}
+}
+
+func getStatefulSet(isRBACProxyEnabled bool) *appsv1.StatefulSet {
+	fsGroupChangeOnRootMismatch := corev1.FSGroupChangeOnRootMismatch
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      valiName,
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: new(int32(1)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: getLabels(),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: utils.MergeStringMaps(getLabels(), map[string]string{
+						v1beta1constants.LabelObservabilityApplication: valiName,
+					}),
+				},
+				Spec: corev1.PodSpec{
+					PriorityClassName:            priorityClassName,
+					AutomountServiceAccountToken: new(false),
+					SecurityContext: &corev1.PodSecurityContext{
+						FSGroup:             new(int64(10001)),
+						FSGroupChangePolicy: &fsGroupChangeOnRootMismatch,
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-large-dir",
+							Image: initLargeDirImage,
+							Command: []string{
+								"bash",
+								"-c",
+								"/vali-init.sh || true",
+							},
+							SecurityContext: &corev1.SecurityContext{
+								Privileged:   new(true),
+								RunAsUser:    new(int64(0)),
+								RunAsNonRoot: new(false),
+								RunAsGroup:   new(int64(0)),
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									MountPath: "/data",
+									Name:      "vali",
+								},
+								{
+									MountPath: "/vali-init.sh",
+									SubPath:   "vali-init.sh",
+									Name:      "config",
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "vali",
+							Image: valiImage,
+							Args: []string{
+								"-config.file=/etc/vali/vali.yaml",
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "config",
+									MountPath: "/etc/vali/vali.yaml",
+									SubPath:   "vali.yaml",
+								},
+								{
+									Name:      "vali",
+									MountPath: "/data",
+								},
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "metrics",
+									ContainerPort: 3100,
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/ready",
+										Port: intstr.FromString("metrics"),
+									},
+								},
+								InitialDelaySeconds: 120,
+								FailureThreshold:    5,
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/ready",
+										Port: intstr.FromString("metrics"),
+									},
+								},
+								FailureThreshold: 7,
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("10m"),
+									corev1.ResourceMemory: resource.MustParse("100M"),
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: new(false),
+								RunAsUser:                new(int64(10001)),
+								RunAsGroup:               new(int64(10001)),
+								RunAsNonRoot:             new(true),
+								ReadOnlyRootFilesystem:   new(true),
+							},
+						},
+						{
+							Name:  "curator",
+							Image: curatorImage,
+							Args: []string{
+								"-config=/etc/vali/curator.yaml",
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "curatormetrics",
+									ContainerPort: 2718,
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "config",
+									MountPath: "/etc/vali/curator.yaml",
+									SubPath:   "curator.yaml",
+								},
+								{
+									Name:      "vali",
+									MountPath: "/data",
+								},
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("5m"),
+									corev1.ResourceMemory: resource.MustParse("15Mi"),
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: new(false),
+								RunAsUser:                new(int64(10001)),
+								RunAsGroup:               new(int64(10001)),
+								RunAsNonRoot:             new(true),
+								ReadOnlyRootFilesystem:   new(true),
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: valiConfigMapName,
+									},
+									DefaultMode: new(int32(0520)),
+								},
+							},
+						},
+					},
+				},
+			},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "vali",
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{
+							"ReadWriteOnce",
+						},
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: map[corev1.ResourceName]resource.Quantity{
+								corev1.ResourceStorage: resource.MustParse("60Gi"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if isRBACProxyEnabled {
+		sts.Spec.Template.Labels["networking.gardener.cloud/to-dns"] = "allowed"
+		sts.Spec.Template.Labels["networking.resources.gardener.cloud/to-kube-apiserver-tcp-443"] = "allowed"
+
+		sts.Spec.Template.Spec.Containers = append(sts.Spec.Template.Spec.Containers, []corev1.Container{
+			{
+				Name:  "telegraf",
+				Image: telegrafImage,
+				Command: []string{
+					"/bin/bash",
+					"-c",
+					`
+trap 'kill %1; wait' SIGTERM
+bash /etc/telegraf/start.sh &
+wait
+`,
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("5m"),
+						corev1.ResourceMemory: resource.MustParse("45Mi"),
+					},
+				},
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: new(false),
+					Capabilities: &corev1.Capabilities{
+						Add: []corev1.Capability{
+							"NET_ADMIN",
+						},
+					},
+				},
+				Ports: []corev1.ContainerPort{
+					{
+						Name:          "telegraf",
+						ContainerPort: 9273,
+						Protocol:      corev1.ProtocolTCP,
+					},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "telegraf-config-volume",
+						MountPath: "/etc/telegraf/telegraf.conf",
+						SubPath:   "telegraf.conf",
+						ReadOnly:  true,
+					},
+					{
+						Name:      "telegraf-config-volume",
+						MountPath: "/etc/telegraf/start.sh",
+						SubPath:   "start.sh",
+						ReadOnly:  true,
+					},
+				},
+			},
+			{
+				Name:  "kube-rbac-proxy",
+				Image: kubeRBACProxyImage,
+				Args: []string{
+					"--insecure-listen-address=0.0.0.0:8080",
+					"--upstream=http://127.0.0.1:3100/",
+					"--kubeconfig=/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig/kubeconfig",
+					"--logtostderr=true",
+					"--v=6",
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("5m"),
+						corev1.ResourceMemory: resource.MustParse("30Mi"),
+					},
+				},
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: new(false),
+					RunAsUser:                new(int64(65532)),
+					RunAsGroup:               new(int64(65534)),
+					RunAsNonRoot:             new(true),
+					ReadOnlyRootFilesystem:   new(true),
+				},
+				Ports: []corev1.ContainerPort{
+					{
+						Name:          "kube-rbac-proxy",
+						ContainerPort: 8080,
+						Protocol:      corev1.ProtocolTCP,
+					},
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "kubeconfig",
+						MountPath: "/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig",
+						ReadOnly:  true,
+					},
+				},
+			},
+		}...)
+
+		sts.Spec.Template.Spec.Volumes = append(sts.Spec.Template.Spec.Volumes, []corev1.Volume{
+			{
+				Name: "telegraf-config-volume",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: telegrafConfigMapName,
+						},
+					},
+				},
+			},
+			{
+				Name: "kubeconfig",
+				VolumeSource: corev1.VolumeSource{
+					Projected: &corev1.ProjectedVolumeSource{
+						DefaultMode: new(int32(420)),
+						Sources: []corev1.VolumeProjection{
+							{
+								Secret: &corev1.SecretProjection{
+									Items: []corev1.KeyToPath{
+										{
+											Key:  "kubeconfig",
+											Path: "kubeconfig",
+										},
+									},
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "generic-token-kubeconfig",
+									},
+									Optional: new(false),
+								},
+							},
+							{
+								Secret: &corev1.SecretProjection{
+									Items: []corev1.KeyToPath{
+										{
+											Key:  "token",
+											Path: "token",
+										},
+									},
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "shoot-access-kube-rbac-proxy",
+									},
+									Optional: new(false),
+								},
+							},
+						},
+					},
+				},
+			},
+		}...)
+	}
+
+	utilruntime.Must(references.InjectAnnotations(sts))
+
+	return sts
+}
+
+func getKubeRBACProxyClusterRoleBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "gardener.cloud:logging:kube-rbac-proxy",
+			Labels: map[string]string{"app": "kube-rbac-proxy"},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "system:auth-delegator",
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      "kube-rbac-proxy",
+			Namespace: "kube-system",
+		}},
+	}
+}
+
+func getValitailClusterRole(name, appName, path string) *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"app": appName},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"", "apps"},
+				Resources: []string{
+					"nodes",
+					"nodes/proxy",
+					"services",
+					"endpoints",
+					"pods",
+					"replicasets",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+				},
+			},
+			{
+				NonResourceURLs: []string{path},
+				Verbs:           []string{"create"},
+			},
+		},
+	}
+}
+
+func getValitailClusterRoleBinding(name, appName, roleName, subjectName string) *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"app": appName},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     roleName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      subjectName,
+			Namespace: "kube-system",
+		}},
+	}
+}
+
+func getLabels() map[string]string {
+	return map[string]string{
+		"gardener.cloud/role": "logging",
+		"role":                "logging",
+		"app":                 "vali",
+	}
+}
+
+func getPVCA(maxCapacity resource.Quantity, autoscalerName string) *pvcautoscalerv1alpha1.PersistentVolumeClaimAutoscaler {
+	return &pvcautoscalerv1alpha1.PersistentVolumeClaimAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      valiName,
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: pvcautoscalerv1alpha1.PersistentVolumeClaimAutoscalerSpec{
+			AutoscalerName: autoscalerName,
+			TargetRef: autoscalingv1.CrossVersionObjectReference{
+				APIVersion: appsv1.SchemeGroupVersion.String(),
+				Kind:       "StatefulSet",
+				Name:       valiName,
+			},
+			VolumePolicies: []pvcautoscalerv1alpha1.VolumePolicy{
+				{
+					MaxCapacity: maxCapacity,
+					ScaleUp: &pvcautoscalerv1alpha1.ScalingRules{
+						UtilizationThresholdPercent: new(70),
+						StepPercent:                 new(10),
+						MinStepAbsolute:             new(resource.MustParse("1Gi")),
+					},
+				},
+			},
+		},
+	}
+}

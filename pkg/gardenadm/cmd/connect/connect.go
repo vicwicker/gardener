@@ -1,0 +1,393 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package connect
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
+	"k8s.io/component-base/version"
+	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/gardener/gardener/imagevector"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	bootstrapetcd "github.com/gardener/gardener/pkg/component/etcd/bootstrap"
+	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
+	"github.com/gardener/gardener/pkg/controller/gardenletdeployer"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	gardenerextensions "github.com/gardener/gardener/pkg/extensions"
+	"github.com/gardener/gardener/pkg/gardenadm"
+	"github.com/gardener/gardener/pkg/gardenadm/botanist"
+	"github.com/gardener/gardener/pkg/gardenadm/cmd"
+	tokenutils "github.com/gardener/gardener/pkg/gardenadm/cmd/token/utils"
+	"github.com/gardener/gardener/pkg/gardenadm/staticpod"
+	"github.com/gardener/gardener/pkg/utils/flow"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	"github.com/gardener/gardener/pkg/utils/oci"
+	"github.com/gardener/gardener/pkg/utils/retry"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
+)
+
+// NewCommand creates a new cobra.Command.
+func NewCommand(globalOpts *cmd.Options) *cobra.Command {
+	opts := &Options{Options: globalOpts}
+
+	cmd := &cobra.Command{
+		Use:   "connect",
+		Short: "Deploy a gardenlet for further cluster management",
+		Long: `Deploy a gardenlet for further cluster management.
+
+The command can be executed on a control plane machine of the self-hosted shoot cluster or anywhere else. The
+self-hosted shoot cluster is targeted via the KUBECONFIG environment variable (defaults to /etc/kubernetes/admin.conf).
+Outside of a control plane machine, the --config-dir flag must point to the resources used for creating the cluster.`,
+
+		Example: `# Deploy a gardenlet (on a control plane machine)
+gardenadm connect --bootstrap-token <token> --ca-certificate <ca> https://api.garden.example.com
+
+# Deploy a gardenlet (from outside the self-hosted shoot cluster)
+KUBECONFIG=/path/to/self-hosted-shoot/kubeconfig gardenadm connect --config-dir /path/to/manifests --bootstrap-token <token> --ca-certificate <ca> https://api.garden.example.com`,
+
+		Args: cobra.MaximumNArgs(1),
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := opts.ParseArgs(args); err != nil {
+				return err
+			}
+
+			if err := opts.Validate(); err != nil {
+				return err
+			}
+
+			if err := opts.Complete(); err != nil {
+				return err
+			}
+
+			return run(cmd.Context(), opts)
+		},
+	}
+
+	opts.addFlags(cmd.Flags())
+
+	return cmd
+}
+
+func run(ctx context.Context, opts *Options) error {
+	opts.Log.Info("Using resources from directory", "configDir", opts.ConfigDir)
+
+	clientSet, err := tokenutils.CreateClientSet(ctx, opts.Log)
+	if err != nil {
+		return fmt.Errorf("failed creating client set for self-hosted shoot: %w", err)
+	}
+
+	resources, err := gardenadm.ReadManifests(opts.Log, botanist.DirFS(opts.ConfigDir))
+	if err != nil {
+		return fmt.Errorf("failed reading Kubernetes resources from config directory %s: %w", opts.ConfigDir, err)
+	}
+
+	// The shoot UID determines the names of the BackupBucket/BackupEntry and must match the one used by `gardenadm init`.
+	// Read it from the Cluster resource in the self-hosted shoot instead of the control plane machine's file system, so
+	// that `gardenadm connect` can also be executed outside the control plane machines.
+	cluster, err := gardenerextensions.GetCluster(ctx, clientSet.Client(), metav1.NamespaceSystem)
+	if err != nil {
+		return fmt.Errorf("failed reading Cluster resource %s from self-hosted shoot (was it initialized with 'gardenadm init'?): %w", metav1.NamespaceSystem, err)
+	}
+	if cluster.Shoot == nil || cluster.Shoot.Status.UID == "" {
+		return fmt.Errorf("cluster resource %s in self-hosted shoot does not contain the shoot UID", metav1.NamespaceSystem)
+	}
+	resources.Shoot.Status.UID = cluster.Shoot.Status.UID
+
+	b, err := botanist.NewGardenadmBotanistFromResources(ctx, opts.Log, nil, resources, true)
+	if err != nil {
+		return fmt.Errorf("failed creating gardenadm botanist: %w", err)
+	}
+	b.SeedClientSet = clientSet
+
+	if bootstrapEtcdExists, err := isBootstrapEtcdStillRunning(ctx, b); err != nil {
+		return fmt.Errorf("failed checking if bootstrap etcd is still running: %w", err)
+	} else if bootstrapEtcdExists {
+		return fmt.Errorf("bootstrap etcd is still running in the self-hosted shoot cluster, please run 'gardenadm init --use-bootstrap-etcd=false' first")
+	}
+
+	if alreadyConnected, err := cmd.IsGardenletDeployed(ctx, b.SeedClientSet.Client(), b.Shoot.ControlPlaneNamespace); err != nil {
+		return fmt.Errorf("failed checking if gardenlet is already deployed: %w", err)
+	} else if !alreadyConnected || opts.Force {
+		if alreadyConnected {
+			opts.Log.Info("Warning: Gardenlet is already deployed, --force override active")
+		}
+
+		bootstrapClientSet, err := cmd.NewClientSetFromBootstrapToken(opts.ControlPlaneAddress, opts.CertificateAuthority, opts.BootstrapToken, kubernetes.GardenScheme)
+		if err != nil {
+			return fmt.Errorf("failed creating a new bootstrap garden client set: %w", err)
+		}
+
+		// Self-hosted shoot gardenlets require the garden cluster to be at least Kubernetes 1.34: the shoot authorizer
+		// enforces label selectors via AuthorizeWithSelectors, which was promoted to GA in 1.34.
+		gardenVersion, err := b.DiscoverKubernetesVersion(bootstrapClientSet)
+		if err != nil {
+			return fmt.Errorf("failed discovering garden cluster version: %w", err)
+		}
+		if !versionutils.ConstraintK8sGreaterEqual134.Check(gardenVersion) {
+			return fmt.Errorf("garden cluster must be at least Kubernetes 1.34 (got %s): self-hosted shoots require the AuthorizeWithSelectors feature gate which was promoted to GA in 1.34", gardenVersion.Original())
+		}
+
+		var (
+			g        = flow.NewGraph("connect")
+			reporter = flow.NewCommandLineProgressReporter(opts.ErrOut)
+
+			retrieveShortLivedKubeconfig = g.Add(flow.Task{
+				Name: "Retrieving short-lived kubeconfig for garden cluster to prepare Gardener resources",
+				Fn: func(ctx context.Context) error {
+					gardenClientSet, err := cmd.InitializeTemporaryClientSet(ctx, b, bootstrapClientSet)
+					if err != nil {
+						return fmt.Errorf("failed retrieving short-lived kubeconfig for garden cluster: %w", err)
+					}
+
+					b.Logger.Info("Successfully retrieved short-lived bootstrap kubeconfig for garden cluster")
+					b.GardenClient = gardenClientSet.Client()
+					return nil
+				},
+			})
+			prepareResources = g.Add(flow.Task{
+				Name: "Preparing Gardener resources in garden cluster",
+				// Retry to tolerate transient unavailability of admission webhooks (e.g. gardener-extension-admission-calico)
+				// whose Service endpoints can briefly TCP-reset right after extension reconciliation. The task is idempotent:
+				// all create-calls already swallow AlreadyExists, and the Shoot status patch only runs after a successful Create.
+				Fn:           flow.TaskFn(func(ctx context.Context) error { return prepareGardenerResources(ctx, b) }).RetryUntilTimeout(2*time.Second, 2*time.Minute),
+				Dependencies: flow.NewTaskIDs(retrieveShortLivedKubeconfig),
+			})
+			deployGardenlet = g.Add(flow.Task{
+				Name: "Deploying gardenlet into self-hosted shoot cluster",
+				Fn: func(ctx context.Context) error {
+					_, err := newGardenletDeployer(b, bootstrapClientSet).Reconcile(
+						ctx,
+						b.Logger,
+						b.Shoot.GetInfo(),
+						nil,
+						&seedmanagementv1alpha1.GardenletDeployment{},
+						&runtime.RawExtension{Object: &gardenletconfigv1alpha1.GardenletConfiguration{
+							Controllers: &gardenletconfigv1alpha1.GardenletControllerConfiguration{
+								Shoot: &gardenletconfigv1alpha1.ShootControllerConfiguration{
+									ReconcileInMaintenanceOnly: new(true),
+								},
+							},
+						}},
+						seedmanagementv1alpha1.BootstrapToken,
+						false,
+					)
+					return err
+				},
+				Dependencies: flow.NewTaskIDs(prepareResources),
+			})
+			_ = g.Add(flow.Task{
+				Name: "Waiting until gardenlet is ready",
+				Fn: func(ctx context.Context) error {
+					timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+					defer cancel()
+					return retry.Until(timeoutCtx, 2*time.Second, health.IsDeploymentUpdated(b.SeedClientSet.Client(), &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.DeploymentNameGardenlet, Namespace: b.Shoot.ControlPlaneNamespace}}))
+				},
+				Dependencies: flow.NewTaskIDs(deployGardenlet),
+			})
+		)
+
+		if err := g.Compile().Run(ctx, flow.Opts{
+			Log:              opts.Log,
+			ProgressReporter: reporter,
+		}); err != nil {
+			return flow.Errors(err)
+		}
+	}
+
+	fmt.Fprintf(opts.Out, `
+Your self-hosted shoot cluster has successfully been connected to Gardener!
+
+The gardenlet has been deployed in the %s namespace of your self-hosted shoot
+cluster and is now taking over the management and lifecycle of it. All
+modifications to the Shoot specification should now be performed via the Gardener
+API, rather than by directly editing resources in the cluster.
+
+The bootstrap token will be deleted automatically by kube-controller-manager
+after it has expired. If you want to delete it right away, run the following
+command on any control plane node (or anywhere with KUBECONFIG pointing to the
+self-hosted shoot cluster):
+
+  gardenadm token delete %s
+
+Resources have been successfully synchronized with the garden cluster. You may
+(and should) now remove them from the directory at %s, as they will eventually
+become outdated:
+
+  rm -rf %[3]s
+
+Happy Gardening!
+`, b.Shoot.ControlPlaneNamespace, opts.BootstrapToken, opts.ConfigDir)
+
+	return nil
+}
+
+func isBootstrapEtcdStillRunning(ctx context.Context, b *botanist.GardenadmBotanist) (bool, error) {
+	podList := &metav1.PartialObjectMetadataList{}
+	podList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("PodList"))
+	if err := b.SeedClientSet.Client().List(ctx, podList, client.InNamespace(b.Shoot.ControlPlaneNamespace), client.MatchingLabels{staticpod.LabelKeyIsStaticPod: staticpod.LabelValueIsStaticPod}); err != nil {
+		return false, fmt.Errorf("failed checking if bootstrap etcd still exists: %w", err)
+	}
+
+	for _, pod := range podList.Items {
+		if strings.HasPrefix(pod.GetName(), bootstrapetcd.NamePrefix) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func prepareGardenerResources(ctx context.Context, b *botanist.GardenadmBotanist) error {
+	if err := b.GardenClient.Get(ctx, client.ObjectKeyFromObject(b.Resources.CloudProfile), &gardencorev1beta1.CloudProfile{}); err != nil {
+		return fmt.Errorf("failed checking for existence of CloudProfile %s (this is not created by 'gardenadm connect' and must exist in the garden cluster): %w", b.Resources.CloudProfile.Name, err)
+	}
+	b.Logger.Info("CloudProfile existence ensured in garden cluster")
+
+	for _, registration := range b.Resources.ControllerRegistrations {
+		if err := b.GardenClient.Get(ctx, client.ObjectKeyFromObject(registration), &gardencorev1beta1.ControllerRegistration{}); err != nil {
+			return fmt.Errorf("failed checking for existence of ControllerRegistration %s (this is not created by 'gardenadm connect' and must exist in the garden cluster): %w", registration.Name, err)
+		}
+	}
+	b.Logger.Info("ControllerRegistration existences ensured in garden cluster")
+
+	for _, deployment := range b.Resources.ControllerDeployments {
+		if err := b.GardenClient.Get(ctx, client.ObjectKeyFromObject(deployment), &gardencorev1.ControllerDeployment{}); err != nil {
+			return fmt.Errorf("failed checking for existence of ControllerDeployment %s (this is not created by 'gardenadm connect' and must exist in the garden cluster): %w", deployment.Name, err)
+		}
+	}
+	b.Logger.Info("ControllerDeployments existences ensured in garden cluster")
+
+	// We do not handle Project using 'garden' namespace because gardener-apiserver defaults .spec.tolerations for this
+	// Project. This requires special permissions for a custom verb that we do not want to grant to the gardenadm user
+	// for self-hosted shoots. Since this is a special project anyway, it must have been created beforehand.
+	if project := b.Resources.Project.DeepCopy(); ptr.Deref(project.Spec.Namespace, "") != v1beta1constants.GardenNamespace {
+		if err := b.GardenClient.Create(ctx, project); client.IgnoreAlreadyExists(err) != nil {
+			return fmt.Errorf("failed creating Project resource %s in garden cluster: %w", project.Name, err)
+		}
+		b.Logger.Info("Project resource ensured in garden cluster")
+	}
+
+	for _, configMap := range b.Resources.ConfigMaps {
+		if err := b.GardenClient.Create(ctx, configMap.DeepCopy()); client.IgnoreAlreadyExists(err) != nil {
+			return fmt.Errorf("failed creating ConfigMap resource %s in garden cluster: %w", client.ObjectKeyFromObject(configMap), err)
+		}
+	}
+	b.Logger.Info("ConfigMap resources ensured in garden cluster")
+
+	for _, secret := range b.Resources.Secrets {
+		if err := b.GardenClient.Create(ctx, secret.DeepCopy()); client.IgnoreAlreadyExists(err) != nil {
+			return fmt.Errorf("failed creating Secret resource %s in garden cluster: %w", client.ObjectKeyFromObject(secret), err)
+		}
+	}
+	b.Logger.Info("Secret resources ensured in garden cluster")
+
+	for _, workloadIdentity := range b.Resources.WorkloadIdentities {
+		if err := b.GardenClient.Create(ctx, workloadIdentity.DeepCopy()); client.IgnoreAlreadyExists(err) != nil {
+			return fmt.Errorf("failed creating WorkloadIdentity resource %s in garden cluster: %w", client.ObjectKeyFromObject(workloadIdentity), err)
+		}
+	}
+	b.Logger.Info("WorkloadIdentity resources ensured in garden cluster")
+
+	if b.Resources.SecretBinding != nil {
+		if err := b.GardenClient.Create(ctx, b.Resources.SecretBinding.DeepCopy()); client.IgnoreAlreadyExists(err) != nil {
+			return fmt.Errorf("failed creating SecretBinding resource %s in garden cluster: %w", client.ObjectKeyFromObject(b.Resources.SecretBinding), err)
+		}
+		b.Logger.Info("SecretBinding resource ensured in garden cluster")
+	}
+
+	if b.Resources.CredentialsBinding != nil {
+		if err := b.GardenClient.Create(ctx, b.Resources.CredentialsBinding.DeepCopy()); client.IgnoreAlreadyExists(err) != nil {
+			return fmt.Errorf("failed creating CredentialsBinding resource %s in garden cluster: %w", client.ObjectKeyFromObject(b.Resources.CredentialsBinding), err)
+		}
+		b.Logger.Info("CredentialsBinding resource ensured in garden cluster")
+	}
+
+	shoot := b.Shoot.GetInfo().DeepCopy()
+	if shoot.Annotations == nil {
+		shoot.Annotations = make(map[string]string)
+	}
+	controllerutils.AddTasks(shoot.Annotations, v1beta1constants.ShootTaskUpdateGardenerNodeAgentSecretName) // instruct gardenlet to update GNA secret names on nodes
+	shoot.Status = gardencorev1beta1.ShootStatus{}                                                           // we don't want to copy the in-memory status, otherwise we cannot compute a patch further below
+	if err := b.GardenClient.Create(ctx, shoot); client.IgnoreAlreadyExists(err) != nil {
+		return fmt.Errorf("failed creating Shoot resource %s in garden cluster: %w", client.ObjectKeyFromObject(b.Shoot.GetInfo()), err)
+	}
+
+	patch := client.MergeFrom(shoot.DeepCopy())
+	shoot.Status = b.Shoot.GetInfo().Status
+	// Initialize status.credentials.encryptionAtRest from the spec so that the gardenlet's first
+	// reconciliation correctly identifies the encryption state and skips the unnecessary rewrite tasks.
+	// gardenadm init already set up etcd with the provider configured in the spec, so spec == reality.
+	if shoot.Status.Credentials == nil {
+		shoot.Status.Credentials = &gardencorev1beta1.ShootCredentials{}
+	}
+	shoot.Status.Credentials.EncryptionAtRest = &gardencorev1beta1.EncryptionAtRest{
+		Provider: gardencorev1beta1.EncryptionProviderStatus{
+			Type: v1beta1helper.GetEncryptionProviderType(shoot.Spec.Kubernetes.KubeAPIServer),
+		},
+		Resources: sharedcomponent.StringifyGroupResources(sharedcomponent.GetResourcesForEncryptionFromConfig(shoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig)),
+	}
+	// The bootstrap restore (KinD → self-hosted shoot) has already completed successfully. Remove it so that
+	// gardenlet computes a normal Reconcile rather than triggering another Restore with the now-stale ShootState.
+	shoot.Status.LastOperation = nil
+	if err := b.GardenClient.Status().Patch(ctx, shoot, patch); err != nil {
+		return fmt.Errorf("failed patching Shoot %s status in garden cluster: %w", client.ObjectKeyFromObject(b.Shoot.GetInfo()), err)
+	}
+	b.Shoot.SetInfo(shoot)
+	b.Logger.Info("Shoot resource ensured in garden cluster")
+
+	return nil
+}
+
+func newGardenletDeployer(b *botanist.GardenadmBotanist, gardenClientSet kubernetes.Interface) gardenletdeployer.Interface {
+	return &gardenletdeployer.Actuator{
+		GardenConfig:        gardenClientSet.RESTConfig(),
+		GardenClient:        gardenClientSet.Client(),
+		GetTargetClientFunc: func(_ context.Context) (kubernetes.Interface, error) { return b.SeedClientSet, nil },
+		CheckIfVPAAlreadyExists: func(_ context.Context) (bool, error) {
+			return false, nil
+		},
+		GetTargetDomain: func() string {
+			return ""
+		},
+		ApplyGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]any) error {
+			gardenletChartImage, err := imagevector.Charts().FindImage(imagevector.ChartImageNameGardenlet)
+			if err != nil {
+				return err
+			}
+			gardenletChartImage.WithOptionalTag(version.Get().GitVersion)
+
+			archive, err := oci.NewHelmRegistry(b.GardenClient).Pull(ctx, &gardencorev1.OCIRepository{Ref: new(gardenletChartImage.String())})
+			if err != nil {
+				return fmt.Errorf("failed pulling Helm chart %s from OCI repository: %w", gardenletChartImage.String(), err)
+			}
+
+			return targetChartApplier.ApplyFromArchive(ctx, archive, b.Shoot.ControlPlaneNamespace, "gardenlet", kubernetes.Values(values))
+		},
+		Clock:                    clock.RealClock{},
+		ValuesHelper:             gardenletdeployer.NewValuesHelper(nil),
+		Recorder:                 &events.FakeRecorder{},
+		GardenletNamespaceTarget: b.Shoot.ControlPlaneNamespace,
+		BootstrapToken:           gardenClientSet.RESTConfig().BearerToken,
+	}
+}

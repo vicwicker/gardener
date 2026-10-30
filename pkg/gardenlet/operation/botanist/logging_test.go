@@ -1,0 +1,495 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist_test
+
+import (
+	"context"
+	"fmt"
+
+	victoriametricsv1 "github.com/VictoriaMetrics/operator/api/operator/v1"
+	"github.com/go-logr/logr"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	otelv1beta1 "github.com/open-telemetry/opentelemetry-operator/apis/v1beta1"
+	"go.uber.org/mock/gomock"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/client/kubernetes/fake"
+	"github.com/gardener/gardener/pkg/client/kubernetes/mock"
+	mockcomponent "github.com/gardener/gardener/pkg/component/mock"
+	mockvali "github.com/gardener/gardener/pkg/component/observability/logging/vali/mock"
+	victorialogsconstants "github.com/gardener/gardener/pkg/component/observability/logging/victorialogs/constants"
+	mockcollector "github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector/mock"
+	"github.com/gardener/gardener/pkg/features"
+	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
+	"github.com/gardener/gardener/pkg/gardenlet/operation"
+	. "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
+	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
+	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
+	"github.com/gardener/gardener/pkg/utils/test"
+)
+
+var _ = Describe("Logging", func() {
+	var (
+		ctrl *gomock.Controller
+
+		fakeClient            client.Client
+		k8sSeedClient         kubernetes.Interface
+		botanist              *Botanist
+		eventLoggerDeployer   *mockcomponent.MockDeployer
+		otelCollectorDeployer *mockcollector.MockInterface
+		valiDeployer          *mockvali.MockInterface
+		victoriaLogsDeployer  *mockcomponent.MockDeployWaiter
+		fakeSecretManager     secretsmanager.Interface
+		chartApplier          *mock.MockChartApplier
+		ctx                   = context.TODO()
+		controlPlaneNamespace = "shoot--foo--bar"
+		shootName             = "bar"
+		projectNamespace      = "garden-foo"
+		fakeErr               = fmt.Errorf("fake error")
+
+		shootPurposeDevelopment = gardencorev1beta1.ShootPurposeDevelopment
+		shootPurposeTesting     = gardencorev1beta1.ShootPurposeTesting
+	)
+
+	BeforeEach(func() {
+		ctrl = gomock.NewController(GinkgoT())
+		fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).WithStatusSubresource(&appsv1.Deployment{}).Build()
+
+		chartApplier = mock.NewMockChartApplier(ctrl)
+		k8sSeedClient = fake.NewClientSetBuilder().
+			WithClient(fakeClient).
+			WithChartApplier(chartApplier).
+			WithRESTConfig(&rest.Config{}).
+			Build()
+
+		eventLoggerDeployer = mockcomponent.NewMockDeployer(ctrl)
+		otelCollectorDeployer = mockcollector.NewMockInterface(ctrl)
+		valiDeployer = mockvali.NewMockInterface(ctrl)
+		victoriaLogsDeployer = mockcomponent.NewMockDeployWaiter(ctrl)
+		fakeSecretManager = fakesecretsmanager.New(fakeClient, controlPlaneNamespace)
+
+		botanist = &Botanist{
+			Operation: &operation.Operation{
+				Logger:         logr.Discard(),
+				SecretsManager: fakeSecretManager,
+				SeedClientSet:  k8sSeedClient,
+				Config: &gardenletconfigv1alpha1.GardenletConfiguration{
+					SNI: &gardenletconfigv1alpha1.SNI{
+						Ingress: &gardenletconfigv1alpha1.SNIIngress{
+							Namespace: new("istio-ingress"),
+							Labels:    map[string]string{"istio": "ingressgateway"},
+						},
+					},
+					Logging: &gardenletconfigv1alpha1.Logging{
+						Enabled: new(true),
+						Vali: &gardenletconfigv1alpha1.Vali{
+							Enabled: new(true),
+						},
+						VictoriaLogs: &gardenletconfigv1alpha1.VictoriaLogs{
+							Enabled: new(true),
+						},
+						ShootNodeLogging: &gardenletconfigv1alpha1.ShootNodeLogging{
+							ShootPurposes: []gardencorev1beta1.ShootPurpose{
+								"development",
+							},
+						},
+						ShootEventLogging: &gardenletconfigv1alpha1.ShootEventLogging{
+							Enabled: new(true),
+						},
+					},
+				},
+				Seed: &seedpkg.Seed{},
+				Shoot: &shootpkg.Shoot{
+					ControlPlaneNamespace: controlPlaneNamespace,
+					Purpose:               "development",
+					Components: &shootpkg.Components{
+						ControlPlane: &shootpkg.ControlPlane{
+							EventLogger:   eventLoggerDeployer,
+							Vali:          valiDeployer,
+							OtelCollector: otelCollectorDeployer,
+							VictoriaLogs:  victoriaLogsDeployer,
+						},
+					},
+					IsWorkerless: false,
+				},
+			},
+		}
+
+		botanist.Seed.SetInfo(&gardencorev1beta1.Seed{
+			Status: gardencorev1beta1.SeedStatus{
+				KubernetesVersion: new("1.2.3"),
+			},
+		})
+
+		botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      shootName,
+				Namespace: projectNamespace,
+			},
+			Spec: gardencorev1beta1.ShootSpec{
+				Purpose: &shootPurposeDevelopment,
+			},
+			Status: gardencorev1beta1.ShootStatus{
+				TechnicalID: controlPlaneNamespace,
+			},
+		})
+	})
+
+	AfterEach(func() {
+		ctrl.Finish()
+	})
+
+	Describe("#DeployLogging", func() {
+		BeforeEach(func() {
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.OpenTelemetryCollector, false))
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VictoriaLogsBackend, false))
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.RemoveVali, false))
+		})
+
+		It("should successfully delete the logging stack when shoot is with testing purpose", func() {
+			botanist.Shoot.Purpose = shootPurposeTesting
+			gomock.InOrder(
+				eventLoggerDeployer.EXPECT().Destroy(ctx),
+				otelCollectorDeployer.EXPECT().Destroy(ctx),
+				victoriaLogsDeployer.EXPECT().Destroy(ctx),
+				valiDeployer.EXPECT().Destroy(ctx),
+			)
+
+			Expect(botanist.DeployLogging(ctx)).To(Succeed())
+		})
+
+		It("should successfully delete the logging stack when it is disabled", func() {
+			*botanist.Config.Logging.Enabled = false
+			gomock.InOrder(
+				eventLoggerDeployer.EXPECT().Destroy(ctx),
+				otelCollectorDeployer.EXPECT().Destroy(ctx),
+				victoriaLogsDeployer.EXPECT().Destroy(ctx),
+				valiDeployer.EXPECT().Destroy(ctx),
+			)
+
+			Expect(botanist.DeployLogging(ctx)).To(Succeed())
+		})
+
+		Context("When there are no control plane components yet", func() {
+			It("should successfully deploy the logging stack when it is enabled and there is no gardener-resource-manager", func() {
+				// No GRM deployment in fakeClient → Get returns NotFound → ReadyReplicas == 0
+				victoriaLogsDeployer.EXPECT().Deploy(ctx)
+				valiDeployer.EXPECT().WithAuthenticationProxy(false)
+				valiDeployer.EXPECT().Deploy(ctx)
+				otelCollectorDeployer.EXPECT().Destroy(ctx)
+
+				Expect(botanist.DeployLogging(ctx)).To(Succeed())
+			})
+			It("should not deploy the logging stack when there is an error fetching gardener-resource-manager", func() {
+				fakeClientWithErr := fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+						return fakeErr
+					},
+				}).Build()
+				botanist.SeedClientSet = fake.NewClientSetBuilder().
+					WithClient(fakeClientWithErr).
+					WithChartApplier(chartApplier).
+					WithRESTConfig(&rest.Config{}).
+					Build()
+
+				Expect(botanist.DeployLogging(ctx)).ToNot(Succeed())
+			})
+		})
+
+		Context("When gardener-resource-manager is present in the control plane", func() {
+			BeforeEach(func() {
+				grm := &appsv1.Deployment{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      v1beta1constants.DeploymentNameGardenerResourceManager,
+						Namespace: controlPlaneNamespace,
+					},
+				}
+				Expect(fakeClient.Create(ctx, grm)).To(Succeed())
+				grm.Status = appsv1.DeploymentStatus{ReadyReplicas: 1}
+				Expect(fakeClient.Status().Update(ctx, grm)).To(Succeed())
+			})
+
+			It("should successfully deploy all of the components except otel collector in the logging stack when it is enabled", func() {
+				victoriaLogsDeployer.EXPECT().Deploy(ctx)
+				valiDeployer.EXPECT().WithAuthenticationProxy(true)
+				valiDeployer.EXPECT().Deploy(ctx)
+				otelCollectorDeployer.EXPECT().Destroy(ctx)
+				eventLoggerDeployer.EXPECT().Deploy(ctx)
+
+				Expect(botanist.DeployLogging(ctx)).To(Succeed())
+			})
+
+			When("OpenTelemetryCollector feature gate is enabled", func() {
+				BeforeEach(func() {
+					DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.OpenTelemetryCollector, true))
+				})
+
+				It("should successfully deploy all of the components including otel collector in the logging stack when it is enabled", func() {
+					gardenletfeatures.RegisterFeatureGates()
+					victoriaLogsDeployer.EXPECT().Deploy(ctx)
+					valiDeployer.EXPECT().WithAuthenticationProxy(false)
+					valiDeployer.EXPECT().Deploy(ctx)
+					otelCollectorDeployer.EXPECT().WithAuthenticationProxy(true)
+					otelCollectorDeployer.EXPECT().Deploy(ctx)
+					eventLoggerDeployer.EXPECT().Deploy(ctx)
+
+					Expect(botanist.DeployLogging(ctx)).To(Succeed())
+				})
+			})
+
+			Context("VictoriaLogs feature gate", func() {
+				BeforeEach(func() {
+					DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VictoriaLogsBackend, true))
+				})
+
+				It("should successfully deploy all of the components including VictoriaLogs when it is enabled", func() {
+					gardenletfeatures.RegisterFeatureGates()
+					victoriaLogsDeployer.EXPECT().Deploy(ctx)
+					valiDeployer.EXPECT().WithAuthenticationProxy(true)
+					valiDeployer.EXPECT().Deploy(ctx)
+					otelCollectorDeployer.EXPECT().Destroy(ctx)
+					eventLoggerDeployer.EXPECT().Deploy(ctx)
+
+					Expect(botanist.DeployLogging(ctx)).To(Succeed())
+				})
+
+				It("should fail to deploy the logging stack when VictoriaLogs Deploy returns error", func() {
+					gardenletfeatures.RegisterFeatureGates()
+					victoriaLogsDeployer.EXPECT().Deploy(ctx).Return(fakeErr)
+
+					Expect(botanist.DeployLogging(ctx)).ToNot(Succeed())
+				})
+			})
+
+			Context("Combined VictoriaLogsBackend and OpenTelemetryCollector feature gates", func() {
+				BeforeEach(func() {
+					DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VictoriaLogsBackend, true))
+					DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.OpenTelemetryCollector, true))
+				})
+
+				It("should successfully deploy all components when both VictoriaLogs and OpenTelemetryCollector are enabled", func() {
+					gardenletfeatures.RegisterFeatureGates()
+					victoriaLogsDeployer.EXPECT().Deploy(ctx)
+					valiDeployer.EXPECT().WithAuthenticationProxy(false)
+					valiDeployer.EXPECT().Deploy(ctx)
+					otelCollectorDeployer.EXPECT().WithAuthenticationProxy(true)
+					otelCollectorDeployer.EXPECT().Deploy(ctx)
+					eventLoggerDeployer.EXPECT().Deploy(ctx)
+
+					Expect(botanist.DeployLogging(ctx)).To(Succeed())
+				})
+			})
+
+			It("should not deploy event logger when it is disabled", func() {
+				*botanist.Config.Logging.ShootEventLogging.Enabled = false
+				victoriaLogsDeployer.EXPECT().Deploy(ctx)
+				valiDeployer.EXPECT().WithAuthenticationProxy(true)
+				valiDeployer.EXPECT().Deploy(ctx)
+				otelCollectorDeployer.EXPECT().Destroy(ctx)
+				eventLoggerDeployer.EXPECT().Destroy(ctx)
+
+				Expect(botanist.DeployLogging(ctx)).To(Succeed())
+			})
+
+			It("should not deploy shoot node logging for workerless shoot", func() {
+				botanist.Shoot.IsWorkerless = true
+				victoriaLogsDeployer.EXPECT().Deploy(ctx)
+				valiDeployer.EXPECT().WithAuthenticationProxy(true)
+				valiDeployer.EXPECT().Deploy(ctx)
+				otelCollectorDeployer.EXPECT().Destroy(ctx)
+				eventLoggerDeployer.EXPECT().Deploy(ctx)
+
+				Expect(botanist.DeployLogging(ctx)).To(Succeed())
+			})
+
+			It("should not deploy shoot node logging when it is disabled", func() {
+				botanist.Config.Logging.ShootNodeLogging = nil
+				victoriaLogsDeployer.EXPECT().Deploy(ctx)
+				valiDeployer.EXPECT().WithAuthenticationProxy(true)
+				valiDeployer.EXPECT().Deploy(ctx)
+				otelCollectorDeployer.EXPECT().Destroy(ctx)
+				eventLoggerDeployer.EXPECT().Deploy(ctx)
+
+				Expect(botanist.DeployLogging(ctx)).To(Succeed())
+			})
+
+			It("should not deploy shoot node logging and Vali when Vali is disabled", func() {
+				*botanist.Config.Logging.Vali.Enabled = false
+				victoriaLogsDeployer.EXPECT().Deploy(ctx)
+				valiDeployer.EXPECT().WithAuthenticationProxy(true)
+				valiDeployer.EXPECT().Destroy(ctx)
+				otelCollectorDeployer.EXPECT().Destroy(ctx)
+				eventLoggerDeployer.EXPECT().Deploy(ctx)
+
+				Expect(botanist.DeployLogging(ctx)).To(Succeed())
+			})
+
+			Context("Tests expecting a failure", func() {
+				It("should fail to delete the logging stack when ShootEventLoggerDeployer Destroy return error", func() {
+					*botanist.Config.Logging.Enabled = false
+					eventLoggerDeployer.EXPECT().Destroy(ctx).Return(fakeErr)
+					Expect(botanist.DeployLogging(ctx)).ToNot(Succeed())
+				})
+
+				It("should fail to delete the logging stack when logging is disabled and ShootValiDeployer Destroy return error", func() {
+					*botanist.Config.Logging.Enabled = false
+					gomock.InOrder(
+						eventLoggerDeployer.EXPECT().Destroy(ctx),
+						otelCollectorDeployer.EXPECT().Destroy(ctx),
+						victoriaLogsDeployer.EXPECT().Destroy(ctx),
+						valiDeployer.EXPECT().Destroy(ctx).Return(fakeErr),
+					)
+
+					Expect(botanist.DeployLogging(ctx)).ToNot(Succeed())
+				})
+
+				It("should fail to deploy the logging stack when ShootEventLoggerDeployer Deploy returns an error", func() {
+					victoriaLogsDeployer.EXPECT().Deploy(ctx)
+					valiDeployer.EXPECT().WithAuthenticationProxy(true)
+					valiDeployer.EXPECT().Deploy(ctx)
+					otelCollectorDeployer.EXPECT().Destroy(ctx)
+					eventLoggerDeployer.EXPECT().Deploy(ctx).Return(fakeErr)
+
+					Expect(botanist.DeployLogging(ctx)).ToNot(Succeed())
+				})
+
+				It("should fail to deploy the logging stack when deploying of the shoot event logging fails", func() {
+					victoriaLogsDeployer.EXPECT().Deploy(ctx)
+					valiDeployer.EXPECT().WithAuthenticationProxy(true)
+					valiDeployer.EXPECT().Deploy(ctx)
+					otelCollectorDeployer.EXPECT().Destroy(ctx)
+					eventLoggerDeployer.EXPECT().Deploy(ctx).Return(fakeErr)
+
+					Expect(botanist.DeployLogging(ctx)).ToNot(Succeed())
+				})
+
+				It("should fail to deploy the logging stack when ValiDeployer Deploy returns error", func() {
+					victoriaLogsDeployer.EXPECT().Deploy(ctx)
+					valiDeployer.EXPECT().WithAuthenticationProxy(true)
+					valiDeployer.EXPECT().Deploy(ctx).Return(fakeErr)
+
+					Expect(botanist.DeployLogging(ctx)).ToNot(Succeed())
+				})
+			})
+		})
+	})
+
+	DescribeTable("#DefaultVictoriaLogs PVC storage",
+		func(pvcAutoscalerEnabled bool, minimumVolumeSize *resource.Quantity, expectedStorage resource.Quantity) {
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VictoriaLogsBackend, true))
+			gardenletfeatures.RegisterFeatureGates()
+
+			Expect(fakeClient.Create(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.SecretNameCACluster, Namespace: controlPlaneNamespace},
+				Data:       map[string][]byte{"bundle.crt": []byte("ca-bundle")},
+			})).To(Succeed())
+
+			var volume *gardencorev1beta1.SeedVolume
+			if minimumVolumeSize != nil {
+				volume = &gardencorev1beta1.SeedVolume{MinimumSize: minimumVolumeSize}
+			}
+
+			botanist.Seed.SetInfo(&gardencorev1beta1.Seed{
+				Spec: gardencorev1beta1.SeedSpec{
+					Volume: volume,
+					Settings: &gardencorev1beta1.SeedSettings{
+						PersistentVolumeClaimAutoscaler: &gardencorev1beta1.SeedSettingPersistentVolumeClaimAutoscaler{
+							Enabled: pvcAutoscalerEnabled,
+						},
+					},
+				},
+			})
+
+			deployer, err := botanist.DefaultVictoriaLogs()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deployer.Deploy(ctx)).To(Succeed())
+
+			objects, err := managedresources.GetObjects(ctx, fakeClient, controlPlaneNamespace, victorialogsconstants.ManagedResourceNameRuntime)
+			Expect(err).NotTo(HaveOccurred())
+
+			var vlSingle *victoriametricsv1.VLSingle
+			for _, obj := range objects {
+				if vl, ok := obj.(*victoriametricsv1.VLSingle); ok {
+					vlSingle = vl
+					break
+				}
+			}
+			Expect(vlSingle).NotTo(BeNil(), "expected a VLSingle resource in the VictoriaLogs managed resource")
+			Expect(vlSingle.Spec.Storage.Resources.Requests[corev1.ResourceStorage]).To(Equal(expectedStorage))
+		},
+		Entry("small volume when the PVC autoscaler is enabled", true, nil, resource.MustParse("5Gi")),
+		Entry("default volume when the PVC autoscaler is disabled", false, nil, resource.MustParse("30Gi")),
+		Entry("clamped to the seed minimum volume size when the PVC autoscaler is enabled", true, new(resource.MustParse("20Gi")), resource.MustParse("20Gi")),
+		Entry("initial size when it exceeds the seed minimum volume size", true, new(resource.MustParse("2Gi")), resource.MustParse("5Gi")),
+	)
+
+	DescribeTable("#DefaultOtelCollector RemoveVali pipeline",
+		func(removeVali bool) {
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VictoriaLogsBackend, true))
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.RemoveVali, removeVali))
+			gardenletfeatures.RegisterFeatureGates()
+
+			botanist.Config.SNI = &gardenletconfigv1alpha1.SNI{
+				Ingress: &gardenletconfigv1alpha1.SNIIngress{
+					Namespace: new("istio-ingress"),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.SecretNameCACluster, Namespace: controlPlaneNamespace},
+				Data:       map[string][]byte{"bundle.crt": []byte("ca-bundle")},
+			})).To(Succeed())
+			Expect(fakeClient.Create(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.SecretNameGenericTokenKubeconfig, Namespace: controlPlaneNamespace},
+			})).To(Succeed())
+			botanist.Seed.SetInfo(&gardencorev1beta1.Seed{
+				Status: gardencorev1beta1.SeedStatus{
+					KubernetesVersion: new("1.2.3"),
+				},
+			})
+
+			deployer, err := botanist.DefaultOtelCollector()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deployer.Deploy(ctx)).To(Succeed())
+
+			// Inspect the deployed OpenTelemetryCollector CR to confirm the RemoveVali FG was wired into Values.
+			objects, err := managedresources.GetObjects(ctx, fakeClient, controlPlaneNamespace, "opentelemetry-collector")
+			Expect(err).NotTo(HaveOccurred())
+
+			var otelCollector *otelv1beta1.OpenTelemetryCollector
+			for _, obj := range objects {
+				if col, ok := obj.(*otelv1beta1.OpenTelemetryCollector); ok {
+					otelCollector = col
+					break
+				}
+			}
+			Expect(otelCollector).NotTo(BeNil(), "expected an OpenTelemetryCollector resource in the managed resource")
+
+			_, hasValiPipeline := otelCollector.Spec.Config.Service.Pipelines["logs/vali"]
+			if removeVali {
+				Expect(hasValiPipeline).To(BeFalse(), "expected logs/vali pipeline to be absent when RemoveVali is enabled")
+			} else {
+				Expect(hasValiPipeline).To(BeTrue(), "expected logs/vali pipeline to be present when RemoveVali is disabled")
+			}
+		},
+		Entry("should remove logs/vali pipeline when RemoveVali is enabled", true),
+		Entry("should keep logs/vali pipeline when RemoveVali is disabled", false),
+	)
+})

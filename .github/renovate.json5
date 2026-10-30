@@ -1,0 +1,630 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    ':semanticCommitsDisabled',
+    'github>gardener/ci-infra//config/renovate/makefile-versions.json5',
+    'github>gardener/ci-infra//config/renovate/imagevector.json5(^imagevector/containers.yaml$)',
+    'github>gardener/ci-infra//config/renovate/automerge-with-tide.json5',
+    'github>gardener/ci-infra//config/renovate/group-go-updates.json5',
+  ],
+  labels: [
+    'kind/enhancement',
+  ],
+  postUpdateOptions: [
+    'gomodTidy',
+  ],
+  // Add PR footer with empty release note by default.
+  prFooter: '**Release note**:\n```other dependency\nNONE\n```',
+  // Only rebase when there are conflicts. Prow tests against the latest state of master branch anyway before merging the PR.
+  rebaseWhen: 'conflicted',
+  // Ignore the commits pushed by the `renovate-post-upgrade` GitHub Action (running `make tidy`/`make generate`
+  // and restoring the `distroless-` prefix of the envoy image tag) when detecting whether a branch was manually
+  // edited. Otherwise, Renovate would treat the branch as modified and stop updating the PR.
+  gitIgnoredAuthors: [
+    '41898282+github-actions[bot]@users.noreply.github.com',
+  ],
+  customManagers: [
+    {
+      // Generic detection for pod-like image specifications.
+      customType: 'regex',
+      managerFilePatterns: [
+        '/^.github/workflows/.+\\.yaml$/',
+        '/^example/.+\\.yaml$/',
+        '/^hack/.+\\.yaml$/',
+        '/^\\.test-defs/.+\\.yaml$/',
+        '/^charts/.+\\.yaml$/',
+      ],
+      matchStrings: [
+        '["|\']?image["|\']?: ["|\']?(?<depName>.*?):(?<currentValue>.*?)["|\']?\\s',
+      ],
+      datasourceTemplate: 'docker',
+    },
+    {
+      // Generic detection for install manifests from GitHub releases.
+      customType: 'regex',
+      managerFilePatterns: [
+        '//kustomization\\.yaml$/',
+      ],
+      matchStrings: [
+        'https://github\\.com/(?<depName>[^/]*/[^/]*?)/releases/download/(?<currentValue>.*?)/',
+        'https://raw\\.githubusercontent\\.com/(?<depName>[^/]*/[^/]*?)/(?<currentValue>.*?)/',
+      ],
+      datasourceTemplate: 'github-releases',
+    },
+    {
+      // Detection for Gardener extension Helm chart references in dev-setup `extension.yaml` files.
+      // The OCI chart version matches the extension's GitHub release tag, so we track it via
+      // github-releases. The docker datasource for these files is disabled below to avoid duplicate updates.
+      customType: 'regex',
+      managerFilePatterns: [
+        '/^dev-setup/extensions/.+/extension\\.yaml$/',
+      ],
+      matchStrings: [
+        'charts/gardener/extensions/networking-(?<provider>[^:@\\s]+):(?<currentValue>[^@\\s]+)',
+        'charts/gardener/extensions/admission-(?<provider>[^-]+)-(?:runtime|application):(?<currentValue>[^@\\s]+)',
+      ],
+      depNameTemplate: 'gardener/gardener-extension-networking-{{{provider}}}',
+      datasourceTemplate: 'github-releases',
+    },
+    {
+      // Generic detection for cli argument image specifications.
+      customType: 'regex',
+      managerFilePatterns: [
+        '/^hack/.+\\.sh$/',
+      ],
+      matchStrings: [
+        '--image[=| ]["|\']?(?<depName>.*?):(?<currentValue>.*?)["|\']?\\s',
+      ],
+      datasourceTemplate: 'docker',
+    },
+    {
+      // Detection for images with prow like tags (e.g. v20240213-749005b2).
+      customType: 'regex',
+      managerFilePatterns: [
+        '/^pkg/provider-local/imagevector/images.yaml$/',
+      ],
+      matchStrings: [
+        '(?<depName>gcr\\.io/k8s-staging-kind/.*?):(?<currentValue>.*?)\\s',
+      ],
+      datasourceTemplate: 'docker',
+    },
+    {
+      // Detection for GOTOOLCHAIN in Makefile (does not match the _VERSION pattern of the ci-infra preset).
+      customType: 'regex',
+      managerFilePatterns: [
+        '/^Makefile$/',
+      ],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>[a-z-.]+?) depName=(?<depName>[^\\s]+?)\\s+export GOTOOLCHAIN\\s*:?\\??=\\s*go(?<currentValue>[^\\s]+)'
+      ],
+    },
+  ],
+  separateMinorPatch: true,
+  packageRules: [
+    {
+      // automerge patch updates
+      matchUpdateTypes: [
+        'patch',
+      ],
+      automerge: true,
+    },
+    {
+      // automerge k8s.io/utils updates
+      matchDatasources: [
+        'go',
+      ],
+      matchPackageNames: [
+        'k8s.io/utils',
+      ],
+      matchUpdateTypes: [
+        'digest',
+      ],
+      automerge: true,
+    },
+    {
+      // automerge non-major golang.org/x updates
+      matchDatasources: [
+        'go',
+      ],
+      matchPackageNames: [
+        'golang.org/x/*',
+      ],
+      matchUpdateTypes: [
+        'minor',
+        'patch',
+        'digest',
+      ],
+      automerge: true,
+    },
+    {
+      // Group Istio updates in one PR.
+      groupName: 'istio',
+      groupSlug: 'istio',
+      description: 'Group Istio updates in one PR.',
+      matchDatasources: [
+        'docker',
+        'go',
+      ],
+      matchPackageNames: [
+        '/gcr\\.io/istio-release/.+/',
+        '/istio\\.io/api/',
+        '/istio\\.io/client-go/',
+      ],
+    },
+    {
+      // Group etcd-druid updates in one PR.
+      groupName: 'etcd-druid',
+      matchDatasources: [
+        'github-releases',
+        'go',
+      ],
+      matchPackageNames: [
+        '/github\\.com/gardener/etcd-druid/',
+        '/gardener/etcd-druid/',
+      ],
+    },
+    {
+      // Group helm updates in one PR.
+      groupName: 'helm',
+      matchDatasources: [
+        'github-releases',
+        'go',
+      ],
+      matchPackageNames: [
+        '/helm\\.sh/helm/v3/',
+        '/helm/helm/',
+      ],
+    },
+    {
+      // Group opentelemetry-operator updates in one PR.
+      groupName: 'opentelemetry-operator',
+      matchDatasources: [
+        'github-releases',
+        'go',
+      ],
+      matchPackageNames: [
+        '/.*open-telemetry/opentelemetry-operator$/',
+        '/github\\.com/open-telemetry/opentelemetry-operator/apis$/',
+      ],
+    },
+    {
+      // Group victoria-operator updates in one PR.
+      groupName: 'victoria-operator',
+      matchDatasources: [
+        'github-releases',
+        'go',
+      ],
+      matchPackageNames: [
+        '/.*VictoriaMetrics/operator$/',
+        '/github\\.com/VictoriaMetrics/operator/api$/',
+      ],
+    },
+    {
+      // Group Prometheus updates in one PR.
+      groupName: 'prometheus',
+      matchDatasources: [
+        'github-releases',
+        'docker',
+      ],
+      matchPackageNames: [
+        '/.*prometheus/prometheus$/',
+      ],
+    },
+    {
+      // Group prometheus-operator updates in one PR.
+      groupName: 'prometheus-operator',
+      matchDatasources: [
+        'docker',
+        'go',
+      ],
+      matchPackageNames: [
+        '/quay\\.io/prometheus-operator/.+/',
+        '/github\\.com/prometheus-operator/prometheus-operator/pkg/apis/.+/',
+      ],
+    },
+    {
+      // Group gardener-discovery-server updates in one PR.
+      groupName: 'gardener-discovery-server',
+      matchDatasources: [
+        'docker',
+        'github-releases',
+      ],
+      matchPackageNames: [
+        '/.+gardener-discovery-server$/',
+      ],
+    },
+    {
+      // Group machine-controller-manager updates in one PR.
+      groupName: 'machine-controller-manager',
+      matchDatasources: [
+        'github-releases',
+        'go',
+      ],
+      matchPackageNames: [
+        '/.*gardener/machine-controller-manager$/',
+      ],
+    },
+    {
+      // Group terminal-controller-manager updates in one PR.
+      groupName: 'terminal-controller-manager',
+      matchDatasources: [
+        'github-releases',
+        'go',
+      ],
+      matchPackageNames: [
+        '/.*gardener/terminal-controller-manager$/',
+      ],
+    },
+    {
+      // Group Vertical Pod Autoscaler (VPA) component updates in one PR.
+      groupName: 'vpa-components',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        'registry.k8s.io/autoscaling/vpa-admission-controller',
+        'registry.k8s.io/autoscaling/vpa-recommender',
+        'registry.k8s.io/autoscaling/vpa-updater',
+      ],
+    },
+    {
+      // Group Dependency Watchdog updates in one PR.
+      groupName: 'dependency-watchdog',
+      matchDatasources: [
+        'docker',
+        'go',
+        'github-releases',
+      ],
+      matchPackageNames: [
+        '/github\\.com/gardener/dependency-watchdog/',
+        '/gardener/dependency-watchdog/',
+      ],
+    },
+    {
+      // Group Prometheus blackbox-exporter updates in one PR.
+      groupName: 'blackbox-exporter',
+      matchDatasources: [
+        'docker',
+        'go',
+        'github-releases',
+      ],
+      matchPackageNames: [
+        'github.com/prometheus/blackbox_exporter',
+        'quay.io/prometheus/blackbox-exporter',
+      ],
+    },
+    {
+      // Group Perses operator updates in one PR.
+      groupName: 'perses-operator',
+      matchDatasources: [
+        'docker',
+        'go',
+        'github-releases',
+      ],
+      matchPackageNames: [
+        'github.com/perses/perses-operator',
+        'perses/perses-operator',
+      ],
+    },
+    {
+      // Group PVC Autoscaler updates in one PR.
+      groupName: 'pvc-autoscaler',
+      matchDatasources: [
+        'go',
+        'github-releases',
+      ],
+      matchPackageNames: [
+        'github.com/gardener/pvc-autoscaler',
+        'gardener/pvc-autoscaler',
+      ],
+    },
+    {
+      // Group Helm updates in one PR.
+      groupName: 'helm',
+      matchDatasources: [
+        'go',
+        'github-releases',
+      ],
+      matchPackageNames: [
+        'helm/helm',
+        'helm.sh/helm/v4',
+      ],
+    },
+    {
+      // Ask for manual approval to create PRs for minor and major updates of dependencies which most likely
+      // require manual adaptations of the code.
+      matchDatasources: [
+        'go',
+      ],
+      matchUpdateTypes: [
+        'major',
+        'minor',
+      ],
+      dependencyDashboardApproval: true,
+      matchPackageNames: [
+        '/k8s\\.io/.+/',
+        '/sigs\\.k8s\\.io/controller-runtime/',
+        '/istio\\.io/.+/',
+        '/github\\.com/fluent/.+/',
+      ],
+    },
+    {
+      // Ask for manual approval to create PRs for minor and major updates of container images which most likely
+      // require manual adaptations of the code.
+      matchDatasources: [
+        'docker',
+        'github-releases',
+      ],
+      matchUpdateTypes: [
+        'major',
+        'minor',
+      ],
+      matchFileNames: [
+        'imagevector/**',
+      ],
+      dependencyDashboardApproval: true,
+      matchPackageNames: [
+        '/fluent/.+/',
+        '/gcr\\.io/istio-release/.+/',
+        '/europe-docker\\.pkg\\.dev/gardener-project/releases/3rd/credativ/valitail/',
+      ],
+    },
+    {
+      // Ask for manual approval to create PRs for kindest/node image. Minor and major versions are updated when new
+      // versions of Kubernetes are introduced only.
+      matchDatasources: [
+        'docker',
+      ],
+      matchUpdateTypes: [
+        'major',
+        'minor',
+      ],
+      dependencyDashboardApproval: true,
+      matchPackageNames: [
+        '/kindest/node/',
+      ],
+    },
+    {
+      // Only patch level updates for golang-test image. Minor and major versions are updated manually.
+      matchDatasources: [
+        'docker',
+      ],
+      matchUpdateTypes: [
+        'major',
+        'minor',
+      ],
+      matchFileNames: [
+        '\\.github/workflows/golang-test-images\\.yaml',
+      ],
+      enabled: false,
+    },
+    {
+      // Do not update to patch versions of the Go Toolchain.
+      // Default golang images set the environment variable GOTOOLCHAIN=local
+      // and we don't want to enforce every (test-)image to be on the latest patch level.
+      matchManagers: [
+        'gomod',
+      ],
+      matchUpdateTypes: [
+        'patch',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        '/go/',
+      ],
+    },
+    {
+      // Go versions must be in sync with golangci-lint.
+      matchDatasources: [
+        'golang-version',
+      ],
+      matchFileNames: [
+        'hack/tools/go\\.mod',
+      ],
+      enabled: false,
+    },
+    {
+      // Update only patch levels for cluster-autoscaler container images.
+      // There is a different minor version for each Kubernetes version active at the same time. In this scenario,
+      // renovate is able to handle patch updates properly only.
+      matchDatasources: [
+        'docker',
+        'github-releases',
+      ],
+      matchUpdateTypes: [
+        'major',
+        'minor',
+      ],
+      matchFileNames: [
+        'imagevector/**',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        '/gardener/autoscaler/',
+      ],
+    },
+    {
+      // Do not update etcd and etcd-backup-restore images since they have to be in sync with the etcd-druid version.
+      matchDatasources: [
+        'docker',
+        'github-releases',
+      ],
+      matchFileNames: [
+        'imagevector/**',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        '/gcr.io/etcd-development/etcd/',
+        'gardener/etcd-backup-restore',
+      ],
+    },
+    {
+      // Do not update gardener/logging images until Vali is removed. See: https://github.com/gardener/gardener/issues/13709
+      matchDatasources: [
+        'github-releases',
+      ],
+      matchFileNames: [
+        'imagevector/**',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        'gardener/logging',
+      ],
+    },
+    {
+      // Use Docker only for images from the Gardener registry that don't work with GitHub releases.
+      matchDatasources: [
+        'docker',
+      ],
+      matchFileNames: [
+        'imagevector/**',
+        'dev-setup/extensions/**/extension.yaml',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        '/europe-docker\\.pkg\\.dev/gardener-project/releases/.+/',
+        '!/europe-docker\\.pkg\\.dev/gardener-project/releases/3rd/alpine/',
+        '!/europe-docker\\.pkg\\.dev/gardener-project/releases/3rd/kubernetesui/.+/',
+      ],
+    },
+    {
+      // Treat the `distroless-` prefixed envoy tag as equal to the upstream `vX.Y.Z` release so Renovate does
+      // not revert the prefix that the `renovate-post-upgrade` Action re-adds after each update. Renovate still
+      // writes the tag without the prefix on the initial update; the Action restores it, and this versioning
+      // stops subsequent runs from treating the prefixed tag as outdated and clobbering it. The github-releases
+      // datasource is kept so envoy update PRs include the release notes.
+      matchDatasources: [
+        'github-releases',
+      ],
+      matchPackageNames: [
+        'envoyproxy/envoy',
+      ],
+      matchFileNames: [
+        'imagevector/**',
+      ],
+      versioning: 'regex:^(?:distroless-)?v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+    },
+    {
+      // Use GitHub releases only for external dependencies we mirror.
+      matchDatasources: [
+        'github-releases',
+      ],
+      matchFileNames: [
+        'imagevector/**',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        '!/gardener/.+/',
+        '!/credativ/.+/',
+        '!/envoyproxy/.+/',
+        '!/fluent/.+/',
+        '!/perses/.+/',
+        '!/open-telemetry/.+/',
+        '!/VictoriaMetrics/.+/',
+      ],
+    },
+    {
+      // Ignore local-skaffold packages because they are virtual packages for local setup only.
+      enabled: false,
+      matchPackageNames: [
+        '/local-skaffold/.+/',
+      ],
+    },
+    {
+      // Ignore dependency updates from k8s.io/kube-openapi because it depends on k8s.io/apiserver.
+      matchDatasources: [
+        'go',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        '/k8s\\.io/kube-openapi/',
+      ],
+    },
+    {
+      // Disable major updates of jsonpatch/v2.
+      // The major version of this dependency should be kept in sync with controller-runtime:
+      // https://github.com/kubernetes-sigs/controller-runtime/blob/main/go.mod
+      matchDatasources: [
+        'go',
+      ],
+      matchPackageNames: [
+        'gomodules.xyz/jsonpatch/v2',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
+      enabled: false,
+    },
+    {
+      // TODO(marc1404): Remove when supported for containerd v1 is dropped or the following issue is resolved: https://github.com/gardener/gardener/issues/12600
+      // Disable major updates of go-toml to stay on v1.x.x.
+      // Related issue: https://github.com/gardener/gardener/issues/12600
+      matchDatasources: [
+        'go',
+      ],
+      matchPackageNames: [
+        'github.com/pelletier/go-toml',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
+      enabled: false,
+    },
+    {
+      // Ignore paths which most likely create false positives.
+      matchFileNames: [
+        'cmd/**',
+        'extensions/**',
+        'pkg/**',
+        '!pkg/apis/go.mod',
+        'plugin/**',
+        'test/**',
+        'third_party/**',
+      ],
+      enabled: false,
+    },
+    {
+      // Ignore updates for internal packages.
+      matchPackageNames: [
+        'github.com/gardener/gardener/pkg/apis',
+      ],
+      enabled: false,
+    },
+    {
+      // Ignore major updates of go.yaml.in/yaml/v2 (https://github.com/gardener/gardener/issues/12838).
+      matchPackageNames: [
+        'go.yaml.in/yaml/v2',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
+      enabled: false,
+    },
+    {
+      // Enable specific paths which have been disabled by the previous rule.
+      matchFileNames: [
+        'pkg/provider-local/machine-provider/node/*',
+      ],
+      enabled: true,
+    },
+    {
+      // Add PR footer with release notes.
+      matchFileNames: [
+        'imagevector/**',
+      ],
+      matchUpdateTypes: [
+        'major',
+        'minor',
+        'patch',
+      ],
+      prFooter: "**Release note**:\n\
+```other dependency\n\
+The following dependencies have been updated:\n\
+{{#each upgrades as |upgrade|}}\n\
+- `{{upgrade.depName}}` from `{{upgrade.currentVersion}}` to `{{upgrade.newVersion}}`. {{#if (equals upgrade.datasource 'github-releases')}}[Release Notes](https://github.com/{{upgrade.depName}}/releases/tag/{{upgrade.newVersion}}){{/if}}\n\
+{{/each}}\n\
+```",
+    },
+  ],
+}

@@ -1,0 +1,479 @@
+apiVersion: core.gardener.cloud/v1beta1
+kind: Shoot
+metadata:
+  name: crazy-botany
+  namespace: garden-dev
+spec:
+  credentialsBindingName: my-provider-account
+  cloudProfile:
+    name: cloudprofile1
+  region: europe-central-1
+  purpose: evaluation # {testing,development,production,infrastructure}, "infrastructure" purpose only usable for shoots in garden namespace
+# schedulerName: default-scheduler
+  provider:
+    type: <some-provider-name> # {aws,azure,gcp,...}
+    infrastructureConfig:
+      <some-provider-specific-infrastructure-config>
+      # https://github.com/gardener/gardener-extension-provider-alicloud/blob/master/example/30-infrastructure.yaml#L54-L64
+      # https://github.com/gardener/gardener-extension-provider-aws/blob/master/example/30-infrastructure.yaml#L43-L54
+      # https://github.com/gardener/gardener-extension-provider-azure/blob/master/example/30-infrastructure.yaml#L63-L75
+      # https://github.com/gardener/gardener-extension-provider-gcp/blob/master/example/30-infrastructure.yaml#L51-L65
+      # https://github.com/gardener/gardener-extension-provider-openstack/blob/master/example/30-infrastructure.yaml#L59-L65
+    controlPlaneConfig:
+      <some-provider-specific-controlplane-config>
+      # https://github.com/gardener/gardener-extension-provider-alicloud/blob/master/example/30-controlplane.yaml#L58-L63
+      # https://github.com/gardener/gardener-extension-provider-aws/blob/master/example/30-controlplane.yaml#L58-L62
+      # https://github.com/gardener/gardener-extension-provider-azure/blob/master/example/30-controlplane.yaml#L60-L64
+      # https://github.com/gardener/gardener-extension-provider-gcp/blob/master/example/30-controlplane.yaml#L57-L62
+      # https://github.com/gardener/gardener-extension-provider-openstack/blob/master/example/30-controlplane.yaml#L66-L72
+    workers:
+    - name: cpu-worker
+    # cri:
+    #   name: containerd
+    #   containerRuntimes:
+    #   - type: gvisor
+      minimum: 3
+      maximum: 5
+    # maxSurge: 1
+    # maxUnavailable: 0
+    # priority: 60
+      machine:
+        type: m5.large
+        image:
+          name: <some-image-name>
+          version: <some-image-version>
+        # providerConfig:
+        #   <some-machine-image-specific-configuration>
+      # architecture: <some-cpu-architecture>
+    # updateStrategy: AutoInPlaceUpdate # AutoRollingUpdate/AutoInPlaceUpdate/ManualInPlaceUpdate, defaulted to AutoRollingUpdate
+    # clusterAutoscaler:
+    #   scaleDownUtilizationThreshold: 0.5
+    #   scaleDownGpuUtilizationThreshold: 0.5
+    #   scaleDownUnneededTime: 30m
+    #   scaleDownUnreadyTime: 1h
+    #   maxNodeProvisionTime: 15m
+      volume:
+        type: gp2
+        size: 20Gi
+    #   encrypted: true
+    # dataVolumes:
+    # - name: kubelet-dir
+    #   type: gp2
+    #   size: 25Gi
+    #   encrypted: false
+    # kubeletDataVolumeName: kubelet-dir
+    # providerConfig:
+    #   <some-provider-specific-worker-config>
+    # systemComponents:
+    #   allow: true
+    # labels:
+    #   key: value
+    # annotations:
+    #   key: value
+    # taints: # See also https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+    # - key: foo
+    #   value: bar
+    #   effect: NoSchedule
+    # caBundle: <some-ca-bundle-to-be-installed-to-all-nodes-in-this-pool>
+    # kubernetes:
+    #   version: 1.14.3
+    #   kubelet:
+    #     containerLogMaxSize: 100Mi
+    #     containerLogMaxFiles: 5
+    #     cpuCFSQuota: true
+    #     failSwapOn: true
+    #     memorySwap:
+    #       swapBehavior: LimitedSwap
+    #     cpuManagerPolicy: none
+    #     podPidsLimit: 10
+    #     imageMinimumGCAge: 2m0s
+    #     imageMaximumGCAge: 0s
+    #     imageGCHighThresholdPercent: 50
+    #     imageGCLowThresholdPercent: 40
+    #     protectKernelDefaults: true
+    #     seccompDefault: true
+    #     serializeImagePulls: false
+    #     maxParallelImagePulls: 5
+    #     imagePullCredentialsVerificationPolicy: NeverVerifyPreloadedImages # only supported for Kubernetes >= 1.35
+    #     preloadedImagesVerificationAllowlist: # only supported for Kubernetes >= 1.35, requires imagePullCredentialsVerificationPolicy=NeverVerifyAllowlistedImages
+    #     - registry.example.com/my-image
+    #     - registry.example.com/my-project/*
+    #     streamingConnectionIdleTimeout: 5m
+    #     registryPullQPS: 5
+    #     registryBurst: 10
+    #     maxPods: 110
+    #     evictionPressureTransitionPeriod: 4m0s
+    #     evictionMaxPodGracePeriod: 90
+    #     evictionHard:
+    #       memoryAvailable: 100Mi
+    #       imageFSAvailable: 5%
+    #       imageFSInodesFree: 5%
+    #       nodeFSAvailable: 5%
+    #       nodeFSInodesFree: 5%
+    #     evictionSoft:
+    #       memoryAvailable: 200Mi
+    #       imageFSAvailable: 10%
+    #       imageFSInodesFree: 10%
+    #       nodeFSAvailable: 10%
+    #       nodeFSInodesFree: 10%
+    #     evictionSoftGracePeriod:
+    #       memoryAvailable: 1m30s
+    #       imageFSAvailable: 1m30s
+    #       imageFSInodesFree: 1m30s
+    #       nodeFSAvailable: 1m30s
+    #       nodeFSInodesFree: 1m30s
+    #     evictionMinimumReclaim:
+    #       memoryAvailable: 0Mi
+    #       imageFSAvailable: 0Mi
+    #       imageFSInodesFree: 0Mi
+    #       nodeFSAvailable: 0Mi
+    #       nodeFSInodesFree: 0Mi
+    #     featureGates:
+    #       SomeKubernetesFeature: true
+    #     kubeReserved:
+    #       cpu: 100m
+    #       memory: 1Gi
+    #       ephemeralStorage: 1Gi
+    #       pid: 1000
+    # zones: # optional, only relevant if the provider supports availability zones
+    # - europe-central-1a
+    # - europe-central-1b
+    # machineControllerManager: # optional, it allows to configure the machine-controller settings.
+    #   machineDrainTimeout: 2h
+    #   machineHealthTimeout: 10m
+    #   machineCreationTimeout: 20m
+    #   maxEvictRetries: 10
+    #   inPlaceUpdateTimeout: 20m (only relevant for in-place update strategy)
+    #   disableHealthTimeout: true (only relevant for in-place update strategy)
+    #   machinePreserveTimeout: 96h (only relevant for preservation of machines)
+    #   autoPreserveFailedMachineMax: 0 (i.e., no failed machine will be auto-preserved)
+    #   nodeConditions:
+    #   - ReadonlyFilesystem
+    #   - KernelDeadlock
+    #   - DiskPressure
+    # sysctls: # optional, allows to specify kernel settings to override defaults
+    #   net.ipv4.tcp_wmem: "4096 131072 16777216"
+    #   net.ipv4.tcp_rmem: "4096 131072 16777216"
+    # controlPlane: # mark the shoot as "self-hosted shoot cluster", see GEP-0028
+    #   backup:
+    #     provider: <provider-name> # e.g., aws, azure, gcp, ...
+    #     providerConfig:
+    #       <some-provider-specific-config-for-the-backup-buckets>
+    #     region: europe-1
+    #     credentialsRef:
+    #       apiVersion: v1
+    #       kind: Secret
+    #       name: backup-secret
+    #       namespace: kube-system
+    #   exposure: # either `extension` or `dns` or omitted/empty
+    #     extension:
+    #       type: local # defaults to `.spec.provider.type`, but could also be different
+    #       providerConfig: {} # *runtime.RawExtension
+    #     dns: {}
+    #   loadBalancerServices: # settings for the load balancer service of the istio ingress gateway
+    #     annotations:
+    #       foo: bar
+    #     externalTrafficPolicy: Cluster # or Local
+    #     proxyProtocol:
+    #       allowed: false
+    #     class: <load-balancer-class>
+  # workersSettings:
+  #   sshAccess:
+  #     enabled: false
+  kubernetes:
+  # version: 1.36.0
+  # etcd:
+  #   main:
+  #     autoscaling:
+  #       minAllowed:
+  #         cpu: "2"
+  #         memory: 6Gi
+  #   events:
+  #     autoscaling:
+  #       minAllowed:
+  #         cpu: "1"
+  #         memory: 3Gi
+  # kubeAPIServer:
+  #   eventTTL: 1h
+  #   featureGates:
+  #     SomeKubernetesFeature: true
+  #   runtimeConfig:
+  #     scheduling.k8s.io/v1alpha1: true
+  #   structuredAuthentication:
+  #     configMapName: name-of-configmap-containing-authentication-config
+  #   structuredAuthorization:
+  #     configMapName: name-of-configmap-containing-authorization-config
+  #     kubeconfigs:
+  #     - authorizerName: name-of-authorizer-in-authorization-config
+  #       secretName: name-of-a-secret-containing-kubeconfig-for-authorizer
+  #   admissionPlugins:
+  #   - name: PodNodeSelector
+  #     disabled: false
+  #     config:
+  #       podNodeSelectorPluginConfig:
+  #         clusterDefaultNodeSelector: <node-selectors-labels>
+  #         namespace1: <node-selectors-labels>
+  #         namespace2: <node-selectors-labels>
+  #     kubeconfigSecretName: <name> # Secret with kubeconfig must be specified in `.spec.resources` and referenced here.
+  #   auditConfig:
+  #     auditPolicy:
+  #       configMapRef:
+  #         name: auditpolicy
+  #   watchCacheSizes: # See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+  #     resources:
+  #     - resource: secrets
+  #       size: 500
+  #     - apiGroup: apps
+  #       resource: deployments
+  #       size: 500
+  #   requests:
+  #     maxNonMutatingInflight: 400
+  #     maxMutatingInflight: 200
+  #   enableAnonymousAuthentication: false # Deprecated, will be removed in a future version of gardener. Use anonymous authentication configuration instead, see: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration
+  #   apiAudiences:
+  #   - foo
+  #   serviceAccountConfig:
+  #     issuer: foo
+  #     acceptedIssuers:
+  #     - foo1
+  #     - foo2
+  #     extendTokenExpiration: true
+  #     maxTokenExpiration: 45d
+  #   logging:
+  #     verbosity: 2
+  #     httpAccessVerbosity: 3
+  #   defaultNotReadyTolerationSeconds: 300
+  #   defaultUnreachableTolerationSeconds: 300
+  #   encryptionConfig: # See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md
+  #     resources: # secrets are always encrypted
+  #     - configmaps
+  #     - customresource.fancyoperator.io
+  #     provider:
+  #       type: "aescbc"
+  #   autoscaling:
+  #     minAllowed:
+  #       cpu: "1"
+  #       memory: 3Gi
+  #   tlsMinVersion: VersionTLS12 # Minimum TLS version accepted by the kube-apiserver. Supported values: VersionTLS12, VersionTLS13.
+  # kubeControllerManager:
+  #   nodeCIDRMaskSize: 24
+  #   nodeCIDRMaskSizeIPv6: 80
+  #   nodeMonitorGracePeriod: 40s
+  #   featureGates:
+  #     SomeKubernetesFeature: true
+  #   horizontalPodAutoscaler:
+  #     syncPeriod: 30s
+  #     tolerance: 0.1
+  #     downscaleStabilization: 5m0s
+  #     initialReadinessDelay: 30s
+  #     cpuInitializationPeriod: 5m0s
+  # kubeScheduler:
+  #   featureGates:
+  #     SomeKubernetesFeature: true
+  #   profile: "balanced"
+  # kubeProxy:
+  #   featureGates:
+  #     SomeKubernetesFeature: true
+  #   mode: IPTables # {IPTables,NFTables}
+  #   enabled: true
+  # kubelet:
+  #   cpuCFSQuota: true
+  #   failSwapOn: true
+  #   memorySwap:
+  #     swapBehavior: LimitedSwap
+  #   cpuManagerPolicy: none
+  #   podPidsLimit: 10
+  #   imageGCHighThresholdPercent: 50
+  #   imageGCLowThresholdPercent: 40
+  #   protectKernelDefaults: true
+  #   seccompDefault: true
+  #   serializeImagePulls: false
+  #   maxParallelImagePulls: 3
+  #   imagePullCredentialsVerificationPolicy: NeverVerifyPreloadedImages # only supported for Kubernetes >= 1.35
+  #   preloadedImagesVerificationAllowlist: # only supported for Kubernetes >= 1.35, requires imagePullCredentialsVerificationPolicy=NeverVerifyAllowlistedImages
+  #   - registry.example.com/my-image
+  #   - registry.example.com/my-project/*
+  #   streamingConnectionIdleTimeout: 5m
+  #   registryPullQPS: 5
+  #   registryBurst: 10
+  #   maxPods: 110
+  #   singleProcessOOMKill: false
+  #   evictionPressureTransitionPeriod: 4m0s
+  #   evictionMaxPodGracePeriod: 90
+  #   evictionHard:
+  #     memoryAvailable: 100Mi
+  #     imageFSAvailable: 5%
+  #     imageFSInodesFree: 5%
+  #     nodeFSAvailable: 5%
+  #     nodeFSInodesFree: 5%
+  #   evictionSoft:
+  #     memoryAvailable: 200Mi
+  #     imageFSAvailable: 10%
+  #     imageFSInodesFree: 10%
+  #     nodeFSAvailable: 10%
+  #     nodeFSInodesFree: 10%
+  #   evictionSoftGracePeriod:
+  #     memoryAvailable: 1m30s
+  #     imageFSAvailable: 1m30s
+  #     imageFSInodesFree: 1m30s
+  #     nodeFSAvailable: 1m30s
+  #     nodeFSInodesFree: 1m30s
+  #   evictionMinimumReclaim:
+  #     memoryAvailable: 0Mi
+  #     imageFSAvailable: 0Mi
+  #     imageFSInodesFree: 0Mi
+  #     nodeFSAvailable: 0Mi
+  #     nodeFSInodesFree: 0Mi
+  #   featureGates:
+  #     SomeKubernetesFeature: true
+  # clusterAutoscaler:
+  #   expander: "priority,least-waste" # see: https://github.com/gardener/autoscaler/blob/machine-controller-manager-provider/cluster-autoscaler/FAQ.md#what-are-expanders
+  #   maxGracefulTerminationSeconds: 600
+  #   maxNodeProvisionTime: 20m
+  #   maxBinpackingTime: 5m
+  #   initialNodeGroupBackoffDuration: 5m
+  #   maxNodeGroupBackoffDuration: 30m
+  #   nodeGroupBackoffResetTimeout: 3h
+  #   scaleDownUtilizationThreshold: 0.5
+  #   scaleDownUnneededTime: 30m
+  #   scaleDownDelayAfterAdd: 1h
+  #   scaleDownDelayAfterFailure: 3m
+  #   scaleDownDelayAfterDelete: 0s
+  #   scanInterval: 10s
+  #   startupTaints:
+  #     - "node.kubernetes.io/memory-pressure"
+  #     - "node.kubernetes.io/disk-pressure"
+  #   statusTaints:
+  #     - "reservedForTenant"
+  #   newPodScaleUpDelay: 0s
+  #   maxScaleDownParallelism: 10
+  #   maxDrainParallelism: 1
+  #   ignoreDaemonsetsUtilization: false
+  #   emitPerNodeGroupMetrics: false
+  #   verbosity: 2
+  #   autoscaling:
+  #     minAllowed:
+  #       cpu: "2"
+  #       memory: 6Gi
+  # verticalPodAutoscaler:
+  #   enabled: true
+  #   evictAfterOOMThreshold: 10m0s
+  #   evictionRateBurst: 1
+  #   evictionRateLimit: -1
+  #   evictionTolerance: 0.5
+  #   recommendationMarginFraction: 0.15
+  #   updaterInterval: 1m0s
+  #   recommenderInterval: 1m0s
+  #   targetCPUPercentile: 0.9
+  #   recommendationLowerBoundCPUPercentile: 0.5
+  #   recommendationUpperBoundCPUPercentile: 0.95
+  #   cpuHistogramDecayHalfLife: 24h
+  #   targetMemoryPercentile: 0.9
+  #   recommendationLowerBoundMemoryPercentile: 0.5
+  #   recommendationUpperBoundMemoryPercentile: 0.95
+  #   memoryHistogramDecayHalfLife: 24h
+  #   memoryAggregationInterval: 24h
+  #   memoryAggregationIntervalCount: 8
+  #   featureGates:
+  #     SomeKubernetesFeature: true
+  #   maxAllowed:
+  #     cpu: 8
+  #     memory: 32Gi
+  #   recommenderUpdateWorkerCount: 10
+  dns:
+    # When the shoot shall use a cluster domain no domain and no providers need to be provided - Gardener will
+    # automatically compute a correct domain based on the default domains in the garden cluster.
+    domain: crazy-botany.core.my-custom-domain.com
+    # Provider configuration required if custom shoot domain is configured.
+  # providers:
+  # - type: aws-route53
+  #   secretName: my-custom-domain-secret # Deprecated. Forbidden for Kubernetes >= 1.35. Use `credentialsRef` instead.
+  #   credentialsRef:
+  #     apiVersion: v1
+  #     kind: Secret
+  #     name: my-custom-domain-secret
+  extensions:
+  - type: foobar
+  # providerConfig:
+  #   apiVersion: foobar.extensions.gardener.cloud/v1alpha1
+  #   kind: FooBarConfig
+  #   foo: bar
+  #   secretRef: foobar-secret # See the resources section below for the actual reference
+  # disabled: true # only relevant for extensions that were marked as 'automatically enabled' by Gardener administrators
+  networking:
+    type: <some-network-extension-name> # {calico,cilium}
+    ipFamilies:
+    - IPv4
+    pods: 100.96.0.0/11
+    nodes: 10.250.0.0/16
+    services: 100.64.0.0/13
+    # providerConfig:
+    #   <some-networking-provider-specific-config>
+    #   https://github.com/gardener/gardener-extension-networking-calico/blob/master/example/20-network.yaml#L46-L56
+    #   https://github.com/gardener/gardener-extension-networking-cilium/blob/master/example/20-network.yaml#L42-L57
+    #   For networking extensibility see also: https://github.com/gardener/enhancements/tree/main/geps/0003-networking-extensibility
+  maintenance:
+    timeWindow:
+      begin: 220000+0100
+      end: 230000+0100
+    autoUpdate:
+      kubernetesVersion: true
+      machineImageVersion: true
+  # autoRotation:
+  #   credentials:
+  #     observability:
+  #       rotationPeriod: 168h
+  #     sshKeypair:
+  #       rotationPeriod: 168h
+  #     etcdEncryptionKey:
+  #       rotationPeriod: 168h
+  # confineSpecUpdateRollout: false # If set to true then changes/updates to the shoot spec will only be rolled out during
+                                    # the maintenance time window
+  monitoring:
+    alerting:
+      emailReceivers:
+      - john.doe@example.com
+# hibernation:
+#   enabled: false # enabled controls the immediate desired hibernation state.
+#   schedules:
+#   - start: "0 20 * * *" # Start hibernation every day at 8PM
+#     end: "0 6 * * *"    # Stop hibernation every day at 6AM
+#     location: "America/Los_Angeles" # Specify a location for the cron to run in
+# tolerations:
+# - key: <some-key>
+# Explicitly specify the seed that will run the shoot control plane. Only possible for users having RBAC for
+# shoots/binding subresource (https://github.com/gardener/gardener/blob/master/docs/concepts/scheduler.md#specseedname-field-in-the-shoot-specification).
+# seedName: my-seed
+# Provide labels of seeds that are eligible to run this shoot - will be evaluated by the scheduler
+# seedSelector:
+#   matchLabels:
+#     foo: bar
+# List resources referenced by providerConfig and other sections
+# resources:
+# - name: foobar-secret
+#   resourceRef:
+#     apiVersion: v1
+#     kind: Secret
+#     name: my-foobar-secret
+# exposureClassName: <exposure-class-name>
+# systemComponents:
+#   coreDNS:
+#     autoscaling:
+#       mode: horizontal # {horizontal,cluster-proportional}
+#     rewriting:
+#       commonSuffixes:
+#       - gardener.cloud
+#   nodeLocalDNS:
+#     enabled: true # {true,false}
+#     forceTCPToClusterDNS: true # {true,false}
+#     forceTCPToUpstreamDNS: true # {true,false}
+#     disableForwardToUpstreamDNS: true # {true,false}
+# controlPlane:
+#   highAvailability:
+#     failureTolerance:
+#       type: zone # {node,zone}
+# accessRestrictions:
+# - name: eu-access-only
+#   options:
+#     support.gardener.cloud/eu-access-for-cluster-addons: "false"
+#     support.gardener.cloud/eu-access-for-cluster-nodes: "true"

@@ -1,0 +1,71 @@
+# Envoy proxy and istio do not support HTTP/2 client connection coalescing natively.
+# Clients, especially web browsers, may open a single HTTP/2 connection and send requests
+# targeted at different hosts all backed by the same IP address and wildcard certificate.
+# Returning 421 for requests where the authority header matches the certificate SANs but
+# differs from the requested server name indicates to the client that it should open a new
+# connection for the request.
+# Issues:
+# - https://github.com/envoyproxy/envoy/issues/6767
+# - https://github.com/istio/istio/issues/13589
+# Documentation:
+# - https://istio.io/latest/docs/ops/common-problems/network-issues/#404-errors-occur-when-multiple-gateways-configured-with-same-tls-certificate
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: misdirected-requests
+  namespace: test-ingress
+spec:
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        portNumber: 9443
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter:
+              name: envoy.filters.http.router
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.lua
+        typed_config:
+          "@type": "type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua"
+          inlineCode: |
+            function envoy_on_request(request_handle)
+              local streamInfo = request_handle:streamInfo()
+              local rsn = streamInfo:requestedServerName()
+              local authority = request_handle:headers():get(":authority")
+
+              authority = authority:gsub(":443$", "")
+
+              -- If the requested SNI matches the authority, the request is on the expected connection.
+              if rsn == authority then
+                return
+              end
+
+              local sslInfo = streamInfo:downstreamSslConnection()
+              local sans = sslInfo:dnsSansLocalCertificate()
+
+              for _, san in ipairs(sans) do
+                -- Exact match: The certificate covers this exact domain, but the connection was
+                -- opened with a different SNI (rsn). This indicates HTTP/2 connection coalescing.
+                if san == authority then
+                  request_handle:respond({[":status"] = "421"}, "Misdirected Request")
+                  return
+
+                -- Wildcard match: Handle wildcard certificates (e.g. "*.example.com").
+                -- The wildcard only matches a single leftmost label
+                -- (e.g. "foo.example.com" matches, but "sub.foo.example.com" does not).
+                elseif san:sub(1, 2) == "*." then
+                  local wildcardDomain = san:sub(3)
+                  local dotIndex = authority:find(".", 1, true)
+
+                  if dotIndex and authority:sub(dotIndex + 1) == wildcardDomain then
+                    request_handle:respond({[":status"] = "421"}, "Misdirected Request")
+                    return
+                  end
+                end
+              end
+            end

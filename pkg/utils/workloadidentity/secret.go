@@ -1,0 +1,259 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package workloadidentity
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	securityv1alpha1constants "github.com/gardener/gardener/pkg/apis/security/v1alpha1/constants"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/utils"
+)
+
+// SecretOption represents a function that is used to configure [Secret] during creation.
+type SecretOption func(*Secret) error
+
+// Secret wraps [*corev1.Secret] and represents an object which will be used by
+// workloads to request a token for a specific [securityv1alpha1.WorkloadIdentity].
+// The created secret is properly annotated and labeled so that the token requestor controller
+// for workload identities will pick it up and keep a valid workload identity token stored in it.
+type Secret struct {
+	secret *corev1.Secret
+
+	labels      map[string]string
+	annotations map[string]string
+
+	workloadIdentityName           string
+	workloadIdentityNamespace      string
+	workloadIdentityProviderType   string
+	workloadIdentityContextObject  []byte
+	workloadIdentityProviderConfig []byte
+}
+
+// NewSecret creates a new workload identity secret that will be recognized
+// by the token requestor controller for workload identities which will keep
+// a valid workload identity token stored in it.
+func NewSecret(name, namespace string, opts ...SecretOption) (*Secret, error) {
+	workloadIdentitySecret := &Secret{
+		secret: &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+			Data: make(map[string][]byte),
+		},
+	}
+
+	var err error
+	for _, o := range opts {
+		if e := o(workloadIdentitySecret); err != nil {
+			err = errors.Join(err, e)
+		}
+	}
+
+	if len(workloadIdentitySecret.workloadIdentityName) == 0 {
+		err = errors.Join(err, errors.New("WorkloadIdentity name is not set"))
+	}
+
+	if len(workloadIdentitySecret.workloadIdentityNamespace) == 0 {
+		err = errors.Join(err, errors.New("WorkloadIdentity namespace is not set"))
+	}
+
+	if len(workloadIdentitySecret.workloadIdentityProviderType) == 0 {
+		err = errors.Join(err, errors.New("WorkloadIdentity provider type is not set"))
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return workloadIdentitySecret, nil
+}
+
+// WithLabels is an option that can be used to set additional labels to the workload identity secret
+// which are not necessarily correlated with workload identity specific logic.
+func WithLabels(labels map[string]string) SecretOption {
+	return func(s *Secret) error {
+		s.labels = maps.Clone(labels)
+		return nil
+	}
+}
+
+// WithAnnotations is an option that can be used to set additional annotations to the workload identity secret
+// which are not necessarily correlated with workload identity specific logic.
+func WithAnnotations(annotations map[string]string) SecretOption {
+	return func(s *Secret) error {
+		s.annotations = maps.Clone(annotations)
+		return nil
+	}
+}
+
+// For is an option that correlates the workload identity secret with a specific workload identity.
+// This option is required upon creation of such secret.
+func For(workloadIdentityName, workloadIdentityNamespace, workloadIdentityProviderType string) SecretOption {
+	return func(s *Secret) error {
+		s.workloadIdentityName = workloadIdentityName
+		s.workloadIdentityNamespace = workloadIdentityNamespace
+		s.workloadIdentityProviderType = workloadIdentityProviderType
+		return nil
+	}
+}
+
+// WithProviderConfig is an option that can be used to store
+// provider specific information in the workload identity secret.
+func WithProviderConfig(providerConfig *runtime.RawExtension) SecretOption {
+	return func(s *Secret) error {
+		if providerConfig == nil {
+			return nil
+		}
+		data, err := json.Marshal(providerConfig)
+		if err != nil {
+			return err
+		}
+		s.workloadIdentityProviderConfig = data
+		return nil
+	}
+}
+
+// WithContextObject is an option that can be used
+// to indicate to the token requestor controller for workload identities
+// that requested tokens are going to be used in the context of the passed object.
+func WithContextObject(contextObject securityv1alpha1.ContextObject) SecretOption {
+	return func(s *Secret) error {
+		data, err := json.Marshal(contextObject)
+		if err != nil {
+			return err
+		}
+		s.workloadIdentityContextObject = data
+		return nil
+	}
+}
+
+// reconcileSecret applies in-place the required modifications on the provided
+// <secret>. If <cleanDataKeys> is set, it deletes all data keys from the secret
+// except <token>, otherwise all data keys are preserved.
+func (s *Secret) reconcileSecret(secret *corev1.Secret, cleanDataKeys bool) {
+	secret.Type = corev1.SecretTypeOpaque
+
+	// preserve the renew timestamp if present but overwrite all other annotations
+	if v, ok := secret.Annotations[securityv1alpha1constants.AnnotationWorkloadIdentityTokenRenewTimestamp]; ok {
+		secret.Annotations = utils.MergeStringMaps(s.annotations, map[string]string{
+			securityv1alpha1constants.AnnotationWorkloadIdentityTokenRenewTimestamp: v,
+		})
+	} else {
+		secret.Annotations = s.annotations
+	}
+
+	metav1.SetMetaDataAnnotation(&secret.ObjectMeta, securityv1alpha1constants.AnnotationWorkloadIdentityNamespace, s.workloadIdentityNamespace)
+	metav1.SetMetaDataAnnotation(&secret.ObjectMeta, securityv1alpha1constants.AnnotationWorkloadIdentityName, s.workloadIdentityName)
+	if len(s.workloadIdentityContextObject) > 0 {
+		metav1.SetMetaDataAnnotation(&secret.ObjectMeta, securityv1alpha1constants.AnnotationWorkloadIdentityContextObject, string(s.workloadIdentityContextObject))
+	} else {
+		delete(secret.Annotations, securityv1alpha1constants.AnnotationWorkloadIdentityContextObject)
+	}
+
+	secret.Labels = utils.MergeStringMaps(s.labels, map[string]string{
+		securityv1alpha1constants.LabelPurpose:                  securityv1alpha1constants.LabelPurposeWorkloadIdentityTokenRequestor,
+		securityv1alpha1constants.LabelWorkloadIdentityProvider: s.workloadIdentityProviderType,
+	})
+
+	if secret.Data == nil {
+		secret.Data = make(map[string][]byte)
+	}
+
+	if cleanDataKeys {
+		// preserve the data token key if present but overwrite all other data keys
+		maps.DeleteFunc(secret.Data, func(k string, _ []byte) bool {
+			return k != securityv1alpha1constants.DataKeyToken
+		})
+	}
+
+	if len(s.workloadIdentityProviderConfig) > 0 {
+		secret.Data[securityv1alpha1constants.DataKeyConfig] = s.workloadIdentityProviderConfig
+	} else {
+		delete(secret.Data, securityv1alpha1constants.DataKeyConfig)
+	}
+}
+
+// Reconcile creates or patches the workload identity secret. Based on the struct configuration, it adds
+// annotations and labels that are recognized by the token requestor controller for workload identities.
+func (s *Secret) Reconcile(ctx context.Context, c client.Client) error {
+	_, err := controllerutils.GetAndCreateOrMergePatch(ctx, c, s.secret, func() error {
+		s.reconcileSecret(s.secret, true)
+		return nil
+	},
+		// The token-requestor might concurrently update the secret token key to populate the token.
+		// Hence, we need to use optimistic locking here to ensure we don't accidentally overwrite the concurrent update.
+		// ref https://github.com/gardener/gardener/issues/6092#issuecomment-1156244514
+		controllerutils.MergeFromOption{MergeFromOption: client.MergeFromWithOptimisticLock{}},
+	)
+	return err
+}
+
+// Equal generates a workload identity secret based on the <other> Secret
+// and compare them if they are deeply equal.
+func (s *Secret) Equal(other *corev1.Secret) bool {
+	copySecret := other.DeepCopy()
+	s.reconcileSecret(copySecret, false)
+	return apiequality.Semantic.DeepEqual(other, copySecret)
+}
+
+// Deploy creates and reconciles a workload identity secret in the target namespace.
+func Deploy(ctx context.Context, seedClient client.Client, workloadIdentity *securityv1alpha1.WorkloadIdentity, targetSecretName, targetNamespace string, targetSecretAnnotations, targetSecretLabels map[string]string, referringObj client.Object) error {
+	opts := []SecretOption{
+		For(workloadIdentity.GetName(), workloadIdentity.GetNamespace(), workloadIdentity.Spec.TargetSystem.Type),
+		WithProviderConfig(workloadIdentity.Spec.TargetSystem.ProviderConfig),
+	}
+
+	if referringObj != nil {
+		gvk, err := apiutil.GVKForObject(referringObj, kubernetes.GardenScheme)
+		if err != nil {
+			return fmt.Errorf("failed to parse the GVK of the referring object: %w", err)
+		}
+
+		contextObject := securityv1alpha1.ContextObject{
+			APIVersion: gvk.GroupVersion().String(),
+			Kind:       gvk.Kind,
+			Name:       referringObj.GetName(),
+			UID:        referringObj.GetUID(),
+		}
+		if ns := referringObj.GetNamespace(); ns != "" {
+			contextObject.Namespace = &ns
+		}
+
+		opts = append(opts, WithContextObject(contextObject))
+	}
+
+	if targetSecretAnnotations != nil {
+		opts = append(opts, WithAnnotations(targetSecretAnnotations))
+	}
+
+	if targetSecretLabels != nil {
+		opts = append(opts, WithLabels(targetSecretLabels))
+	}
+
+	s, err := NewSecret(targetSecretName, targetNamespace, opts...)
+	if err != nil {
+		return fmt.Errorf("failed to create workload identity secret %s/%s: %w", targetNamespace, targetSecretName, err)
+	}
+	if err := s.Reconcile(ctx, seedClient); err != nil {
+		return fmt.Errorf("failed to reconcile workload identity secret %s/%s: %w", targetNamespace, targetSecretName, err)
+	}
+
+	return nil
+}

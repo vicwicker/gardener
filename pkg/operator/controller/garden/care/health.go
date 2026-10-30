@@ -1,0 +1,314 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package care
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/clock"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	commonprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus"
+	"github.com/gardener/gardener/pkg/features"
+	"github.com/gardener/gardener/pkg/utils/flow"
+	kuberneteshealth "github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
+)
+
+// health contains information needed to execute health checks for garden.
+type health struct {
+	garden              *operatorv1alpha1.Garden
+	gardenNamespace     string
+	runtimeClient       client.Client
+	gardenClientSet     kubernetes.Interface
+	clock               clock.Clock
+	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration
+	healthChecker       *healthchecker.HealthChecker
+}
+
+// NewHealth creates a new Health instance with the given parameters.
+func NewHealth(
+	garden *operatorv1alpha1.Garden,
+	runtimeClient client.Client,
+	gardenClientSet kubernetes.Interface,
+	clock clock.Clock,
+	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration,
+	gardenNamespace string,
+	healthChecker *healthchecker.HealthChecker,
+) HealthCheck {
+	return &health{
+		garden:              garden,
+		gardenNamespace:     gardenNamespace,
+		runtimeClient:       runtimeClient,
+		gardenClientSet:     gardenClientSet,
+		clock:               clock,
+		conditionThresholds: conditionThresholds,
+		healthChecker:       healthChecker,
+	}
+}
+
+// Check conducts the health checks on all the given conditions.
+func (h *health) Check(ctx context.Context, conditions GardenConditions) []gardencorev1beta1.Condition {
+	managedResources, err := h.listManagedResources(ctx)
+	if err != nil {
+		conditions.virtualGardenAPIServerAvailable = v1beta1helper.NewConditionOrError(h.clock, conditions.virtualGardenAPIServerAvailable, nil, err)
+		conditions.runtimeComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.runtimeComponentsHealthy, nil, err)
+		conditions.virtualComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.virtualComponentsHealthy, nil, err)
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
+		return conditions.ConvertToSlice()
+	}
+
+	taskFns := []flow.TaskFn{
+		func(ctx context.Context) error {
+			conditions.virtualGardenAPIServerAvailable = h.checkAPIServerAvailability(ctx, conditions.virtualGardenAPIServerAvailable)
+			return nil
+		},
+		func(_ context.Context) error {
+			newRuntimeComponentsCondition := h.checkRuntimeComponents(conditions.runtimeComponentsHealthy, managedResources)
+			conditions.runtimeComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.runtimeComponentsHealthy, newRuntimeComponentsCondition, nil)
+			return nil
+		},
+		func(ctx context.Context) error {
+			newVirtualComponentsCondition, err := h.checkVirtualComponents(ctx, conditions.virtualComponentsHealthy, managedResources)
+			conditions.virtualComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.virtualComponentsHealthy, newVirtualComponentsCondition, err)
+			return nil
+		},
+	}
+
+	prometheuses, err := h.listPrometheuses(ctx)
+	if err != nil {
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
+	} else {
+		taskFns = append(taskFns, func(_ context.Context) error {
+			newObservabilityCondition := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, managedResources, prometheuses)
+			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityCondition, nil)
+			return nil
+		})
+	}
+
+	_ = flow.Parallel(taskFns...)(ctx)
+
+	return conditions.ConvertToSlice()
+}
+
+func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.ManagedResource, error) {
+	managedResourceListGarden := &resourcesv1alpha1.ManagedResourceList{}
+	if err := h.runtimeClient.List(ctx, managedResourceListGarden, client.InNamespace(h.gardenNamespace)); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", h.gardenNamespace, err)
+	}
+
+	managedResourceListIstioSystem := &resourcesv1alpha1.ManagedResourceList{}
+	if err := h.runtimeClient.List(ctx, managedResourceListIstioSystem, client.InNamespace(v1beta1constants.IstioSystemNamespace)); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", v1beta1constants.IstioSystemNamespace, err)
+	}
+
+	return append(managedResourceListGarden.Items, managedResourceListIstioSystem.Items...), nil
+}
+
+func (h *health) listPrometheuses(ctx context.Context) (*monitoringv1.PrometheusList, error) {
+	prometheusList := &monitoringv1.PrometheusList{}
+	if err := h.runtimeClient.List(ctx, prometheusList, client.InNamespace(h.gardenNamespace)); err != nil {
+		return nil, fmt.Errorf("failed listing Prometheuses in namespace %s: %w", h.gardenNamespace, err)
+	}
+
+	return prometheusList, nil
+}
+
+// checkAPIServerAvailability checks if the API server of a virtual garden is reachable and measures the response time.
+func (h *health) checkAPIServerAvailability(ctx context.Context, condition gardencorev1beta1.Condition) gardencorev1beta1.Condition {
+	if h.gardenClientSet == nil {
+		return v1beta1helper.FailedCondition(h.clock, h.garden.Status.LastOperation, h.conditionThresholds, condition, "VirtualGardenAPIServerDown", "Could not reach virtual garden API server during client initialization.")
+	}
+	log := logf.FromContext(ctx)
+	return kuberneteshealth.CheckAPIServerAvailability(ctx, h.clock, log, condition, h.gardenClientSet.RESTClient(), func(conditionType, message string) gardencorev1beta1.Condition {
+		return v1beta1helper.FailedCondition(h.clock, h.garden.Status.LastOperation, h.conditionThresholds, condition, conditionType, message)
+	})
+}
+
+func (h *health) checkRuntimeComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+		return managedResource.Spec.Class != nil &&
+			sets.New("", string(operatorv1alpha1.RuntimeComponentsHealthy)).Has(managedResource.Labels[v1beta1constants.LabelCareConditionType])
+	}, nil, nil); exitCondition != nil {
+		return exitCondition
+	}
+
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "RuntimeComponentsRunning", "All runtime components are healthy."))
+}
+
+func (h *health) checkVirtualComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) (*gardencorev1beta1.Condition, error) {
+	if exitCondition, err := h.healthChecker.CheckControlPlane(
+		ctx,
+		h.gardenNamespace,
+		sets.New(operatorv1alpha1.DeploymentNameVirtualGardenGardenerResourceManager, operatorv1alpha1.DeploymentNameVirtualGardenKubeAPIServer, operatorv1alpha1.DeploymentNameVirtualGardenKubeControllerManager),
+		sets.New(operatorv1alpha1.VirtualGardenETCDMain, operatorv1alpha1.VirtualGardenETCDEvents),
+		condition,
+	); err != nil || exitCondition != nil {
+		return exitCondition, err
+	}
+
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+		return managedResource.Spec.Class == nil ||
+			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(operatorv1alpha1.VirtualComponentsHealthy)
+	}, nil, nil); exitCondition != nil {
+		return exitCondition, nil
+	}
+
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "VirtualComponentsRunning", "All virtual garden components are healthy.")), nil
+}
+
+// checkObservabilityComponents checks whether the observability components are healthy.
+func (h *health) checkObservabilityComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+		return managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(operatorv1alpha1.ObservabilityComponentsHealthy)
+	}, nil, nil); exitCondition != nil {
+		return exitCondition
+	}
+
+	filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
+		return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.GardenerOperator
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
+			return exitCondition
+		}
+	}
+
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy."))
+}
+
+// GardenConditions contains all conditions of the garden status subresource.
+type GardenConditions struct {
+	virtualGardenAPIServerAvailable gardencorev1beta1.Condition
+	runtimeComponentsHealthy        gardencorev1beta1.Condition
+	virtualComponentsHealthy        gardencorev1beta1.Condition
+	observabilityComponentsHealthy  gardencorev1beta1.Condition
+}
+
+// ConvertToSlice returns the garden conditions as a slice.
+func (g GardenConditions) ConvertToSlice() []gardencorev1beta1.Condition {
+	return []gardencorev1beta1.Condition{
+		g.virtualGardenAPIServerAvailable,
+		g.runtimeComponentsHealthy,
+		g.virtualComponentsHealthy,
+		g.observabilityComponentsHealthy,
+	}
+}
+
+// ConditionTypes returns all garden condition types.
+func (g GardenConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
+	return []gardencorev1beta1.ConditionType{
+		g.virtualGardenAPIServerAvailable.Type,
+		g.runtimeComponentsHealthy.Type,
+		g.virtualComponentsHealthy.Type,
+		g.observabilityComponentsHealthy.Type,
+	}
+}
+
+// NewGardenConditions returns a new instance of GardenConditions.
+// All conditions are retrieved from the given 'status' or newly initialized.
+func NewGardenConditions(clock clock.Clock, status operatorv1alpha1.GardenStatus) GardenConditions {
+	return GardenConditions{
+		virtualGardenAPIServerAvailable: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.VirtualGardenAPIServerAvailable),
+		runtimeComponentsHealthy:        v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.RuntimeComponentsHealthy),
+		virtualComponentsHealthy:        v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.VirtualComponentsHealthy),
+		observabilityComponentsHealthy:  v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, operatorv1alpha1.ObservabilityComponentsHealthy),
+	}
+}
+
+// GardenConstraints contains all constraints of the garden status subresource.
+type GardenConstraints struct {
+	managedResourcesHonored gardencorev1beta1.Condition
+}
+
+// ConvertToSlice returns the garden constraints as a slice.
+func (g GardenConstraints) ConvertToSlice() []gardencorev1beta1.Condition {
+	return []gardencorev1beta1.Condition{
+		g.managedResourcesHonored,
+	}
+}
+
+// ConstraintTypes returns all garden constraint types.
+func (g GardenConstraints) ConstraintTypes() []gardencorev1beta1.ConditionType {
+	return []gardencorev1beta1.ConditionType{
+		g.managedResourcesHonored.Type,
+	}
+}
+
+// NewGardenConstraints returns a new instance of GardenConstraints.
+// All constraints are retrieved from the given 'status' or newly initialized.
+func NewGardenConstraints(clock clock.Clock, status operatorv1alpha1.GardenStatus) GardenConstraints {
+	return GardenConstraints{
+		managedResourcesHonored: v1beta1helper.GetOrInitConditionWithClock(clock, status.Constraints, operatorv1alpha1.GardenManagedResourcesHonored),
+	}
+}
+
+// constraint contains information needed to execute constraint checks for a garden.
+type constraint struct {
+	runtimeClient   client.Client
+	clock           clock.Clock
+	gardenNamespace string
+}
+
+// NewConstraint returns a new constraint instance.
+func NewConstraint(runtimeClient client.Client, clock clock.Clock, gardenNamespace string) ConstraintCheck {
+	return &constraint{
+		runtimeClient:   runtimeClient,
+		clock:           clock,
+		gardenNamespace: gardenNamespace,
+	}
+}
+
+// Check executes all constraint checks for the garden.
+func (c *constraint) Check(ctx context.Context, constraints GardenConstraints) []gardencorev1beta1.Condition {
+	managedResources, err := c.listManagedResources(ctx)
+	if err != nil {
+		constraints.managedResourcesHonored = v1beta1helper.UpdatedConditionUnknownErrorWithClock(c.clock, constraints.managedResourcesHonored,
+			fmt.Errorf("could not list ManagedResources to check for ignored resources: %w", err))
+		return filterOptionalGardenConstraints(constraints)
+	}
+
+	status, reason, message := kuberneteshealth.CheckManagedResourcesHonored(managedResources)
+	constraints.managedResourcesHonored = v1beta1helper.UpdatedConditionWithClock(c.clock, constraints.managedResourcesHonored, status, reason, message)
+
+	return filterOptionalGardenConstraints(constraints)
+}
+
+func (c *constraint) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.ManagedResource, error) {
+	managedResourceListGarden := &resourcesv1alpha1.ManagedResourceList{}
+	if err := c.runtimeClient.List(ctx, managedResourceListGarden, client.InNamespace(c.gardenNamespace)); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", c.gardenNamespace, err)
+	}
+
+	managedResourceListIstioSystem := &resourcesv1alpha1.ManagedResourceList{}
+	if err := c.runtimeClient.List(ctx, managedResourceListIstioSystem, client.InNamespace(v1beta1constants.IstioSystemNamespace)); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", v1beta1constants.IstioSystemNamespace, err)
+	}
+
+	return append(managedResourceListGarden.Items, managedResourceListIstioSystem.Items...), nil
+}
+
+// filterOptionalGardenConstraints omits constraints that are True — they add no signal for operators.
+func filterOptionalGardenConstraints(constraints GardenConstraints) []gardencorev1beta1.Condition {
+	var out []gardencorev1beta1.Condition
+	for _, c := range constraints.ConvertToSlice() {
+		if c.Status != gardencorev1beta1.ConditionTrue {
+			out = append(out, c)
+		}
+	}
+	return out
+}

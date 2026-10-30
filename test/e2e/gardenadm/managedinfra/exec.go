@@ -1,0 +1,127 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package managedinfra
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os/exec"
+	"slices"
+	"strings"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
+	"github.com/onsi/gomega/gexec"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/gardener/gardener/pkg/provider-local/controller/infrastructure"
+	"github.com/gardener/gardener/pkg/utils/imagevector"
+)
+
+var binaryPath string
+
+// PrepareBinary builds the gardenadm binary.
+func PrepareBinary() {
+	By("Building gardenadm binary")
+	var err error
+	binaryPath, err = gexec.Build("../../../cmd/gardenadm")
+	Expect(err).NotTo(HaveOccurred())
+	logf.Log.Info("Using binary", "path", binaryPath)
+
+	DeferCleanup(gexec.CleanupBuildArtifacts)
+}
+
+// NewCommand creates a new exec.Cmd for gardenadm.
+func NewCommand(extraEnv []string, args ...string) *exec.Cmd { // #nosec G204 -- Used for e2e tests only.
+	cmd := exec.Command(binaryPath, append([]string{"--log-level=debug"}, args...)...)
+	cmd.Env = append(cmd.Env,
+		clientcmd.RecommendedConfigPathEnvVar+"=../../../dev-setup/kubeconfigs/runtime/kubeconfig",
+		imagevector.OverrideEnv+"=../../../dev-setup/gardenadm/resources/generated/.imagevector-overwrite.yaml",
+		imagevector.ComponentOverrideEnv+"=../../../dev-setup/gardenadm/resources/imagevector-overwrite-components.yaml",
+		imagevector.OverrideChartsEnv+"=../../../dev-setup/gardenadm/resources/generated/.imagevector-overwrite-charts.yaml",
+	)
+	cmd.Env = append(cmd.Env, extraEnv...)
+	return cmd
+}
+
+// RunCommand runs the given exec.Cmd and returns the gexec.Session.
+func RunCommand(cmd *exec.Cmd) *gexec.Session {
+	GinkgoHelper()
+
+	session, err := gexec.Start(
+		cmd,
+		gexec.NewPrefixedWriter("[out] ", GinkgoWriter),
+		gexec.NewPrefixedWriter("[err] ", GinkgoWriter),
+	)
+	Expect(err).NotTo(HaveOccurred())
+
+	return session
+}
+
+// Wait waits for the given gexec.Session to finish and returns the session.
+func Wait(ctx context.Context, session *gexec.Session) *gexec.Session {
+	GinkgoHelper()
+
+	Eventually(ctx, session).Should(gexec.Exit(0), func() string {
+		return fmt.Sprintf("session output:\n%s\nsession error:\n%s", session.Out.Contents(), session.Err.Contents())
+	})
+	return session
+}
+
+// Run runs gardenadm with the given arguments and returns the gexec.Session.
+func Run(args ...string) *gexec.Session {
+	return RunCommand(NewCommand(nil, args...))
+}
+
+// RunAndWait runs gardenadm with the given arguments and waits for the session to finish.
+func RunAndWait(ctx context.Context, args ...string) *gexec.Session {
+	return Wait(ctx, Run(args...))
+}
+
+// RunInMachine runs the command in the given machine (sorted lexicographically) and returns the gbytes.Buffers.
+func RunInMachine(ctx context.Context, technicalID string, ordinal int, cmd ...string) (*gbytes.Buffer, *gbytes.Buffer, error) {
+	podName := machinePodName(ctx, technicalID, ordinal)
+	return runOnPod(ctx, technicalID, podName, cmd...)
+}
+
+// RunInNode runs the command in the machine pod of the specified node and returns the gbytes.Buffers.
+func RunInNode(ctx context.Context, technicalID string, nodeName string, cmd ...string) (*gbytes.Buffer, *gbytes.Buffer, error) {
+	return runOnPod(ctx, technicalID, nodeName, cmd...)
+}
+
+func runOnPod(ctx context.Context, technicalID string, podName string, cmd ...string) (*gbytes.Buffer, *gbytes.Buffer, error) {
+	stdOutBuffer, stdErrBuffer := gbytes.NewBuffer(), gbytes.NewBuffer()
+	err := RuntimeClient.PodExecutor().ExecuteWithStreams(
+		ctx,
+		infrastructure.NamespaceName(technicalID),
+		podName,
+		ContainerName,
+		nil,
+		io.MultiWriter(stdOutBuffer, gexec.NewPrefixedWriter(fmt.Sprintf("[%s][out] ", podName), GinkgoWriter)),
+		io.MultiWriter(stdErrBuffer, gexec.NewPrefixedWriter(fmt.Sprintf("[%s][err] ", podName), GinkgoWriter)),
+		cmd...,
+	)
+	return stdOutBuffer, stdErrBuffer, err
+}
+
+func machinePodName(ctx context.Context, technicalID string, ordinal int) string {
+	GinkgoHelper()
+
+	podList := &corev1.PodList{}
+	Expect(RuntimeClient.Client().List(ctx, podList, client.InNamespace(infrastructure.NamespaceName(technicalID)), client.MatchingLabels{"app": "machine"})).To(Succeed())
+
+	Expect(ordinal).To(BeNumerically("<", len(podList.Items)))
+
+	slices.SortFunc(podList.Items, func(a, b corev1.Pod) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+
+	return podList.Items[ordinal].Name
+}

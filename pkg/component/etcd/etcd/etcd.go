@@ -1,0 +1,1201 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package etcd
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"net"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	druidcorev1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	"github.com/go-logr/logr"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/component"
+	etcdconstants "github.com/gardener/gardener/pkg/component/etcd/etcd/constants"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/garden"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
+	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/utils"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/gardener/secretsrotation"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+)
+
+// Class is a string type alias for etcd classes.
+type Class string
+
+const (
+	// ClassNormal is a constant for a normal etcd (without extensive metrics or higher resource settings, etc.)
+	ClassNormal Class = "normal"
+	// ClassImportant is a constant for an important etcd (with extensive metrics or higher resource settings, etc.).
+	// Such etcds are also unsafe to evict (from the PoV of the cluster-autoscaler when trying to scale down).
+	ClassImportant Class = "important"
+
+	// SecretNameClient is the name of the secret containing the client certificate and key for the etcd.
+	SecretNameClient       = "etcd-client"
+	secretNamePrefixServer = "etcd-server-" // #nosec G101 -- No credential.
+
+	// secretNamePrefixPeerServer is the prefix for the secret containing the server certificate and key for the etcd peer network.
+	secretNamePrefixPeerServer = "etcd-peer-server-" // #nosec G101 -- No credential.
+
+	portNameClient        = "client"
+	portNameBackupRestore = "backuprestore"
+
+	statefulSetNamePrefix = "etcd"
+)
+
+var (
+	// TimeNow is a function returning the current time exposed for testing.
+	TimeNow = time.Now
+)
+
+// Interface contains functions for a etcd deployer.
+type Interface interface {
+	component.DeployWaiter
+	// Snapshot triggers the backup-restore sidecar to perform a full snapshot in case backup configuration is provided.
+	Snapshot(context.Context, rest.HTTPClient) error
+	// SetBackupConfig sets the backup configuration.
+	SetBackupConfig(config *BackupConfig)
+	// Get retrieves the Etcd resource
+	Get(context.Context) (*druidcorev1alpha1.Etcd, error)
+	// Scale scales the etcd resource to the given replica count.
+	Scale(context.Context, int32) error
+	// RolloutPeerCA gets the peer CA and patches the
+	// related `etcd` resource to use this new CA for peer communication.
+	RolloutPeerCA(context.Context) error
+	// IsPeerCARolledOut checks if the Etcd resource was annotated with credentials.gardener.cloud/peer-ca-rolled-out.
+	IsPeerCARolledOut(context.Context) (bool, error)
+	// MarkAsPeerCARolloutCompleted annotates the Etcd resource with credentials.gardener.cloud/peer-ca-rolled-out=true.
+	MarkAsPeerCARolloutCompleted(context.Context) error
+	// UnmarkAsPeerCARolloutCompleted removes the credentials.gardener.cloud/peer-ca-rolled-out annotation from the Etcd resource.
+	UnmarkAsPeerCARolloutCompleted(context.Context) error
+	// GetValues returns the current configuration values of the deployer.
+	GetValues() Values
+	// GetReplicas gets the Replicas field in the Values.
+	GetReplicas() *int32
+	// SetReplicas sets the Replicas field in the Values.
+	SetReplicas(*int32)
+	// SetLiveMigration sets the LiveMigration field in the Values.
+	SetLiveMigration(*LiveMigrationValues)
+	// SetStaticPodControlPlaneNodesIPAddresses sets the IP addresses of all control plane nodes when etcd is run as
+	// static pod.
+	SetStaticPodControlPlaneNodesIPAddresses(...net.IP)
+}
+
+// New creates a new instance of DeployWaiter for the Etcd.
+func New(
+	log logr.Logger,
+	c client.Client,
+	namespace string,
+	secretsManager secretsmanager.Interface,
+	values Values,
+) Interface {
+	name := values.NamePrefix + Name(values.Role)
+	log = log.WithValues("etcd", client.ObjectKey{Namespace: namespace, Name: name})
+
+	return &etcd{
+		client:         c,
+		log:            log,
+		namespace:      namespace,
+		secretsManager: secretsManager,
+		values:         values,
+		etcd: &druidcorev1alpha1.Etcd{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+		},
+	}
+}
+
+type etcd struct {
+	client         client.Client
+	log            logr.Logger
+	namespace      string
+	secretsManager secretsmanager.Interface
+	values         Values
+	etcd           *druidcorev1alpha1.Etcd
+}
+
+// Values are the configuration values for the ETCD.
+type Values struct {
+	NamePrefix                  string
+	Role                        string
+	Class                       Class
+	Replicas                    *int32
+	StorageCapacity             string
+	StorageClassName            *string
+	DefragmentationSchedule     *string
+	Autoscaling                 AutoscalingConfig
+	RuntimeKubernetesVersion    *semver.Version
+	BackupConfig                *BackupConfig
+	MaintenanceTimeWindow       gardencorev1beta1.MaintenanceTimeWindow
+	EvictionRequirement         *string
+	PriorityClassName           string
+	HighAvailabilityEnabled     bool
+	TopologyAwareRoutingEnabled bool
+	StaticPodConfig             *StaticPodConfig
+	MemberNamePrefix            string
+	// LiveMigration groups configuration that is only populated during a live control plane migration (GEP-39).
+	// When nil, none of the live-migration behaviour is active.
+	LiveMigration *LiveMigrationValues
+}
+
+// LiveMigrationValues holds the etcd configuration that is specific to a live control plane migration (GEP-39).
+type LiveMigrationValues struct {
+	// SkipClientSANVerification, when true, configures etcd to skip verification of the Subject Alternative Names of
+	// peer TLS client certificates. It is used during a live control plane migration because cross-seed peer TLS
+	// certificates carry the local service SAN, not the Istio-exposed hostname.
+	SkipClientSANVerification bool
+	// AdditionalAdvertisedURLs holds per-member extra peer and client URLs for live control plane migration so that
+	// each etcd members advertise their external Istio ingress endpoints. OverrideDefaultURL must be true on
+	// each sub-spec so that only the external URLs are advertised, suppressing the internal service DNS name that
+	// would collide with the other cluster's internal DNS name.
+	AdditionalAdvertisedURLs *druidcorev1alpha1.AdditionalAdvertiseURLsSpec
+	// BootstrapWithExistingCluster, when set, configures this etcd to join an existing (source) etcd cluster instead of
+	// bootstrapping a new one. It is set on the destination etcd during a live control plane migration so its
+	// members join the source cluster to form a temporary joint cluster. It can only be set at creation time.
+	BootstrapWithExistingCluster *druidcorev1alpha1.BootstrapWithExistingCluster
+	// ExtraClientServiceDNSNames are additional DNS names to include in the etcd server TLS certificate's Subject
+	// Alternative Names (SANs). During a live control plane migration the source seed adds the Istio ingress
+	// client hostname so that the destination backup-restore can verify the source etcd's server cert when connecting
+	// via --service-endpoints over the Istio ingress gateway.
+	ExtraClientServiceDNSNames []string
+	// ExtraPeerServiceDNSNames are additional DNS names to include in the etcd peer TLS certificate's Subject
+	// Alternative Names (SANs). During a live control plane migration each seed adds its own Istio ingress
+	// peer hostnames so that members in the other seed can verify the peer cert during cross-seed raft connections.
+	ExtraPeerServiceDNSNames []string
+}
+
+// BackupConfig contains information for configuring the backup-restore sidecar so that it takes regularly backups of
+// the etcd's data directory.
+type BackupConfig struct {
+	// Provider is the name of the infrastructure provider for the blob storage bucket.
+	Provider string
+	// Container is the name of the blob storage bucket.
+	Container string
+	// SecretRefName is the name of a Secret object containing the credentials of the selected infrastructure provider.
+	SecretRefName string
+	// Prefix is a prefix that shall be used for the filename of the backups of this etcd.
+	Prefix string
+	// FullSnapshotSchedule is a cron schedule that declares how frequent full snapshots shall be taken.
+	FullSnapshotSchedule string
+	// LeaderElection contains configuration for the leader election for the etcd backup-restore sidecar.
+	LeaderElection *gardenletconfigv1alpha1.ETCDBackupLeaderElection
+	// DeltaSnapshotRetentionPeriod defines the duration for which delta snapshots will be retained, excluding the latest snapshot set.
+	DeltaSnapshotRetentionPeriod *metav1.Duration
+}
+
+// AutoscalingConfig contains information for configuring autoscaling settings for etcd.
+type AutoscalingConfig struct {
+	// MinAllowed are the minimum allowed resources for vertical autoscaling.
+	MinAllowed corev1.ResourceList
+}
+
+// StaticPodConfig contains configuration when etcd runs as static pod.
+type StaticPodConfig struct {
+	// ControlPlaneNodesIPAddresses is the list of IP addresses for control plane nodes.
+	ControlPlaneNodesIPAddresses []net.IP
+}
+
+func (e *etcd) Deploy(ctx context.Context) error {
+	var existingEtcd *druidcorev1alpha1.Etcd
+
+	if err := e.client.Get(ctx, client.ObjectKeyFromObject(e.etcd), e.etcd); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+	} else {
+		existingEtcd = e.etcd.DeepCopy()
+	}
+
+	var (
+		vpa            = e.emptyVerticalPodAutoscaler()
+		serviceMonitor = e.emptyServiceMonitor()
+
+		replicas = e.computeReplicas(existingEtcd)
+
+		garbageCollectionPolicy = druidcorev1alpha1.GarbageCollectionPolicy(druidcorev1alpha1.GarbageCollectionPolicyExponential)
+		garbageCollectionPeriod = metav1.Duration{Duration: 12 * time.Hour}
+		compressionPolicy       = druidcorev1alpha1.GzipCompression
+		compressionSpec         = druidcorev1alpha1.CompressionSpec{
+			Enabled: new(true),
+			Policy:  &compressionPolicy,
+		}
+		snapshotCompactionSpec = druidcorev1alpha1.SnapshotCompactionSpec{
+			Resources: e.computeCompactionJobContainerResources(),
+		}
+
+		annotations         map[string]string
+		metrics             = druidcorev1alpha1.Basic
+		volumeClaimTemplate = e.etcd.Name
+
+		minAllowed             = e.computeMinAllowedForETCDContainer()
+		resourcesEtcd          = e.computeETCDContainerResources(minAllowed)
+		resourcesBackupRestore = e.computeBackupRestoreContainerResources()
+	)
+
+	if e.values.Class == ClassImportant {
+		if !e.values.HighAvailabilityEnabled {
+			annotations = map[string]string{"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
+		}
+		metrics = druidcorev1alpha1.Extensive
+
+		if e.values.StaticPodConfig == nil {
+			volumeClaimTemplate = e.values.Role + "-" + strings.TrimSuffix(e.etcd.Name, "-"+e.values.Role)
+		}
+	}
+
+	etcdCASecret, found := e.secretsManager.Get(v1beta1constants.SecretNameCAETCD)
+	if !found {
+		return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameCAETCD)
+	}
+
+	clientSecret, err := GenerateClientCertificate(ctx, e.secretsManager)
+	if err != nil {
+		return fmt.Errorf("failed to generate client certificate: %w", err)
+	}
+
+	var (
+		clientUrlTLS = &druidcorev1alpha1.TLSConfig{
+			TLSCASecretRef: druidcorev1alpha1.SecretReference{
+				SecretReference: corev1.SecretReference{
+					Name:      etcdCASecret.Name,
+					Namespace: etcdCASecret.Namespace,
+				},
+				DataKey: new(secretsutils.DataKeyCertificateBundle),
+			},
+			ClientTLSSecretRef: corev1.SecretReference{
+				Name:      clientSecret.Name,
+				Namespace: clientSecret.Namespace,
+			},
+			// TODO(rfranzke): Once etcd-druid makes .spec.etcd.clientUrlTls.serverTLSSecretRef optional, this
+			//  ServerTLSSecretRef field should not be set here.
+			ServerTLSSecretRef: corev1.SecretReference{Name: "dummy-does-not-exist"},
+		}
+		peerUrlTLS *druidcorev1alpha1.PeerTLSConfig
+	)
+
+	if e.values.StaticPodConfig != nil || e.values.HighAvailabilityEnabled {
+		etcdPeerCASecret, found := e.secretsManager.Get(v1beta1constants.SecretNameCAETCDPeer)
+		if !found {
+			return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameCAETCDPeer)
+		}
+
+		peerUrlTLS = &druidcorev1alpha1.PeerTLSConfig{
+			TLSConfig: druidcorev1alpha1.TLSConfig{
+				TLSCASecretRef: druidcorev1alpha1.SecretReference{
+					SecretReference: corev1.SecretReference{
+						Name:      etcdPeerCASecret.Name,
+						Namespace: e.namespace,
+					},
+					DataKey: new(secretsutils.DataKeyCertificateBundle),
+				},
+				// TODO(rfranzke): Once etcd-druid makes .spec.etcd.peerUrlTls.serverTLSSecretRef optional, this
+				//  ServerTLSSecretRef field should not be set here.
+				ServerTLSSecretRef: corev1.SecretReference{Name: "dummy-does-not-exist"},
+			},
+		}
+	}
+
+	// generate server and peer certs only for hosted shoots (for self-hosted shoots, gardener-node-agent generates
+	// them individually for each control-plane node)
+	if e.values.StaticPodConfig == nil {
+		var extraClientDNSNames, extraPeerDNSNames []string
+		if e.values.LiveMigration != nil {
+			extraClientDNSNames = e.values.LiveMigration.ExtraClientServiceDNSNames
+			extraPeerDNSNames = e.values.LiveMigration.ExtraPeerServiceDNSNames
+		}
+
+		serverSecret, err := GenerateServerCertificate(ctx, e.secretsManager, e.values.Role, append(ClientServiceDNSNames(e.etcd.Name, e.namespace, false), extraClientDNSNames...), nil)
+		if err != nil {
+			return fmt.Errorf("failed to generate server certificate: %w", err)
+		}
+		clientUrlTLS.ServerTLSSecretRef.Name = serverSecret.Name
+		clientUrlTLS.ServerTLSSecretRef.Namespace = e.namespace
+
+		// currently, peer certs are only added if the hosted shoot has an HA control plane
+		// TODO(timuthy): Once https://github.com/gardener/etcd-backup-restore/issues/538 is resolved we can enable
+		//  PeerUrlTLS even for clusters that are currently not configured with HA.
+		if e.values.HighAvailabilityEnabled {
+			peerServerSecret, err := GeneratePeerCertificate(ctx, e.secretsManager, e.values.Role, append(e.peerServiceDNSNames(), extraPeerDNSNames...), nil)
+			if err != nil {
+				return fmt.Errorf("failed to generate a peer certificate: %w", err)
+			}
+			peerUrlTLS.ServerTLSSecretRef.Name = peerServerSecret.Name
+			peerUrlTLS.ServerTLSSecretRef.Namespace = e.namespace
+
+			if e.values.LiveMigration != nil && e.values.LiveMigration.SkipClientSANVerification {
+				peerUrlTLS.SkipClientSANVerification = new(true)
+			}
+		}
+	}
+
+	clientService := &corev1.Service{}
+	gardenerutils.ReconcileTopologyAwareRoutingSettings(clientService, e.values.TopologyAwareRoutingEnabled, e.values.RuntimeKubernetesVersion)
+
+	ports := []networkingv1.NetworkPolicyPort{
+		{Port: new(intstr.FromInt32(etcdconstants.PortEtcdClient)), Protocol: new(corev1.ProtocolTCP)},
+		{Port: new(intstr.FromInt32(etcdconstants.PortBackupRestore)), Protocol: new(corev1.ProtocolTCP)},
+	}
+	if e.values.NamePrefix != "" {
+		// etcd deployed for garden cluster
+		utilruntime.Must(gardenerutils.InjectNetworkPolicyAnnotationsForGardenScrapeTargets(clientService, ports...))
+	} else {
+		// etcd deployed for shoot cluster
+		utilruntime.Must(gardenerutils.InjectNetworkPolicyAnnotationsForScrapeTargets(clientService, ports...))
+		utilruntime.Must(gardenerutils.InjectNetworkPolicyNamespaceSelectors(clientService, metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: v1beta1constants.GardenNamespace}}))
+		metav1.SetMetaDataAnnotation(&clientService.ObjectMeta, resourcesv1alpha1.NetworkingPodLabelSelectorNamespaceAlias, v1beta1constants.LabelNetworkPolicyShootNamespaceAlias)
+	}
+
+	if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, e.client, e.etcd, func() error {
+		metav1.SetMetaDataAnnotation(&e.etcd.ObjectMeta, v1beta1constants.GardenerOperation, v1beta1constants.GardenerOperationReconcile)
+		metav1.SetMetaDataAnnotation(&e.etcd.ObjectMeta, v1beta1constants.GardenerTimestamp, TimeNow().UTC().Format(time.RFC3339Nano))
+
+		e.etcd.Labels = map[string]string{
+			v1beta1constants.LabelRole:  e.values.Role,
+			v1beta1constants.GardenRole: v1beta1constants.GardenRoleControlPlane,
+		}
+		if e.values.Class == ClassNormal {
+			metav1.SetMetaDataAnnotation(&e.etcd.ObjectMeta, "resources.druid.gardener.cloud/allow-unhealthy-pod-eviction", "")
+		}
+		e.etcd.Spec.Replicas = replicas
+		e.etcd.Spec.PriorityClassName = &e.values.PriorityClassName
+		e.etcd.Spec.Annotations = annotations
+		e.etcd.Spec.Labels = utils.MergeStringMaps(e.getRoleLabels(), map[string]string{
+			v1beta1constants.LabelApp:                             etcdconstants.LabelAppValue,
+			v1beta1constants.LabelNetworkPolicyToDNS:              v1beta1constants.LabelNetworkPolicyAllowed,
+			v1beta1constants.LabelNetworkPolicyToPublicNetworks:   v1beta1constants.LabelNetworkPolicyAllowed,
+			v1beta1constants.LabelNetworkPolicyToPrivateNetworks:  v1beta1constants.LabelNetworkPolicyAllowed,
+			v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer: v1beta1constants.LabelNetworkPolicyAllowed,
+		})
+
+		if e.values.HighAvailabilityEnabled {
+			// Allow etcd p2p communication
+			e.etcd.Spec.Labels = utils.MergeStringMaps(e.etcd.Spec.Labels, map[string]string{
+				gardenerutils.NetworkPolicyLabel(e.values.NamePrefix+etcdconstants.ServiceName(e.values.Role), etcdconstants.PortEtcdClient):    v1beta1constants.LabelNetworkPolicyAllowed,
+				gardenerutils.NetworkPolicyLabel(e.values.NamePrefix+etcdconstants.ServiceName(e.values.Role), etcdconstants.PortBackupRestore): v1beta1constants.LabelNetworkPolicyAllowed,
+				gardenerutils.NetworkPolicyLabel(e.values.NamePrefix+etcdconstants.ServiceName(e.values.Role), etcdconstants.PortEtcdPeer):      v1beta1constants.LabelNetworkPolicyAllowed,
+			})
+		}
+
+		e.etcd.Spec.Selector = &metav1.LabelSelector{
+			MatchLabels: utils.MergeStringMaps(e.getRoleLabels(), map[string]string{
+				v1beta1constants.LabelApp: etcdconstants.LabelAppValue,
+			}),
+		}
+		e.etcd.Spec.Etcd = druidcorev1alpha1.EtcdConfig{
+			Resources:    resourcesEtcd,
+			ClientUrlTLS: clientUrlTLS,
+			PeerUrlTLS:   peerUrlTLS,
+			AdditionalAdvertisedURLs: func() *druidcorev1alpha1.AdditionalAdvertiseURLsSpec {
+				if e.values.LiveMigration != nil {
+					return e.values.LiveMigration.AdditionalAdvertisedURLs
+				}
+				return nil
+			}(),
+			ClientPort:              new(e.defaultPortOrEtcdEventsStaticPodPort(etcdconstants.PortEtcdClient, etcdconstants.StaticPodPortEtcdEventsClient)),
+			ServerPort:              new(e.defaultPortOrEtcdEventsStaticPodPort(etcdconstants.PortEtcdPeer, etcdconstants.StaticPodPortEtcdEventsPeer)),
+			WrapperPort:             new(e.defaultPortOrEtcdEventsStaticPodPort(etcdconstants.PortEtcdWrapper, etcdconstants.StaticPodPortEtcdEventsWrapper)),
+			Metrics:                 &metrics,
+			DefragmentationSchedule: e.computeDefragmentationSchedule(existingEtcd),
+			Quota:                   new(resource.MustParse("8Gi")),
+			ClientService: &druidcorev1alpha1.ClientService{
+				Annotations:         clientService.Annotations,
+				Labels:              clientService.Labels,
+				TrafficDistribution: clientService.Spec.TrafficDistribution,
+			},
+		}
+
+		e.etcd.Spec.Backup = druidcorev1alpha1.BackupSpec{
+			TLS:                     clientUrlTLS,
+			Port:                    new(e.defaultPortOrEtcdEventsStaticPodPort(etcdconstants.PortBackupRestore, etcdconstants.StaticPodPortEtcdEventsBackupRestore)),
+			Resources:               resourcesBackupRestore,
+			SnapshotCompaction:      &snapshotCompactionSpec,
+			GarbageCollectionPolicy: &garbageCollectionPolicy,
+			GarbageCollectionPeriod: &garbageCollectionPeriod,
+			SnapshotCompression:     &compressionSpec,
+		}
+
+		if e.values.BackupConfig != nil {
+			var (
+				provider            = druidcorev1alpha1.StorageProvider(e.values.BackupConfig.Provider)
+				deltaSnapshotPeriod = metav1.Duration{Duration: 5 * time.Minute}
+			)
+
+			e.etcd.Spec.Backup.Store = &druidcorev1alpha1.StoreSpec{
+				SecretRef: &corev1.SecretReference{Name: e.values.BackupConfig.SecretRefName},
+				Container: &e.values.BackupConfig.Container,
+				Provider:  &provider,
+				Prefix:    fmt.Sprintf("%s/etcd-%s", e.values.BackupConfig.Prefix, e.values.Role),
+			}
+			e.etcd.Spec.Backup.FullSnapshotSchedule = e.computeFullSnapshotSchedule(existingEtcd)
+			e.etcd.Spec.Backup.DeltaSnapshotPeriod = &deltaSnapshotPeriod
+			e.etcd.Spec.Backup.DeltaSnapshotMemoryLimit = new(resource.MustParse("100Mi"))
+			e.etcd.Spec.Backup.DeltaSnapshotRetentionPeriod = e.values.BackupConfig.DeltaSnapshotRetentionPeriod
+
+			if e.values.BackupConfig.LeaderElection != nil {
+				e.etcd.Spec.Backup.LeaderElection = &druidcorev1alpha1.LeaderElectionSpec{
+					EtcdConnectionTimeout: e.values.BackupConfig.LeaderElection.EtcdConnectionTimeout,
+					ReelectionPeriod:      e.values.BackupConfig.LeaderElection.ReelectionPeriod,
+				}
+			}
+		}
+
+		if e.values.StaticPodConfig != nil {
+			var replicas int32
+			if existingEtcd != nil {
+				e.etcd.Spec.ExternallyManagedMemberAddresses = slices.Clone(existingEtcd.Spec.ExternallyManagedMemberAddresses)
+				replicas = existingEtcd.Spec.Replicas
+			}
+
+			for _, controlPlaneAddress := range e.values.StaticPodConfig.ControlPlaneNodesIPAddresses {
+				if ip := controlPlaneAddress.String(); !slices.Contains(e.etcd.Spec.ExternallyManagedMemberAddresses, ip) {
+					e.etcd.Spec.ExternallyManagedMemberAddresses = append(e.etcd.Spec.ExternallyManagedMemberAddresses, ip)
+					replicas++
+				}
+			}
+
+			e.etcd.Spec.Replicas = replicas
+			e.etcd.Spec.RunAsRoot = new(true)
+
+			if err := gardenerutils.NewShootAccessSecret(e.etcd.Name, e.namespace).Reconcile(ctx, e.client); err != nil {
+				return err
+			}
+		}
+
+		if existingEtcd == nil || existingEtcd.Spec.StorageCapacity == nil {
+			e.etcd.Spec.StorageCapacity = new(resource.MustParse(e.values.StorageCapacity))
+		}
+		e.etcd.Spec.StorageClass = e.values.StorageClassName
+		e.etcd.Spec.VolumeClaimTemplate = &volumeClaimTemplate
+
+		if existingEtcd == nil && e.values.MemberNamePrefix != "" {
+			e.etcd.Spec.MemberNamePrefix = new(e.values.MemberNamePrefix)
+		}
+
+		// BootstrapWithExistingCluster should only be set at creation time.
+		// On updates, preserve whatever value was already persisted to avoid clearing it.
+		if existingEtcd == nil {
+			if e.values.LiveMigration != nil {
+				e.etcd.Spec.Etcd.BootstrapWithExistingCluster = e.values.LiveMigration.BootstrapWithExistingCluster
+			}
+		} else {
+			e.etcd.Spec.Etcd.BootstrapWithExistingCluster = existingEtcd.Spec.Etcd.BootstrapWithExistingCluster
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	if err := e.reconcileVerticalPodAutoscaler(ctx, vpa, minAllowed); err != nil {
+		return err
+	}
+
+	// etcd deployed for shoot cluster
+	serviceMonitorJobNameEtcd, serviceMonitorJobNameBackupRestore := "kube-etcd3-"+e.values.Role, "kube-etcd3-backup-restore-"+e.values.Role
+	if e.values.NamePrefix != "" {
+		// etcd deployed for garden cluster
+		serviceMonitorJobNameEtcd, serviceMonitorJobNameBackupRestore = e.values.NamePrefix+"etcd", e.values.NamePrefix+"etcd-backup"
+	}
+
+	if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, e.client, serviceMonitor, func() error {
+		serviceMonitor.Labels = monitoringutils.Labels(e.prometheusLabel())
+		serviceMonitor.Spec = monitoringv1.ServiceMonitorSpec{
+			Selector: metav1.LabelSelector{MatchLabels: map[string]string{
+				druidcorev1alpha1.LabelAppNameKey: fmt.Sprintf("%s-client", e.etcd.Name),
+				druidcorev1alpha1.LabelPartOfKey:  e.etcd.Name,
+			}},
+			Endpoints: []monitoringv1.Endpoint{
+				{
+					Port:   portNameClient,
+					Scheme: new(monitoringv1.SchemeHTTPS),
+					HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+						HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
+								// This is needed because the etcd's certificates are not are generated for a specific pod IP.
+								InsecureSkipVerify: new(true),
+								Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecret.Name},
+									Key:                  secretsutils.DataKeyCertificate,
+								}},
+								KeySecret: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecret.Name},
+									Key:                  secretsutils.DataKeyPrivateKey,
+								},
+							}},
+						},
+					},
+					RelabelConfigs: []monitoringv1.RelabelConfig{
+						{
+							SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_service_label_app_kubernetes_io_part_of"},
+							TargetLabel:  "role",
+						},
+						{
+							Action:      "replace",
+							Replacement: new(serviceMonitorJobNameEtcd),
+							TargetLabel: "job",
+						},
+					},
+					MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
+						Action: "labeldrop",
+						Regex:  `^instance$`,
+					}},
+				},
+				{
+					Port:   portNameBackupRestore,
+					Scheme: new(monitoringv1.SchemeHTTPS),
+					HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+						HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
+								// This is needed because the etcd's certificates are not are generated for a specific pod IP.
+								InsecureSkipVerify: new(true),
+								Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecret.Name},
+									Key:                  secretsutils.DataKeyCertificate,
+								}},
+								KeySecret: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecret.Name},
+									Key:                  secretsutils.DataKeyPrivateKey,
+								},
+							}},
+						},
+					},
+					RelabelConfigs: []monitoringv1.RelabelConfig{
+						{
+							SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_service_label_app_kubernetes_io_part_of"},
+							TargetLabel:  "role",
+						},
+
+						{
+							Action:      "replace",
+							Replacement: new(serviceMonitorJobNameBackupRestore),
+							TargetLabel: "job",
+						},
+					},
+					MetricRelabelConfigs: append([]monitoringv1.RelabelConfig{{
+						Action: "labeldrop",
+						Regex:  `^instance$`,
+					}}, monitoringutils.StandardMetricRelabelConfig(
+						"etcdbr_defragmentation_duration_seconds_bucket",
+						"etcdbr_defragmentation_duration_seconds_count",
+						"etcdbr_defragmentation_duration_seconds_sum",
+						"etcdbr_network_received_bytes",
+						"etcdbr_network_transmitted_bytes",
+						"etcdbr_restoration_duration_seconds_bucket",
+						"etcdbr_restoration_duration_seconds_count",
+						"etcdbr_restoration_duration_seconds_sum",
+						"etcdbr_snapshot_duration_seconds_bucket",
+						"etcdbr_snapshot_duration_seconds_count",
+						"etcdbr_snapshot_duration_seconds_sum",
+						"etcdbr_snapshot_gc_total",
+						"etcdbr_snapshot_latest_revision",
+						"etcdbr_snapshot_latest_timestamp",
+						"etcdbr_snapshot_required",
+						"etcdbr_validation_duration_seconds_bucket",
+						"etcdbr_validation_duration_seconds_count",
+						"etcdbr_validation_duration_seconds_sum",
+						"etcdbr_snapshotter_failure",
+						"etcdbr_cluster_size",
+						"etcdbr_is_learner",
+						"etcdbr_is_learner_count_total",
+						"etcdbr_add_learner_duration_seconds_bucket",
+						"etcdbr_add_learner_duration_seconds_sum",
+						"etcdbr_member_remove_duration_seconds_bucket",
+						"etcdbr_member_remove_duration_seconds_sum",
+						"etcdbr_member_promote_duration_seconds_bucket",
+						"etcdbr_member_promote_duration_seconds_sum",
+						"process_resident_memory_bytes",
+						"process_cpu_seconds_total",
+					)...),
+				},
+			},
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	// etcd deployed for shoot cluster
+	if e.values.NamePrefix == "" {
+		// TODO: The PrometheusRules for the garden cluster case are maintained in a separate file located here:
+		//  pkg/component/observability/monitoring/prometheus/garden/assets/prometheusrules/etcd.yaml
+		//  These rules highly overlap with those for the shoots maintained here. They should be merged in the future.
+		var (
+			role     = cases.Title(language.English).String(e.values.Role)
+			alertFor = func(classImportantDuration, classNormalDuration monitoringv1.Duration) *monitoringv1.Duration {
+				if e.values.Class == ClassImportant {
+					return &classImportantDuration
+				}
+				return &classNormalDuration
+			}
+			severityLabel = func(classImportantValue, classNormalValue string) string {
+				if e.values.Class == ClassImportant {
+					return classImportantValue
+				}
+				return classNormalValue
+			}
+		)
+
+		prometheusRule := e.emptyPrometheusRule()
+		if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, e.client, prometheusRule, func() error {
+			prometheusRule.Labels = monitoringutils.Labels(e.prometheusLabel())
+			prometheusRule.Spec = monitoringv1.PrometheusRuleSpec{
+				Groups: []monitoringv1.RuleGroup{{
+					Name: serviceMonitorJobNameEtcd + ".rules",
+					Rules: []monitoringv1.Rule{
+						// alert if etcd is down
+						{
+							Alert: "KubeEtcd" + role + "Down",
+							Expr:  intstr.FromString(`sum(up{job="` + serviceMonitorJobNameEtcd + `"}) < ` + strconv.Itoa(int(replicas/2)+1)),
+							For:   alertFor("5m", "15m"),
+							Labels: map[string]string{
+								"service":    "etcd",
+								"severity":   severityLabel("blocker", "critical"),
+								"type":       "seed",
+								"visibility": "operator",
+							},
+							Annotations: map[string]string{
+								"summary":     "Etcd3 " + e.values.Role + " cluster down.",
+								"description": "Etcd3 cluster " + e.values.Role + " is unavailable (due to possible quorum loss) or cannot be scraped. As long as etcd3 " + e.values.Role + " is down, the cluster is unreachable.",
+							},
+						},
+						// etcd leader alerts
+						{
+							Alert: "KubeEtcd3" + role + "NoLeader",
+							Expr:  intstr.FromString(`sum(etcd_server_has_leader{job="` + serviceMonitorJobNameEtcd + `"}) < count(etcd_server_has_leader{job="` + serviceMonitorJobNameEtcd + `"})`),
+							For:   alertFor("10m", "15m"),
+							Labels: map[string]string{
+								"service":    "etcd",
+								"severity":   "critical",
+								"type":       "seed",
+								"visibility": "operator",
+							},
+							Annotations: map[string]string{
+								"summary":     "Etcd3 " + e.values.Role + " has no leader.",
+								"description": "Etcd3 cluster " + e.values.Role + " has no leader. Possible network partition in the etcd cluster.",
+							},
+						},
+						{
+							Alert: "KubeEtcd3" + role + "HighMemoryConsumption",
+							Expr:  intstr.FromString(`sum(container_memory_working_set_bytes{pod="etcd-` + e.values.Role + `-0",container="` + etcdconstants.ContainerNameEtcd + `"}) / sum(kube_verticalpodautoscaler_spec_resourcepolicy_container_policies_maxallowed{container="` + etcdconstants.ContainerNameEtcd + `", targetName="etcd-` + e.values.Role + `", resource="memory"}) > .5`),
+							For:   new(monitoringv1.Duration("15m")),
+							Labels: map[string]string{
+								"service":    "etcd",
+								"severity":   "warning",
+								"type":       "seed",
+								"visibility": "operator",
+							},
+							Annotations: map[string]string{
+								"summary":     "Etcd3 " + e.values.Role + " is consuming too much memory",
+								"description": "Etcd3 " + e.values.Role + " is consuming over 50% of the max allowed value specified by VPA.",
+							},
+						},
+						// etcd DB size alerts
+						{
+							Alert: "KubeEtcd3" + role + "DbSizeLimitApproaching",
+							Expr:  intstr.FromString(`(etcd_mvcc_db_total_size_in_bytes{job="` + serviceMonitorJobNameEtcd + `"} / on (pod) group_left etcd_server_quota_backend_bytes{job="` + serviceMonitorJobNameEtcd + `"}) > 0.8`), // above 80% of the configured etcd quota
+							For:   new(monitoringv1.Duration("15m")),
+							Labels: map[string]string{
+								"service":    "etcd",
+								"severity":   "warning",
+								"type":       "seed",
+								"visibility": "all",
+							},
+							Annotations: map[string]string{
+								"summary":     "Etcd3 " + e.values.Role + " DB size is approaching its configured quota.",
+								"description": "Etcd3 " + e.values.Role + ` DB size has reached {{ with query (printf "(etcd_mvcc_db_total_size_in_bytes{pod=\"%s\"} / on (pod) group_left etcd_server_quota_backend_bytes{pod=\"%s\"}) * 100" $labels.pod $labels.pod) }}{{ . | first | value | printf "%.0f" }}{{ end }}% of its configured etcd quota. DB size: {{ with query (printf "etcd_mvcc_db_total_size_in_bytes{pod=\"%s\"}" $labels.pod) }}{{ . | first | value | humanize1024 }}B{{ end }}, quota: {{ with query (printf "etcd_server_quota_backend_bytes{pod=\"%s\"}" $labels.pod) }}{{ . | first | value | humanize1024 }}B{{ end }}. Etcd quota might need to be increased.`,
+							},
+						},
+						{
+							Alert: "KubeEtcd3" + role + "DbSizeLimitCrossed",
+							Expr:  intstr.FromString(`(etcd_mvcc_db_total_size_in_bytes{job="` + serviceMonitorJobNameEtcd + `"} / on (pod) group_left etcd_server_quota_backend_bytes{job="` + serviceMonitorJobNameEtcd + `"}) > 0.95`), // above 95% of the configured etcd quota
+							For:   new(monitoringv1.Duration("5m")),
+							Labels: map[string]string{
+								"service":    "etcd",
+								"severity":   "critical",
+								"type":       "seed",
+								"visibility": "all",
+							},
+							Annotations: map[string]string{
+								"summary":     "Etcd3 " + e.values.Role + " DB size has crossed its configured quota.",
+								"description": "Etcd3 " + e.values.Role + ` DB size has reached {{ with query (printf "(etcd_mvcc_db_total_size_in_bytes{pod=\"%s\"} / on (pod) group_left etcd_server_quota_backend_bytes{pod=\"%s\"}) * 100" $labels.pod $labels.pod) }}{{ . | first | value | printf "%.0f" }}{{ end }}% of its configured etcd quota. DB size: {{ with query (printf "etcd_mvcc_db_total_size_in_bytes{pod=\"%s\"}" $labels.pod) }}{{ . | first | value | humanize1024 }}B{{ end }}, quota: {{ with query (printf "etcd_server_quota_backend_bytes{pod=\"%s\"}" $labels.pod) }}{{ . | first | value | humanize1024 }}B{{ end }}. Etcd quota must be increased to allow updates.`,
+							},
+						},
+						{
+							Record: "shoot:apiserver_storage_objects:sum_by_resource",
+							Expr:   intstr.FromString(`max(apiserver_storage_objects) by (resource)`),
+						},
+					},
+				}},
+			}
+
+			if e.values.BackupConfig != nil {
+				prometheusRule.Spec.Groups[0].Rules = append(prometheusRule.Spec.Groups[0].Rules,
+					// etcd backup failure alerts
+					monitoringv1.Rule{
+						Alert: "KubeEtcd" + role + "DeltaBackupFailed",
+						Expr:  intstr.FromString(`((time() - etcdbr_snapshot_latest_timestamp{job="` + serviceMonitorJobNameBackupRestore + `",kind="Incr"} > bool 900) * etcdbr_snapshot_required{job="` + serviceMonitorJobNameBackupRestore + `",kind="Incr"}) * on (pod, role) etcd_server_is_leader{job="` + serviceMonitorJobNameEtcd + `"} > 0`),
+						For:   new(monitoringv1.Duration("15m")),
+						Labels: map[string]string{
+							"service":    "etcd",
+							"severity":   "critical",
+							"type":       "seed",
+							"visibility": "operator",
+						},
+						Annotations: map[string]string{
+							"summary":     "Etcd delta snapshot failure.",
+							"description": "No delta snapshot for the past 30 minutes have been taken by backup-restore leader.",
+						},
+					},
+					monitoringv1.Rule{
+						Alert: "KubeEtcd" + role + "FullBackupFailed",
+						Expr:  intstr.FromString(`((time() - etcdbr_snapshot_latest_timestamp{job="` + serviceMonitorJobNameBackupRestore + `",kind="Full"} > bool 86400) * etcdbr_snapshot_required{job="` + serviceMonitorJobNameBackupRestore + `",kind="Full"}) * on (pod, role) etcd_server_is_leader{job="` + serviceMonitorJobNameEtcd + `"} > 0`),
+						For:   new(monitoringv1.Duration("15m")),
+						Labels: map[string]string{
+							"service":    "etcd",
+							"severity":   "critical",
+							"type":       "seed",
+							"visibility": "operator",
+						},
+						Annotations: map[string]string{
+							"summary":     "Etcd full snapshot failure.",
+							"description": "No full snapshot for at least last 24 hours have been taken by backup-restore leader.",
+						},
+					},
+					// etcd data restoration failure alert
+					monitoringv1.Rule{
+						Alert: "KubeEtcd" + role + "RestorationFailed",
+						Expr:  intstr.FromString(`rate(etcdbr_restoration_duration_seconds_count{job="` + serviceMonitorJobNameBackupRestore + `",succeeded="false"}[2m]) > 0`),
+						Labels: map[string]string{
+							"service":    "etcd",
+							"severity":   "critical",
+							"type":       "seed",
+							"visibility": "operator",
+						},
+						Annotations: map[string]string{
+							"summary":     "Etcd data restoration failure.",
+							"description": "Etcd data restoration was triggered, but has failed.",
+						},
+					},
+					// etcd backup failure alert
+					monitoringv1.Rule{
+						Alert: "KubeEtcd" + role + "BackupRestoreDown",
+						Expr:  intstr.FromString(`(sum(up{job="` + serviceMonitorJobNameEtcd + `"}) - sum(up{job="` + serviceMonitorJobNameBackupRestore + `"}) > 0) or (rate(etcdbr_snapshotter_failure{job="` + serviceMonitorJobNameBackupRestore + `"}[5m]) > 0)`),
+						For:   new(monitoringv1.Duration("10m")),
+						Labels: map[string]string{
+							"service":    "etcd",
+							"severity":   "critical",
+							"type":       "seed",
+							"visibility": "operator",
+						},
+						Annotations: map[string]string{
+							"summary":     "Etcd backup restore " + e.values.Role + " process down or snapshotter failed with error",
+							"description": "Etcd backup restore " + e.values.Role + " process down or snapshotter failed with error. Backups will not be triggered unless backup restore is brought back up. This is unsafe behaviour and may cause data loss.",
+						},
+					},
+				)
+			}
+
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (e *etcd) Destroy(ctx context.Context) error {
+	if err := gardenerutils.ConfirmDeletion(ctx, e.client, e.etcd); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+
+	return kubernetesutils.DeleteObjects(ctx, e.client,
+		e.emptyVerticalPodAutoscaler(),
+		e.emptyServiceMonitor(),
+		e.emptyScrapeConfig(),
+		e.emptyPrometheusRule(),
+		e.etcd,
+	)
+}
+
+func (e *etcd) getRoleLabels() map[string]string {
+	return utils.MergeStringMaps(map[string]string{
+		v1beta1constants.GardenRole: v1beta1constants.GardenRoleControlPlane,
+		v1beta1constants.LabelRole:  e.values.Role,
+	})
+}
+
+func (e *etcd) prometheusLabel() string {
+	if e.values.NamePrefix != "" {
+		return garden.Label
+	}
+	return shoot.Label
+}
+
+func (e *etcd) emptyServiceMonitor() *monitoringv1.ServiceMonitor {
+	return &monitoringv1.ServiceMonitor{ObjectMeta: monitoringutils.ConfigObjectMeta(e.etcd.Name, e.namespace, e.prometheusLabel())}
+}
+
+func (e *etcd) emptyPrometheusRule() *monitoringv1.PrometheusRule {
+	return &monitoringv1.PrometheusRule{ObjectMeta: monitoringutils.ConfigObjectMeta(e.etcd.Name, e.namespace, e.prometheusLabel())}
+}
+
+func (e *etcd) emptyScrapeConfig() *monitoringv1alpha1.ScrapeConfig {
+	return &monitoringv1alpha1.ScrapeConfig{ObjectMeta: monitoringutils.ConfigObjectMeta(Druid, e.namespace, e.prometheusLabel())}
+}
+
+func (e *etcd) emptyVerticalPodAutoscaler() *vpaautoscalingv1.VerticalPodAutoscaler {
+	return &vpaautoscalingv1.VerticalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Name: e.etcd.Name, Namespace: e.namespace}}
+}
+
+func (e *etcd) reconcileVerticalPodAutoscaler(ctx context.Context, vpa *vpaautoscalingv1.VerticalPodAutoscaler, minAllowedETCD corev1.ResourceList) error {
+	_, err := controllerutils.GetAndCreateOrMergePatch(ctx, e.client, vpa, func() error {
+		var evictionRequirement *string
+
+		metav1.SetMetaDataLabel(&vpa.ObjectMeta, v1beta1constants.LabelRole, "etcd-vpa-"+e.values.Role)
+		evictionRequirement = e.values.EvictionRequirement
+		if ptr.Deref(evictionRequirement, "") == v1beta1constants.EvictionRequirementNever {
+			metav1.SetMetaDataLabel(&vpa.ObjectMeta, v1beta1constants.LabelVPAEvictionRequirementsController, v1beta1constants.EvictionRequirementManagedByController)
+			metav1.SetMetaDataAnnotation(&vpa.ObjectMeta, v1beta1constants.AnnotationVPAEvictionRequirementDownscaleRestriction, v1beta1constants.EvictionRequirementNever)
+		} else if ptr.Deref(evictionRequirement, "") == v1beta1constants.EvictionRequirementInMaintenanceWindowOnly {
+			metav1.SetMetaDataLabel(&vpa.ObjectMeta, v1beta1constants.LabelVPAEvictionRequirementsController, v1beta1constants.EvictionRequirementManagedByController)
+			metav1.SetMetaDataAnnotation(&vpa.ObjectMeta, v1beta1constants.AnnotationVPAEvictionRequirementDownscaleRestriction, v1beta1constants.EvictionRequirementInMaintenanceWindowOnly)
+			metav1.SetMetaDataAnnotation(&vpa.ObjectMeta, v1beta1constants.AnnotationShootMaintenanceWindow, e.values.MaintenanceTimeWindow.Begin+","+e.values.MaintenanceTimeWindow.End)
+		} else {
+			delete(vpa.GetLabels(), v1beta1constants.LabelVPAEvictionRequirementsController)
+			delete(vpa.GetAnnotations(), v1beta1constants.AnnotationVPAEvictionRequirementDownscaleRestriction)
+			delete(vpa.GetLabels(), v1beta1constants.AnnotationShootMaintenanceWindow)
+		}
+
+		vpa.Spec = vpaautoscalingv1.VerticalPodAutoscalerSpec{
+			TargetRef: &autoscalingv1.CrossVersionObjectReference{
+				APIVersion: druidcorev1alpha1.SchemeGroupVersion.String(),
+				Kind:       "Etcd",
+				Name:       e.etcd.Name,
+			},
+			UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
+				UpdateMode: new(vpaautoscalingv1.UpdateModeInPlaceOrRecreate),
+			},
+			ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
+				ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+					{
+						ContainerName:    etcdconstants.ContainerNameEtcd,
+						MinAllowed:       minAllowedETCD,
+						ControlledValues: new(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						Mode:             new(vpaautoscalingv1.ContainerScalingModeAuto),
+					},
+					{
+						ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+						Mode:          new(vpaautoscalingv1.ContainerScalingModeOff),
+					},
+				},
+			},
+		}
+
+		return nil
+	})
+
+	return err
+}
+
+func (e *etcd) Snapshot(ctx context.Context, httpClient rest.HTTPClient) error {
+	if e.values.BackupConfig == nil {
+		return fmt.Errorf("no backup is configured for this etcd, cannot make a snapshot")
+	}
+
+	address := fmt.Sprintf("%s%s.%s", e.values.NamePrefix, etcdconstants.ServiceName(e.values.Role), e.namespace)
+	if e.values.StaticPodConfig != nil {
+		if len(e.values.StaticPodConfig.ControlPlaneNodesIPAddresses) < 1 {
+			return fmt.Errorf("no static pod nodes IP addresses are configured for this etcd")
+		}
+		address = e.values.StaticPodConfig.ControlPlaneNodesIPAddresses[0].String()
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://%s:%d/snapshot/full?final=true", address, etcdconstants.PortBackupRestore), nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(request)
+	if err == nil && resp != nil && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("error occurred while initiating ETCD snapshot: %s", resp.Status)
+	}
+
+	return err
+}
+
+// Get retrieves the Etcd resource
+func (e *etcd) Get(ctx context.Context) (*druidcorev1alpha1.Etcd, error) {
+	if err := e.client.Get(ctx, client.ObjectKeyFromObject(e.etcd), e.etcd); err != nil {
+		return nil, err
+	}
+	return e.etcd, nil
+}
+
+func (e *etcd) SetBackupConfig(backupConfig *BackupConfig) { e.values.BackupConfig = backupConfig }
+
+func (e *etcd) Scale(ctx context.Context, replicas int32) error {
+	etcdObj := &druidcorev1alpha1.Etcd{}
+	if err := e.client.Get(ctx, client.ObjectKeyFromObject(e.etcd), etcdObj); err != nil {
+		return err
+	}
+
+	if expectedTimestamp, ok := e.etcd.Annotations[v1beta1constants.GardenerTimestamp]; ok {
+		if err := health.ObjectHasAnnotationWithValue(v1beta1constants.GardenerTimestamp, expectedTimestamp)(etcdObj); err != nil {
+			return err
+		}
+	}
+
+	if _, ok := etcdObj.Annotations[v1beta1constants.GardenerOperation]; ok {
+		return fmt.Errorf("etcd object still has operation annotation set")
+	}
+
+	patch := client.MergeFrom(etcdObj.DeepCopy())
+	if e.etcd.Annotations == nil {
+		etcdObj.SetAnnotations(make(map[string]string))
+	}
+
+	etcdObj.Annotations[v1beta1constants.GardenerOperation] = v1beta1constants.GardenerOperationReconcile
+	etcdObj.Annotations[v1beta1constants.GardenerTimestamp] = TimeNow().UTC().Format(time.RFC3339Nano)
+	etcdObj.Spec.Replicas = replicas
+
+	e.etcd = etcdObj
+
+	return e.client.Patch(ctx, etcdObj, patch)
+}
+
+func (e *etcd) RolloutPeerCA(ctx context.Context) error {
+	if !e.values.HighAvailabilityEnabled {
+		return nil
+	}
+
+	etcdPeerCASecret, found := e.secretsManager.Get(v1beta1constants.SecretNameCAETCDPeer)
+	if !found {
+		return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameCAETCDPeer)
+	}
+
+	if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, e.client, e.etcd, func() error {
+		e.etcd.Annotations = map[string]string{
+			v1beta1constants.GardenerOperation: v1beta1constants.GardenerOperationReconcile,
+			v1beta1constants.GardenerTimestamp: TimeNow().UTC().Format(time.RFC3339Nano),
+		}
+
+		var dataKey *string
+		if e.etcd.Spec.Etcd.PeerUrlTLS != nil {
+			dataKey = e.etcd.Spec.Etcd.PeerUrlTLS.TLSCASecretRef.DataKey
+		}
+
+		if e.etcd.Spec.Etcd.PeerUrlTLS == nil {
+			e.etcd.Spec.Etcd.PeerUrlTLS = &druidcorev1alpha1.PeerTLSConfig{}
+		}
+
+		e.etcd.Spec.Etcd.PeerUrlTLS.TLSCASecretRef = druidcorev1alpha1.SecretReference{
+			SecretReference: corev1.SecretReference{
+				Name:      etcdPeerCASecret.Name,
+				Namespace: e.etcd.Namespace,
+			},
+			DataKey: dataKey,
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	return e.Wait(ctx)
+}
+
+func (e *etcd) IsPeerCARolledOut(ctx context.Context) (bool, error) {
+	if err := e.client.Get(ctx, client.ObjectKeyFromObject(e.etcd), e.etcd); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	}
+	return e.etcd.Annotations[secretsrotation.AnnotationKeyPeerCARolledOut] == "true", nil
+}
+
+func (e *etcd) MarkAsPeerCARolloutCompleted(ctx context.Context) error {
+	if err := e.client.Get(ctx, client.ObjectKeyFromObject(e.etcd), e.etcd); err != nil {
+		return err
+	}
+
+	patch := client.MergeFrom(e.etcd.DeepCopy())
+	metav1.SetMetaDataAnnotation(&e.etcd.ObjectMeta, secretsrotation.AnnotationKeyPeerCARolledOut, "true")
+	return e.client.Patch(ctx, e.etcd, patch)
+}
+
+func (e *etcd) UnmarkAsPeerCARolloutCompleted(ctx context.Context) error {
+	if err := e.client.Get(ctx, client.ObjectKeyFromObject(e.etcd), e.etcd); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+
+	if !metav1.HasAnnotation(e.etcd.ObjectMeta, secretsrotation.AnnotationKeyPeerCARolledOut) {
+		return nil
+	}
+
+	patch := client.MergeFrom(e.etcd.DeepCopy())
+	delete(e.etcd.Annotations, secretsrotation.AnnotationKeyPeerCARolledOut)
+	return e.client.Patch(ctx, e.etcd, patch)
+}
+
+func (e *etcd) GetValues() Values { return e.values }
+
+func (e *etcd) GetReplicas() *int32 { return e.values.Replicas }
+
+func (e *etcd) SetReplicas(replicas *int32) { e.values.Replicas = replicas }
+
+func (e *etcd) SetLiveMigration(lm *LiveMigrationValues) { e.values.LiveMigration = lm }
+
+func (e *etcd) SetStaticPodControlPlaneNodesIPAddresses(ips ...net.IP) {
+	if e.values.StaticPodConfig != nil {
+		e.values.StaticPodConfig.ControlPlaneNodesIPAddresses = ips
+	}
+}
+
+func (e *etcd) computeMinAllowedForETCDContainer() corev1.ResourceList {
+	minAllowed := corev1.ResourceList{
+		corev1.ResourceMemory: resource.MustParse("60M"),
+	}
+
+	if e.values.Class == ClassImportant {
+		minAllowed = corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("300M"),
+		}
+	}
+
+	maps.Insert(minAllowed, maps.All(e.values.Autoscaling.MinAllowed))
+	return minAllowed
+}
+
+func (e *etcd) computeETCDContainerResources(minAllowedETCD corev1.ResourceList) *corev1.ResourceRequirements {
+	resourcesETCD := kubernetesutils.MaximumResourcesFromResourceList(
+		corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("30m"),
+			corev1.ResourceMemory: resource.MustParse("150M"),
+		},
+		minAllowedETCD,
+	)
+
+	if e.values.Class == ClassImportant {
+		resourcesETCD = kubernetesutils.MaximumResourcesFromResourceList(
+			corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("150m"),
+				corev1.ResourceMemory: resource.MustParse("500M"),
+			},
+			minAllowedETCD,
+		)
+	}
+
+	return &corev1.ResourceRequirements{Requests: resourcesETCD}
+}
+
+func (e *etcd) computeBackupRestoreContainerResources() *corev1.ResourceRequirements {
+	resourcesBackupRestore := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("10m"),
+		corev1.ResourceMemory: resource.MustParse("40Mi"),
+	}
+
+	if e.values.Class == ClassImportant {
+		resourcesBackupRestore = corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("20m"),
+			corev1.ResourceMemory: resource.MustParse("80Mi"),
+		}
+	}
+
+	return &corev1.ResourceRequirements{Requests: resourcesBackupRestore}
+}
+
+func (e *etcd) computeCompactionJobContainerResources() *corev1.ResourceRequirements {
+	return &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("600m"),
+			corev1.ResourceMemory: resource.MustParse("3Gi"),
+		},
+	}
+}
+
+func (e *etcd) computeReplicas(existingEtcd *druidcorev1alpha1.Etcd) int32 {
+	if e.values.Replicas != nil {
+		return *e.values.Replicas
+	}
+
+	if existingEtcd != nil {
+		return existingEtcd.Spec.Replicas
+	}
+	return 0
+}
+
+func (e *etcd) computeDefragmentationSchedule(existingEtcd *druidcorev1alpha1.Etcd) *string {
+	defragmentationSchedule := e.values.DefragmentationSchedule
+	if existingEtcd != nil && existingEtcd.Spec.Etcd.DefragmentationSchedule != nil &&
+		!isEveryNDaysSchedule(*existingEtcd.Spec.Etcd.DefragmentationSchedule) {
+		defragmentationSchedule = existingEtcd.Spec.Etcd.DefragmentationSchedule
+	}
+	return defragmentationSchedule
+}
+
+func (e *etcd) computeFullSnapshotSchedule(existingEtcd *druidcorev1alpha1.Etcd) *string {
+	fullSnapshotSchedule := &e.values.BackupConfig.FullSnapshotSchedule
+	if existingEtcd != nil && existingEtcd.Spec.Backup.FullSnapshotSchedule != nil {
+		fullSnapshotSchedule = existingEtcd.Spec.Backup.FullSnapshotSchedule
+	}
+	return fullSnapshotSchedule
+}
+
+func (e *etcd) defaultPortOrEtcdEventsStaticPodPort(defaultPort, etcdEventsPortWhenRunningAsStaticPod int32) int32 {
+	if e.values.Role == v1beta1constants.ETCDRoleMain || e.values.StaticPodConfig == nil {
+		return defaultPort
+	}
+	return etcdEventsPortWhenRunningAsStaticPod
+}
+
+// Name returns the name of the etcd based on its role.
+func Name(role string) string {
+	return "etcd-" + role
+}
+
+// isEveryNDaysSchedule reports whether the cron expression schedules on every Nth day-of-month
+// where N > 1 (i.e. the day-of-month field matches "*/N" with N > 1). Such schedules were used
+// as the old defragmentation schedule and should be updated to the new daily schedule on existing Etcd resources.
+func isEveryNDaysSchedule(schedule string) bool {
+	fields := strings.Fields(schedule)
+	if len(fields) != 5 || !strings.HasPrefix(fields[2], "*/") {
+		return false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(fields[2], "*/"))
+	return err == nil && n > 1
+}

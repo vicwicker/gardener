@@ -1,0 +1,204 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package nodeagent
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+
+	"github.com/gardener/gardener/imagevector"
+	nodeagenthelper "github.com/gardener/gardener/pkg/api/config/nodeagent/v1alpha1/helper"
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/opentelemetrycollector"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/valitail"
+	"github.com/gardener/gardener/pkg/component/kubernetes/adminaccess"
+	valiconstants "github.com/gardener/gardener/pkg/component/observability/logging/vali/constants"
+	collectorconstants "github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector/constants"
+	"github.com/gardener/gardener/pkg/features"
+	"github.com/gardener/gardener/pkg/gardenadm/staticpod"
+	"github.com/gardener/gardener/pkg/utils"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+)
+
+// PathBinary is a constant for the path to the gardener-node-agent binary file on the VMs.
+const PathBinary = v1beta1constants.OperatingSystemConfigFilePathBinaries + "/gardener-node-agent"
+
+var codec runtime.Codec
+
+func init() {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(nodeagentconfigv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(extensionsv1alpha1.AddToScheme(scheme))
+
+	ser := json.NewSerializerWithOptions(json.DefaultMetaFactory, scheme, scheme, json.SerializerOptions{Yaml: true, Pretty: false, Strict: false})
+	versions := schema.GroupVersions([]schema.GroupVersion{nodeagentconfigv1alpha1.SchemeGroupVersion, extensionsv1alpha1.SchemeGroupVersion})
+	codec = serializer.NewCodecFactory(scheme).CodecForVersions(ser, ser, versions, versions)
+}
+
+type component struct{}
+
+// New returns a new Gardener user component.
+func New() *component {
+	return &component{}
+}
+
+func (component) Name() string {
+	return "gardener-node-agent"
+}
+
+func (component) Config(ctx components.Context) ([]extensionsv1alpha1.Unit, []extensionsv1alpha1.File, error) {
+	caBundle := []byte(ctx.CABundle)
+
+	var additionalTokenSyncConfigs []nodeagentconfigv1alpha1.TokenSecretSyncConfig
+	if features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) && ctx.OpenTelemetryCollectorLogShipperEnabled {
+		additionalTokenSyncConfigs = append(additionalTokenSyncConfigs, nodeagentconfigv1alpha1.TokenSecretSyncConfig{
+			SecretName: collectorconstants.OpenTelemetryCollectorSecretName,
+			Path:       opentelemetrycollector.PathAuthToken,
+		})
+	} else if ctx.ValitailEnabled {
+		additionalTokenSyncConfigs = append(additionalTokenSyncConfigs, nodeagentconfigv1alpha1.TokenSecretSyncConfig{
+			SecretName: valiconstants.ValitailTokenSecretName,
+			Path:       valitail.PathAuthToken,
+		})
+	}
+
+	if ctx.SyncControlPlaneAuthTokens {
+		for _, componentName := range []string{v1beta1constants.DeploymentNameKubeControllerManager, v1beta1constants.DeploymentNameKubeScheduler, v1beta1constants.ETCDMain, v1beta1constants.ETCDEvents} {
+			additionalTokenSyncConfigs = append(additionalTokenSyncConfigs, nodeagentconfigv1alpha1.TokenSecretSyncConfig{
+				SecretName: gardenerutils.SecretNamePrefixShootAccess + componentName,
+				Path:       staticpod.FilePathForProjectedVolumeItem(componentName, "kubeconfig", resourcesv1alpha1.DataKeyToken),
+			})
+		}
+
+		additionalTokenSyncConfigs = append(additionalTokenSyncConfigs, nodeagentconfigv1alpha1.TokenSecretSyncConfig{
+			SecretName: gardenerutils.SecretNamePrefixShootAccess + adminaccess.ShootAccessSecretNameSuffix,
+			Path:       adminaccess.PathOnControlPlaneNodes,
+		})
+	}
+
+	files, err := Files(ComponentConfig(ctx.Key, ctx.KubernetesVersion, ctx.APIServerURL, additionalTokenSyncConfigs, ctx.IsControlPlanePool, ctx.PreferIPv6))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed generating files: %w", err)
+	}
+
+	files = append(files,
+		extensionsv1alpha1.File{
+			Path:        nodeagentconfigv1alpha1.ClusterCAFilePath,
+			Permissions: new(int32(0640)),
+			Content: extensionsv1alpha1.FileContent{
+				Inline: &extensionsv1alpha1.FileContentInline{
+					Encoding: "b64",
+					Data:     utils.EncodeBase64(caBundle),
+				},
+			},
+		},
+		extensionsv1alpha1.File{
+			Path:        PathBinary,
+			Permissions: new(int32(0755)),
+			Content: extensionsv1alpha1.FileContent{
+				ImageRef: &extensionsv1alpha1.FileContentImageRef{
+					Image:           ctx.Images[imagevector.ContainerImageNameGardenerNodeAgent].String(),
+					FilePathInImage: "/gardener-node-agent",
+				},
+			},
+		})
+
+	units := []extensionsv1alpha1.Unit{{
+		Name:      nodeagentconfigv1alpha1.UnitName,
+		Enable:    new(true),
+		Content:   new(UnitContent()),
+		FilePaths: extensionsv1alpha1helper.FilePathsFrom(files),
+	}}
+
+	return units, files, nil
+}
+
+// UnitContent returns the systemd unit content for the gardener-node-agent unit.
+func UnitContent() string {
+	return `[Unit]
+Description=Gardener Node Agent
+After=network-online.target
+
+[Service]
+LimitMEMLOCK=infinity
+ExecStart=` + nodeagentconfigv1alpha1.BinaryDir + `/gardener-node-agent --config-dir=` + nodeagentconfigv1alpha1.BaseDir + `
+Restart=always
+RestartSec=5
+StandardOutput=journal+console
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target`
+}
+
+// ComponentConfig returns the component configuration for the gardener-node-agent.
+func ComponentConfig(
+	oscSecretName string,
+	kubernetesVersion *semver.Version,
+	apiServerURL string,
+	additionalTokenSyncConfigs []nodeagentconfigv1alpha1.TokenSecretSyncConfig,
+	isControlPlanePool bool,
+	preferIPv6 bool,
+) *nodeagentconfigv1alpha1.NodeAgentConfiguration {
+	config := &nodeagentconfigv1alpha1.NodeAgentConfiguration{
+		APIServer: nodeagentconfigv1alpha1.APIServer{
+			Server: apiServerURL,
+			CAFile: nodeagentconfigv1alpha1.ClusterCAFilePath,
+		},
+		Controllers: nodeagentconfigv1alpha1.ControllerConfiguration{
+			OperatingSystemConfig: nodeagentconfigv1alpha1.OperatingSystemConfigControllerConfig{
+				SecretName:        oscSecretName,
+				KubernetesVersion: kubernetesVersion,
+				PreferIPv6:        &preferIPv6,
+			},
+			Token: nodeagentconfigv1alpha1.TokenControllerConfig{
+				SyncConfigs: additionalTokenSyncConfigs[:],
+				// It is enough to sync the access tokens every 12h to the disk because they are only rotated roughly
+				// each 12h. Furthermore, they are valid for 30d, so there should be enough head time to sync an updated
+				// token.
+				SyncPeriod: &metav1.Duration{Duration: 12 * time.Hour},
+			},
+		},
+	}
+
+	if isControlPlanePool {
+		config.Bootstrap = &nodeagentconfigv1alpha1.BootstrapConfiguration{
+			ControlPlaneNodesEndpoints: &nodeagentconfigv1alpha1.ControlPlaneNodesEndpoints{Enabled: true},
+		}
+		// On control plane nodes of self-hosted shoots, the tokens of the control plane components (e.g.,
+		// kube-controller-manager, kube-scheduler) are synced as well. These are only valid for 12h and renewed after
+		// roughly 80% of their validity, so a sync period of 12h would leave expired tokens on the disk.
+		config.Controllers.Token.SyncPeriod = &metav1.Duration{Duration: time.Hour}
+	}
+
+	return config
+}
+
+// Files returns the files related to the gardener-node-agent unit.
+func Files(config *nodeagentconfigv1alpha1.NodeAgentConfiguration) ([]extensionsv1alpha1.File, error) {
+	configRaw, err := runtime.Encode(codec, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed encoding component config: %w", err)
+	}
+
+	return []extensionsv1alpha1.File{{
+		Path:        nodeagenthelper.GetDefaultConfigFilePath(),
+		Permissions: new(int32(0600)),
+		Content:     extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Encoding: "b64", Data: utils.EncodeBase64(configRaw)}},
+	}}, nil
+}

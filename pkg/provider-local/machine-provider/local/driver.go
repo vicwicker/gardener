@@ -1,0 +1,119 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package local
+
+import (
+	"context"
+	"strings"
+
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	"github.com/gardener/machine-controller-manager/pkg/util/provider/driver"
+	"github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/codes"
+	"github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/status"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiv1alpha1 "github.com/gardener/gardener/pkg/provider-local/machine-provider/api/v1alpha1"
+)
+
+const (
+	fieldOwner        = client.FieldOwner("machine-controller-manager-provider-local")
+	labelKeyApp       = "app"
+	labelKeyProvider  = "machine-provider"
+	labelKeyMachine   = "machine"
+	labelValueMachine = "machine"
+	machinePrefix     = "machine-"
+)
+
+// NewDriver returns an empty AWSDriver object
+func NewDriver(client client.Client) driver.Driver {
+	return &localDriver{client}
+}
+
+type localDriver struct {
+	runtimeClient client.Client
+}
+
+// GenerateMachineClassForMigration is not implemented.
+func (d *localDriver) GenerateMachineClassForMigration(_ context.Context, _ *driver.GenerateMachineClassForMigrationRequest) (*driver.GenerateMachineClassForMigrationResponse, error) {
+	return &driver.GenerateMachineClassForMigrationResponse{}, nil
+}
+
+// InitializeMachine is not implemented.
+func (*localDriver) InitializeMachine(context.Context, *driver.InitializeMachineRequest) (*driver.InitializeMachineResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "InitializeMachine is not yet implemented")
+}
+
+func serviceForMachine(machine *machinev1alpha1.Machine, machineClass *machinev1alpha1.MachineClass, providerSpec *apiv1alpha1.ProviderSpec) *corev1.Service {
+	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: corev1.SchemeGroupVersion.String(),
+			Kind:       "Service",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName(machine.Name),
+			Namespace: getNamespaceForMachine(machine, machineClass, providerSpec),
+		},
+	}
+}
+
+func podForMachine(machine *machinev1alpha1.Machine, machineClass *machinev1alpha1.MachineClass, providerSpec *apiv1alpha1.ProviderSpec) *corev1.Pod {
+	return &corev1.Pod{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: corev1.SchemeGroupVersion.String(),
+			Kind:       "Pod",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName(machine.Name),
+			Namespace: getNamespaceForMachine(machine, machineClass, providerSpec),
+		},
+	}
+}
+
+func userDataSecretForMachine(machine *machinev1alpha1.Machine, machineClass *machinev1alpha1.MachineClass, providerSpec *apiv1alpha1.ProviderSpec) *corev1.Secret {
+	return &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: corev1.SchemeGroupVersion.String(),
+			Kind:       "Secret",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName(machine.Name) + "-userdata",
+			Namespace: getNamespaceForMachine(machine, machineClass, providerSpec),
+		},
+	}
+}
+
+func podName(machineName string) string {
+	return machinePrefix + machineName
+}
+
+func machineName(podName string) string {
+	return strings.TrimPrefix(podName, machinePrefix)
+}
+
+func getNamespaceForMachine(machine *machinev1alpha1.Machine, machineClass *machinev1alpha1.MachineClass, providerSpec *apiv1alpha1.ProviderSpec) string {
+	if providerSpec.Namespace != "" {
+		return providerSpec.Namespace
+	}
+
+	// machine.Namespace may be empty due to machine controller manager omitting namespace
+	// TODO(scheererj): Remove the empty namespace mitigation after https://github.com/gardener/machine-controller-manager/pull/932 has been adopted
+	if machine.Namespace != "" {
+		return machine.Namespace
+	}
+	return machineClass.Namespace
+}
+
+func addressesFromStatus(podStatus corev1.PodStatus) []corev1.NodeAddress {
+	addresses := make([]corev1.NodeAddress, 0, len(podStatus.PodIPs))
+	for _, podIP := range podStatus.PodIPs {
+		addresses = append(addresses, corev1.NodeAddress{
+			Type:    corev1.NodeInternalIP,
+			Address: podIP.IP,
+		})
+	}
+	return addresses
+}

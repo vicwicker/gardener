@@ -1,0 +1,415 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package dnsrecord
+
+import (
+	"context"
+	"reflect"
+	"time"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/extensions"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/workloadidentity"
+)
+
+const (
+	// DefaultInterval is the default interval for retry operations.
+	DefaultInterval = 5 * time.Second
+	// DefaultSevereThreshold is the default threshold until an error reported by another component is treated as
+	// 'severe'.
+	DefaultSevereThreshold = 15 * time.Second
+	// DefaultTimeout is the default timeout and defines how long Gardener should wait for a successful reconciliation
+	// of a DNSRecord resource.
+	DefaultTimeout = 2 * time.Minute
+)
+
+// CredentialsDeployFunc is a function type that deploys credentials into a given secret.
+type CredentialsDeployFunc func(context.Context, client.Client, *corev1.Secret) error
+
+// TimeNow returns the current time. Exposed for testing.
+var TimeNow = time.Now
+
+// Interface is an interface for managing DNSRecords
+type Interface interface {
+	component.DeployMigrateWaiter
+	GetValues() *Values
+	SetRecordType(extensionsv1alpha1.DNSRecordType)
+	SetValues([]string)
+}
+
+// Values contains the values used to create DNSRecord resources.
+type Values struct {
+	// Namespace is the Shoot namespace in the seed.
+	Namespace string
+	// Name is the name of the DNSRecord resource. Commonly the Shoot's name + the purpose of the DNS record.
+	Name string
+	// SecretName is the name of the secret referenced by the DNSRecord resource.
+	SecretName string
+	// ReconcileOnlyOnChangeOrError specifies that the DNSRecord resource should only be reconciled when first created
+	// or if its last operation was not successful or if its desired state has changed compared to the current one.
+	ReconcileOnlyOnChangeOrError bool
+	// AnnotateOperation indicates if the DNSRecord resource shall be annotated with the respective
+	// "gardener.cloud/operation" (forcing a reconciliation or restoration). If this is false then the DNSRecord object
+	// will be created/updated but the extension controller will not act upon it.
+	AnnotateOperation bool
+	// Type is the type of the DNSRecord provider.
+	Type string
+	// Class holds the extension class used to control the responsibility for multiple provider extensions.
+	Class *extensionsv1alpha1.ExtensionClass
+	// UseExistingSecret indicates whether to use an existing secret referenced by SecretName instead of creating/updating
+	// it with the given credentials.
+	UseExistingSecret bool
+	// Zone is the DNS hosted zone of the DNSRecord.
+	Zone *string
+	// DNSName is the fully qualified domain name of the DNSRecord.
+	DNSName string
+	// RecordType is the record type of the DNSRecord.
+	RecordType extensionsv1alpha1.DNSRecordType
+	// Values is the list of values of the DNSRecord.
+	Values []string
+	// TTL is the time to live in seconds of the DNSRecord.
+	TTL *int64
+	// IPStack is the indication of the IP stack used for the DNSRecord. It can be ipv4, ipv6 or dual-stack.
+	IPStack string
+	// Labels is a set of labels that should be applied to the DNSRecord resource.
+	Labels map[string]string
+}
+
+// New creates a new instance that implements component.DeployMigrateWaiter.
+func New(
+	log logr.Logger,
+	client client.Client,
+	values *Values,
+	waitInterval time.Duration,
+	waitSevereThreshold time.Duration,
+	waitTimeout time.Duration,
+	deployCredentials CredentialsDeployFunc,
+) Interface {
+	return &dnsRecord{
+		log:                 log,
+		client:              client,
+		values:              values,
+		waitInterval:        waitInterval,
+		waitSevereThreshold: waitSevereThreshold,
+		waitTimeout:         waitTimeout,
+		deployCredentials:   deployCredentials,
+
+		dnsRecord: newDNSRecord(values),
+		secret: &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      values.SecretName,
+				Namespace: values.Namespace,
+			},
+		},
+	}
+}
+
+type dnsRecord struct {
+	log                 logr.Logger
+	client              client.Client
+	values              *Values
+	waitInterval        time.Duration
+	waitSevereThreshold time.Duration
+	waitTimeout         time.Duration
+	deployCredentials   CredentialsDeployFunc
+
+	dnsRecord *extensionsv1alpha1.DNSRecord
+	secret    *corev1.Secret
+}
+
+// Deploy uses the seed client to create or update the DNSRecord resource.
+func (d *dnsRecord) Deploy(ctx context.Context) error {
+	_, err := d.deploy(ctx, v1beta1constants.GardenerOperationReconcile)
+	return err
+}
+
+func (d *dnsRecord) deploy(ctx context.Context, operation string) (extensionsv1alpha1.Object, error) {
+	if err := d.deploySecret(ctx); err != nil {
+		return nil, err
+	}
+
+	mutateFn := func() error {
+		if d.values.AnnotateOperation ||
+			d.valuesDontMatchDNSRecord() ||
+			d.lastOperationNotSuccessful() ||
+			d.isTimestampInvalidOrAfterLastUpdateTime() {
+			metav1.SetMetaDataAnnotation(&d.dnsRecord.ObjectMeta, v1beta1constants.GardenerOperation, operation)
+			metav1.SetMetaDataAnnotation(&d.dnsRecord.ObjectMeta, v1beta1constants.GardenerTimestamp, TimeNow().UTC().Format(time.RFC3339Nano))
+		}
+
+		if d.values.IPStack != "" {
+			metav1.SetMetaDataAnnotation(&d.dnsRecord.ObjectMeta, gardenerutils.AnnotationKeyIPStack, d.values.IPStack)
+		}
+
+		for k, v := range d.values.Labels {
+			if d.dnsRecord.Labels == nil {
+				d.dnsRecord.Labels = make(map[string]string)
+			}
+			d.dnsRecord.Labels[k] = v
+		}
+
+		d.dnsRecord.Spec = extensionsv1alpha1.DNSRecordSpec{
+			DefaultSpec: extensionsv1alpha1.DefaultSpec{
+				Type:  d.values.Type,
+				Class: d.values.Class,
+			},
+			SecretRef: corev1.SecretReference{
+				Name:      d.secret.Name,
+				Namespace: d.secret.Namespace,
+			},
+			Zone:       d.values.Zone,
+			Name:       d.values.DNSName,
+			RecordType: d.values.RecordType,
+			Values:     d.values.Values,
+			TTL:        d.values.TTL,
+		}
+
+		return nil
+	}
+
+	var create bool
+	if err := d.client.Get(ctx, client.ObjectKeyFromObject(d.dnsRecord), d.dnsRecord); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		create = true
+	}
+
+	// if the DNSRecord does not exist yet, we don't need to recreate
+	if !create && d.recordTypeChanged(d.dnsRecord.Spec.RecordType, d.values.RecordType) {
+		if err := component.OpDestroyAndWait(d).Destroy(ctx); err != nil {
+			return nil, err
+		}
+		// set dnsRecord to be "unpopulated" so that we don't issue create request with a set resourceVersion
+		d.dnsRecord = newDNSRecord(d.values)
+		create = true
+	}
+
+	if d.values.ReconcileOnlyOnChangeOrError {
+		if create {
+			// DNSRecord doesn't exist yet, create it.
+			_ = mutateFn()
+			if err := d.client.Create(ctx, d.dnsRecord); err != nil {
+				return nil, err
+			}
+		} else {
+			patch := client.MergeFrom(d.dnsRecord.DeepCopy())
+			if d.valuesDontMatchDNSRecord() ||
+				d.lastOperationNotSuccessful() ||
+				d.isTimestampInvalidOrAfterLastUpdateTime() {
+				// If the DNSRecord is not yet Succeeded or values have changed, reconcile it again.
+				// Also check if gardener timestamp is in an invalid format or is after status.LastOperation.LastUpdateTime.
+				// If that is the case health checks for the dnsrecord will fail so we request a reconciliation to correct the current state.
+				_ = mutateFn()
+			}
+			if err := d.client.Patch(ctx, d.dnsRecord, patch); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, d.client, d.dnsRecord, mutateFn); err != nil {
+			return nil, err
+		}
+	}
+
+	return d.dnsRecord, nil
+}
+
+func (d *dnsRecord) deploySecret(ctx context.Context) error {
+	if d.values.UseExistingSecret {
+		return nil
+	}
+
+	if d.deployCredentials == nil {
+		return nil
+	}
+
+	return d.deployCredentials(ctx, d.client, d.secret)
+}
+
+// Restore uses the seed client and the ShootState to create the DNSRecord resource and restore its state.
+func (d *dnsRecord) Restore(ctx context.Context, shootState *gardencorev1beta1.ShootState) error {
+	return extensions.RestoreExtensionWithDeployFunction(
+		ctx,
+		d.client,
+		shootState,
+		extensionsv1alpha1.DNSRecordResource,
+		d.deploy,
+	)
+}
+
+// Migrate migrates the DNSRecord resource.
+func (d *dnsRecord) Migrate(ctx context.Context) error {
+	return extensions.MigrateExtensionObject(
+		ctx,
+		d.client,
+		d.dnsRecord,
+	)
+}
+
+// Destroy deletes the DNSRecord resource.
+func (d *dnsRecord) Destroy(ctx context.Context) error {
+	// Deploy the provider secret if desired, so that the extension controller can use it to delete the DNSRecord.
+	// The SecretName value might be empty during destruction, i.e., for using the existing secret on the cluster.
+	if d.values.SecretName != "" {
+		if err := d.deploySecret(ctx); err != nil {
+			return err
+		}
+	}
+
+	return extensions.DeleteExtensionObject(
+		ctx,
+		d.client,
+		d.dnsRecord,
+	)
+}
+
+// WaitUntilExtensionObjectReady is an alias for extensions.WaitUntilExtensionObjectReady. Exposed for tests.
+var WaitUntilExtensionObjectReady = extensions.WaitUntilExtensionObjectReady
+
+// Wait waits until the DNSRecord resource is ready.
+func (d *dnsRecord) Wait(ctx context.Context) error {
+	return WaitUntilExtensionObjectReady(
+		ctx,
+		d.client,
+		d.log,
+		d.dnsRecord,
+		extensionsv1alpha1.DNSRecordResource,
+		d.waitInterval,
+		d.waitSevereThreshold,
+		d.waitTimeout,
+		nil,
+	)
+}
+
+// WaitMigrate waits until the DNSRecord resource is migrated successfully.
+func (d *dnsRecord) WaitMigrate(ctx context.Context) error {
+	return extensions.WaitUntilExtensionObjectMigrated(
+		ctx,
+		d.client,
+		d.dnsRecord,
+		extensionsv1alpha1.DNSRecordResource,
+		d.waitInterval,
+		d.waitTimeout,
+	)
+}
+
+// WaitCleanup waits until the DNSRecord resource is deleted.
+func (d *dnsRecord) WaitCleanup(ctx context.Context) error {
+	return extensions.WaitUntilExtensionObjectDeleted(
+		ctx,
+		d.client,
+		d.log,
+		d.dnsRecord,
+		extensionsv1alpha1.DNSRecordResource,
+		d.waitInterval,
+		d.waitTimeout,
+	)
+}
+
+// GetValues returns the current configuration values of the deployer.
+func (d *dnsRecord) GetValues() *Values {
+	return d.values
+}
+
+// SetRecordType sets the record type in the values.
+func (d *dnsRecord) SetRecordType(recordType extensionsv1alpha1.DNSRecordType) {
+	d.values.RecordType = recordType
+}
+
+// SetValues sets the values in the values.
+func (d *dnsRecord) SetValues(values []string) {
+	d.values.Values = values
+}
+
+func (d *dnsRecord) valuesDontMatchDNSRecord() bool {
+	return d.values.SecretName != d.dnsRecord.Spec.SecretRef.Name ||
+		!ptr.Equal(d.values.Zone, d.dnsRecord.Spec.Zone) ||
+		!reflect.DeepEqual(d.values.Values, d.dnsRecord.Spec.Values) ||
+		!ptr.Equal(d.values.TTL, d.dnsRecord.Spec.TTL)
+}
+
+func (d *dnsRecord) lastOperationNotSuccessful() bool {
+	return d.dnsRecord.Status.LastOperation != nil && d.dnsRecord.Status.LastOperation.State != gardencorev1beta1.LastOperationStateSucceeded
+}
+
+// isTimestampInvalidOrAfterLastUpdateTime returns true if v1beta1constants.GardenerTimestamp is after status.LastOperation.LastUpdateTime
+// or if v1beta1constants.GardenerTimestamp is in invalid format
+func (d *dnsRecord) isTimestampInvalidOrAfterLastUpdateTime() bool {
+	timestamp, ok := d.dnsRecord.Annotations[v1beta1constants.GardenerTimestamp]
+	if ok && d.dnsRecord.Status.LastOperation != nil {
+		parsedTimestamp, err := time.Parse(time.RFC3339Nano, timestamp)
+		if err != nil {
+			// this should not happen
+			// we cannot do anything meaningful about this error so we mark the timestamp invalid
+			return true
+		}
+
+		if parsedTimestamp.Truncate(time.Second).UTC().After(d.dnsRecord.Status.LastOperation.LastUpdateTime.UTC()) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (d *dnsRecord) recordTypeChanged(oldType, newType extensionsv1alpha1.DNSRecordType) bool {
+	return oldType != newType
+}
+
+func newDNSRecord(values *Values) *extensionsv1alpha1.DNSRecord {
+	return &extensionsv1alpha1.DNSRecord{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      values.Name,
+			Namespace: values.Namespace,
+		},
+	}
+}
+
+// DeploySecretCredentials returns a [CredentialsDeployFunc] that deploys the given secret data into a Secret.
+func DeploySecretCredentials(secretData map[string][]byte) CredentialsDeployFunc {
+	return func(ctx context.Context, c client.Client, secret *corev1.Secret) error {
+		_, err := controllerutils.GetAndCreateOrMergePatch(ctx, c, secret, func() error {
+			secret.Annotations = nil
+			secret.Labels = nil
+			secret.Type = corev1.SecretTypeOpaque
+			secret.Data = secretData
+			return nil
+		})
+		return err
+	}
+}
+
+// DeployWorkloadIdentityCredentials returns a [CredentialsDeployFunc] that deploys the given Workload Identity credentials into a Secret.
+func DeployWorkloadIdentityCredentials(workloadIdentity *securityv1alpha1.WorkloadIdentity, referringObj client.Object) CredentialsDeployFunc {
+	return func(ctx context.Context, c client.Client, secret *corev1.Secret) error {
+		return workloadidentity.Deploy(ctx, c, workloadIdentity, secret.Name, secret.Namespace, nil, nil, referringObj)
+	}
+}
+
+// CredentialsDeployerFromCredentials returns a CredentialsDeployFunc based on the type of the provided credentials.
+func CredentialsDeployerFromCredentials(credentials client.Object, referringObj client.Object) CredentialsDeployFunc {
+	switch creds := credentials.(type) {
+	case *corev1.Secret:
+		return DeploySecretCredentials(creds.Data)
+	case *securityv1alpha1.WorkloadIdentity:
+		return DeployWorkloadIdentityCredentials(creds, referringObj)
+	default:
+		return nil
+	}
+}

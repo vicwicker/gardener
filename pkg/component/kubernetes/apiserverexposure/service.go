@@ -1,0 +1,252 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package apiserverexposure
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	"github.com/go-logr/logr"
+	istioapiannotation "istio.io/api/annotation"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/component"
+	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
+	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/utils"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/retry"
+)
+
+var (
+	// DefaultInterval is the default interval for retry operations.
+	DefaultInterval = 5 * time.Second
+	// DefaultTimeout is the default timeout and defines how long Gardener should wait
+	// for a successful reconciliation of the service resource.
+	DefaultTimeout = 10 * time.Minute
+)
+
+// ServiceValues configure the kube-apiserver service.
+type ServiceValues struct {
+	// NamePrefix is the prefix for the service name.
+	NamePrefix string
+	// NameSuffix is the suffix for the service name.
+	NameSuffix string
+	// TopologyAwareRoutingEnabled indicates whether topology-aware routing is enabled for the kube-apiserver service.
+	TopologyAwareRoutingEnabled bool
+	// RuntimeKubernetesVersion is the Kubernetes version of the runtime cluster.
+	RuntimeKubernetesVersion *semver.Version
+	// RetainIstioIngressNamespaces indicates whether the Istio ingress namespaces the service is currently exported to
+	// should be kept in addition to the ones returned by the Istio ingress namespaces function. This is used while the
+	// kube-apiserver exposure moves to another Istio ingress gateway: the previous gateway must be able to forward
+	// requests on its existing connections until it is no longer configured for the kube-apiserver. Otherwise, it
+	// answers these requests with errors instead of closing the connections, so clients keep using it.
+	RetainIstioIngressNamespaces bool
+}
+
+// serviceValues configure the kube-apiserver service.
+// this one is not exposed as not all values should be configured
+// from the outside.
+type serviceValues struct {
+	namePrefix                   string
+	nameSuffix                   string
+	topologyAwareRoutingEnabled  bool
+	runtimeKubernetesVersion     *semver.Version
+	retainIstioIngressNamespaces bool
+}
+
+// NewService creates a new instance of DeployWaiter for the Service used to expose the kube-apiserver.
+// <waiter> is optional and defaulted to github.com/gardener/gardener/pkg/utils/retry.DefaultOps().
+func NewService(
+	log logr.Logger,
+	cl client.Client,
+	namespace string,
+	values *ServiceValues,
+	sniServiceKeyFunc func() client.ObjectKey,
+	waiter retry.Ops,
+	clusterIPsFunc func(clusterIPs []string),
+	ingressFunc func(ingressIP string),
+	istioIngressNamespacesFunc func() []string,
+) component.DeployWaiter {
+	if waiter == nil {
+		waiter = retry.DefaultOps()
+	}
+
+	if clusterIPsFunc == nil {
+		clusterIPsFunc = func(_ []string) {}
+	}
+
+	if ingressFunc == nil {
+		ingressFunc = func(_ string) {}
+	}
+
+	var (
+		internalValues             = &serviceValues{}
+		loadBalancerServiceKeyFunc func() client.ObjectKey
+	)
+
+	if values != nil {
+		loadBalancerServiceKeyFunc = sniServiceKeyFunc
+
+		internalValues.namePrefix = values.NamePrefix
+		internalValues.nameSuffix = values.NameSuffix
+		internalValues.topologyAwareRoutingEnabled = values.TopologyAwareRoutingEnabled
+		internalValues.runtimeKubernetesVersion = values.RuntimeKubernetesVersion
+		internalValues.retainIstioIngressNamespaces = values.RetainIstioIngressNamespaces
+	}
+
+	return &service{
+		log:                        log,
+		client:                     cl,
+		namespace:                  namespace,
+		values:                     internalValues,
+		loadBalancerServiceKeyFunc: loadBalancerServiceKeyFunc,
+		waiter:                     waiter,
+		clusterIPsFunc:             clusterIPsFunc,
+		ingressFunc:                ingressFunc,
+		istioIngressNamespacesFunc: istioIngressNamespacesFunc,
+	}
+}
+
+type service struct {
+	log                        logr.Logger
+	client                     client.Client
+	namespace                  string
+	values                     *serviceValues
+	loadBalancerServiceKeyFunc func() client.ObjectKey
+	waiter                     retry.Ops
+	clusterIPsFunc             func(clusterIPs []string)
+	ingressFunc                func(ingressIP string)
+	istioIngressNamespacesFunc func() []string
+}
+
+func (s *service) Deploy(ctx context.Context) error {
+	obj := s.emptyService()
+
+	if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, s.client, obj, func() error {
+		istioIngressNamespaces := s.istioIngressNamespacesFunc()
+		if s.values.retainIstioIngressNamespaces {
+			istioIngressNamespaces = appendMissingNamespaces(istioIngressNamespaces, obj.Annotations[istioapiannotation.NetworkingExportTo.Name])
+		}
+		metav1.SetMetaDataAnnotation(&obj.ObjectMeta, istioapiannotation.NetworkingExportTo.Name, strings.Join(istioIngressNamespaces, ","))
+
+		namespaceSelectors := []metav1.LabelSelector{
+			{MatchLabels: map[string]string{v1beta1constants.LabelNetworkPolicyAccessTargetAPIServer: v1beta1constants.LabelNetworkPolicyAllowed}},
+		}
+		networkPolicyPort := networkingv1.NetworkPolicyPort{Port: new(intstr.FromInt32(kubeapiserverconstants.Port)), Protocol: new(corev1.ProtocolTCP)}
+
+		// For shoot namespaces the kube-apiserver service needs extra labels and annotations to create required network policies
+		// which allow a connection from istio-ingress components to kube-apiserver.
+		if isShootNamespace, err := gardenerutils.IsShootNamespace(ctx, s.client, obj.Namespace); err != nil {
+			return fmt.Errorf("error checking if service is in a shoot namespace: %w", err)
+		} else if isShootNamespace {
+			utilruntime.Must(gardenerutils.InjectNetworkPolicyAnnotationsForScrapeTargets(obj, networkPolicyPort))
+			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, resourcesv1alpha1.NetworkingPodLabelSelectorNamespaceAlias, v1beta1constants.LabelNetworkPolicyShootNamespaceAlias)
+
+			namespaceSelectors = append(namespaceSelectors,
+				metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: v1beta1constants.GardenNamespace}},
+				metav1.LabelSelector{MatchLabels: map[string]string{v1beta1constants.GardenRole: v1beta1constants.GardenRoleExtension}},
+			)
+		} else {
+			utilruntime.Must(gardenerutils.InjectNetworkPolicyAnnotationsForGardenScrapeTargets(obj, networkPolicyPort))
+		}
+
+		utilruntime.Must(gardenerutils.InjectNetworkPolicyNamespaceSelectors(obj, namespaceSelectors...))
+		gardenerutils.ReconcileTopologyAwareRoutingSettings(obj, s.values.topologyAwareRoutingEnabled, s.values.runtimeKubernetesVersion)
+
+		obj.Labels = utils.MergeStringMaps(obj.Labels, getLabels())
+		// Only the primary service should be scraped for metrics. Otherwise, we would have duplicate metrics.
+		if s.values.nameSuffix == "" {
+			obj.Labels[kubeapiserver.LabelMetricsScrapeTarget] = "true"
+		}
+
+		obj.Spec.Type = corev1.ServiceTypeClusterIP
+		obj.Spec.Selector = getLabels()
+		obj.Spec.Ports = kubernetesutils.ReconcileServicePorts(obj.Spec.Ports, []corev1.ServicePort{
+			{
+				Name:       kubeapiserver.ServicePortName,
+				Protocol:   corev1.ProtocolTCP,
+				Port:       kubeapiserverconstants.Port,
+				TargetPort: intstr.FromInt32(kubeapiserverconstants.Port),
+			},
+		}, corev1.ServiceTypeClusterIP)
+		obj.Spec.IPFamilyPolicy = new(corev1.IPFamilyPolicyPreferDualStack)
+
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	s.clusterIPsFunc(obj.Spec.ClusterIPs)
+	return nil
+}
+
+func (s *service) Destroy(ctx context.Context) error {
+	return client.IgnoreNotFound(s.client.Delete(ctx, s.emptyService()))
+}
+
+func (s *service) Wait(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	defer cancel()
+
+	return s.waiter.Until(ctx, DefaultInterval, func(ctx context.Context) (done bool, err error) {
+		// this ingress can be either the kube-apiserver's service or istio's IGW loadbalancer.
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      s.loadBalancerServiceKeyFunc().Name,
+				Namespace: s.loadBalancerServiceKeyFunc().Namespace,
+			},
+		}
+
+		loadBalancerIngress, err := kubernetesutils.GetLoadBalancerIngress(ctx, s.client, svc)
+		if err != nil {
+			s.log.Info("Waiting until the kube-apiserver ingress LoadBalancer deployed in the Seed cluster is ready", "service", client.ObjectKeyFromObject(svc))
+			return retry.MinorError(fmt.Errorf("KubeAPI Server ingress LoadBalancer deployed in the Seed cluster is ready: %v", err))
+		}
+		s.ingressFunc(loadBalancerIngress)
+
+		return retry.Ok()
+	})
+}
+
+func (s *service) WaitCleanup(ctx context.Context) error {
+	return kubernetesutils.WaitUntilResourceDeleted(ctx, s.client, s.emptyService(), 2*time.Second)
+}
+
+// appendMissingNamespaces appends the namespaces of the given comma-separated exportTo value to the given namespaces
+// if they are not contained yet. The order of the given namespaces is kept to avoid needless updates of the service.
+func appendMissingNamespaces(namespaces []string, exportTo string) []string {
+	result := slices.Clone(namespaces)
+	for namespace := range strings.SplitSeq(exportTo, ",") {
+		if namespace != "" && !slices.Contains(result, namespace) {
+			result = append(result, namespace)
+		}
+	}
+	return result
+}
+
+func (s *service) emptyService() *corev1.Service {
+	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: s.values.namePrefix + v1beta1constants.DeploymentNameKubeAPIServer + s.values.nameSuffix, Namespace: s.namespace}}
+}
+
+func getLabels() map[string]string {
+	return map[string]string{
+		v1beta1constants.LabelApp:  v1beta1constants.LabelKubernetes,
+		v1beta1constants.LabelRole: v1beta1constants.LabelAPIServer,
+	}
+}

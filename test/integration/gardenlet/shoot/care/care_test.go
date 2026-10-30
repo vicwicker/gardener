@@ -1,0 +1,1002 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package care_test
+
+import (
+	"fmt"
+
+	druidcorev1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/features"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/test"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+)
+
+var _ = Describe("Shoot Care controller tests", func() {
+	var (
+		seedNamespace             *corev1.Namespace
+		secret                    *corev1.Secret
+		secretBinding             *gardencorev1beta1.SecretBinding
+		shoot                     *gardencorev1beta1.Shoot
+		cluster                   *extensionsv1alpha1.Cluster
+		requiredControlPlaneETCDs = []string{
+			v1beta1constants.ETCDMain,
+			v1beta1constants.ETCDEvents,
+		}
+	)
+
+	BeforeEach(func() {
+		seedNamespace = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   gardenerutils.ComputeGardenNamespace(seed.Name),
+				Labels: map[string]string{testID: testRunID},
+			},
+		}
+
+		secret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret-" + testRunID,
+				Namespace: testNamespace.Name,
+				Labels:    map[string]string{testID: testRunID},
+			},
+		}
+		secretBinding = &gardencorev1beta1.SecretBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secretbinding-" + testRunID,
+				Namespace: testNamespace.Name,
+				Labels:    map[string]string{testID: testRunID},
+			},
+			SecretRef: corev1.SecretReference{Name: secret.Name},
+			Provider:  &gardencorev1beta1.SecretBindingProvider{Type: "foo"},
+		}
+		shoot = &gardencorev1beta1.Shoot{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      shootName,
+				Namespace: testNamespace.Name,
+				Labels:    map[string]string{testID: testRunID},
+			},
+			Spec: gardencorev1beta1.ShootSpec{
+				SecretBindingName: new(secretBinding.Name),
+				CloudProfileName:  new("cloudprofile1"),
+				SeedName:          new(seedName),
+				Region:            "europe-central-1",
+				Provider: gardencorev1beta1.Provider{
+					Type: "foo-provider",
+					Workers: []gardencorev1beta1.Worker{
+						{
+							Name:    "cpu-worker",
+							Minimum: 3,
+							Maximum: 3,
+							Machine: gardencorev1beta1.Machine{
+								Type: "large",
+								Image: &gardencorev1beta1.ShootMachineImage{
+									Name:    "some-image",
+									Version: new("1.0.0"),
+								},
+							},
+						},
+					},
+				},
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					Version: "1.31.1",
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Type:     new("foo-networking"),
+					Services: new("10.0.0.0/16"),
+					Pods:     new("10.1.0.0/16"),
+				},
+			},
+		}
+		cluster = &extensionsv1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{testID: testRunID},
+			},
+			Spec: extensionsv1alpha1.ClusterSpec{
+				Shoot:        runtime.RawExtension{Object: shoot},
+				Seed:         &runtime.RawExtension{Object: seed},
+				CloudProfile: runtime.RawExtension{Object: &gardencorev1beta1.CloudProfile{}},
+			},
+		}
+	})
+
+	JustBeforeEach(func() {
+		// Typically, GCM creates the seed-specific namespace, but it doesn't run in this test, hence we have to do it.
+		By("Create seed-specific namespace")
+		Expect(testClient.Create(ctx, seedNamespace)).To(Succeed())
+
+		By("Wait until the manager cache observes the namespace")
+		Eventually(func() error {
+			return mgrClient.Get(ctx, client.ObjectKeyFromObject(seedNamespace), seedNamespace)
+		}).Should(Succeed())
+
+		By("Create Shoot")
+		Expect(testClient.Create(ctx, shoot)).To(Succeed())
+		log.Info("Created Shoot for test", "shoot", shoot.Name)
+
+		By("Patch shoot status")
+		patch := client.MergeFrom(shoot.DeepCopy())
+		shoot.Status.SeedName = new(seedName)
+		shoot.Status.Gardener.Version = "1.2.3"
+		shoot.Status.TechnicalID = testNamespace.Name
+		shoot.Status.UID = "some-uid"
+		Expect(testClient.Status().Patch(ctx, shoot, patch)).To(Succeed())
+
+		By("Ensure manager has observed status patch")
+		Eventually(func(g Gomega) string {
+			g.Expect(mgrClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+			return shoot.Status.Gardener.Version
+		}).ShouldNot(BeEmpty())
+
+		DeferCleanup(func() {
+			By("Delete seed-specific namespace")
+			Expect(testClient.Delete(ctx, seedNamespace)).To(Succeed())
+
+			By("Ensure Namespace is gone")
+			Eventually(func() error {
+				return mgrClient.Get(ctx, client.ObjectKeyFromObject(seedNamespace), seedNamespace)
+			}).Should(BeNotFoundError())
+
+			By("Delete Shoot")
+			Expect(testClient.Delete(ctx, shoot)).To(Succeed())
+
+			By("Ensure Shoot is gone")
+			Eventually(func() error {
+				return mgrClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)
+			}).Should(BeNotFoundError())
+		})
+	})
+
+	Context("when operation cannot be initialized", func() {
+		Context("shoot with workers", func() {
+			It("should set condition to Unknown", func() {
+				By("Expect conditions to be Unknown")
+				Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					return shoot.Status.Conditions
+				}).Should(And(
+					ContainCondition(OfType(gardencorev1beta1.ShootAPIServerAvailable), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+					ContainCondition(OfType(gardencorev1beta1.ShootControlPlaneHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+					ContainCondition(OfType(gardencorev1beta1.ShootObservabilityComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+					ContainCondition(OfType(gardencorev1beta1.ShootEveryNodeReady), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+					ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+				))
+			})
+		})
+
+		Context("Workerless Shoot", func() {
+			BeforeEach(func() {
+				shoot.Spec.SecretBindingName = nil
+				shoot.Spec.Networking = nil
+				shoot.Spec.Provider.Workers = nil
+			})
+
+			It("should set condition to Unknown", func() {
+				By("Expect conditions to be Unknown")
+				Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					return shoot.Status.Conditions
+				}).Should(And(
+					ContainCondition(OfType(gardencorev1beta1.ShootAPIServerAvailable), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+					ContainCondition(OfType(gardencorev1beta1.ShootControlPlaneHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+					ContainCondition(OfType(gardencorev1beta1.ShootObservabilityComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+					ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+					Not(ContainCondition(OfType(gardencorev1beta1.ShootEveryNodeReady))),
+				))
+			})
+		})
+	})
+
+	Context("when operation can be initialized", func() {
+		BeforeEach(func() {
+			By("Create Secret")
+			Expect(testClient.Create(ctx, secret)).To(Succeed())
+			log.Info("Created Secret for test", "secret", secret.Name)
+
+			By("Create SecretBinding")
+			Expect(testClient.Create(ctx, secretBinding)).To(Succeed())
+			log.Info("Created SecretBinding for test", "secretBinding", secretBinding.Name)
+
+			DeferCleanup(func() {
+				By("Delete SecretBinding")
+				Expect(testClient.Delete(ctx, secretBinding)).To(Succeed())
+
+				By("Ensure SecretBinding is gone")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(secretBinding), secretBinding)
+				}).Should(BeNotFoundError())
+
+				By("Delete Secret")
+				Expect(testClient.Delete(ctx, secret)).To(Succeed())
+
+				By("Ensure Secret is gone")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)
+				}).Should(BeNotFoundError())
+			})
+		})
+
+		// Cluster is created in JustBeforeEach because Shoot is also created in JustBeforeEach, so we need to make sure
+		// that the Cluster resource contains the most recent version of the Shoot.
+		JustBeforeEach(func() {
+			By("Create Cluster")
+			cluster.Name = shoot.Status.TechnicalID
+			Expect(testClient.Create(ctx, cluster)).To(Succeed())
+			log.Info("Created Cluster for test", "cluster", cluster.Name)
+
+			DeferCleanup(func() {
+				By("Delete Cluster")
+				Expect(testClient.Delete(ctx, cluster)).To(Succeed())
+
+				By("Ensure Cluster is gone")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster)
+				}).Should(BeNotFoundError())
+			})
+		})
+
+		Context("when all control plane deployments for the Shoot are missing", func() {
+			JustBeforeEach(func() {
+				By("Create ETCDs")
+				createETCDs(requiredControlPlaneETCDs)
+				By("Update ETCD status to healthy")
+				for _, name := range requiredControlPlaneETCDs {
+					updateETCDStatusToHealthy(name)
+				}
+			})
+
+			Context("Shoot with workers", func() {
+				It("should set conditions", func() {
+					By("Expect conditions to be set")
+					Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+						return shoot.Status.Conditions
+					}).Should(And(
+						ContainCondition(OfType(gardencorev1beta1.ShootAPIServerAvailable), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("APIServerDown")),
+						ContainCondition(OfType(gardencorev1beta1.ShootControlPlaneHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("DeploymentMissing"), WithMessageSubstrings("Missing required deployments: [gardener-resource-manager kube-apiserver kube-controller-manager kube-scheduler machine-controller-manager vpa-admission-controller vpa-recommender vpa-updater]")),
+						ContainCondition(OfType(gardencorev1beta1.ShootObservabilityComponentsHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("DeploymentMissing"), WithMessageSubstrings("Missing required deployments: [kube-state-metrics]")),
+						ContainCondition(OfType(gardencorev1beta1.ShootEveryNodeReady), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("Shoot control plane has not been fully created yet.")),
+						ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("Shoot control plane has not been fully created yet.")),
+					))
+				})
+			})
+
+			Context("Workerless Shoot", func() {
+				BeforeEach(func() {
+					shoot.Spec.Provider.Workers = nil
+					shoot.Spec.SecretBindingName = nil
+					shoot.Spec.Networking = &gardencorev1beta1.Networking{
+						Services: new("10.0.0.0/16"),
+					}
+				})
+
+				It("should set conditions", func() {
+					By("Expect conditions to be set")
+					Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+						return shoot.Status.Conditions
+					}).Should(And(
+						ContainCondition(OfType(gardencorev1beta1.ShootAPIServerAvailable), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("APIServerDown")),
+						ContainCondition(OfType(gardencorev1beta1.ShootControlPlaneHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("DeploymentMissing"), WithMessageSubstrings("Missing required deployments: [gardener-resource-manager kube-apiserver kube-controller-manager]")),
+						ContainCondition(OfType(gardencorev1beta1.ShootObservabilityComponentsHealthy), WithStatus(gardencorev1beta1.ConditionTrue), WithReason("ObservabilityComponentsRunning"), WithMessageSubstrings("All observability components are healthy.")),
+						ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("Shoot control plane has not been fully created yet.")),
+						Not(ContainCondition(OfType(gardencorev1beta1.ShootEveryNodeReady))),
+					))
+				})
+			})
+		})
+
+		Context("when some control plane deployments for the Shoot are present", func() {
+			JustBeforeEach(func() {
+				By("Create ETCDs")
+				createETCDs(requiredControlPlaneETCDs)
+				By("Update ETCD status to healthy")
+				for _, name := range requiredControlPlaneETCDs {
+					updateETCDStatusToHealthy(name)
+				}
+				createDeployment([]string{"gardener-resource-manager", "kube-controller-manager"})
+			})
+
+			Context("Shoot with workers", func() {
+				It("should set conditions", func() {
+					By("Expect conditions to be set")
+					Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+						return shoot.Status.Conditions
+					}).Should(And(
+						ContainCondition(OfType(gardencorev1beta1.ShootAPIServerAvailable), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("APIServerDown")),
+						ContainCondition(OfType(gardencorev1beta1.ShootControlPlaneHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("DeploymentMissing"), WithMessageSubstrings("Missing required deployments: [kube-apiserver kube-scheduler machine-controller-manager vpa-admission-controller vpa-recommender vpa-updater]")),
+						ContainCondition(OfType(gardencorev1beta1.ShootObservabilityComponentsHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("DeploymentMissing"), WithMessageSubstrings("Missing required deployments: [kube-state-metrics]")),
+						ContainCondition(OfType(gardencorev1beta1.ShootEveryNodeReady), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("Shoot control plane has not been fully created yet.")),
+						ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("Shoot control plane has not been fully created yet.")),
+					))
+				})
+			})
+
+			Context("Workerless Shoot", func() {
+				BeforeEach(func() {
+					shoot.Spec.Provider.Workers = nil
+					shoot.Spec.SecretBindingName = nil
+					shoot.Spec.Networking = &gardencorev1beta1.Networking{
+						Services: new("10.0.0.0/16"),
+					}
+				})
+
+				It("should set conditions", func() {
+					By("Expect conditions to be set")
+					Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+						return shoot.Status.Conditions
+					}).Should(And(
+						ContainCondition(OfType(gardencorev1beta1.ShootAPIServerAvailable), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("APIServerDown")),
+						ContainCondition(OfType(gardencorev1beta1.ShootControlPlaneHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("DeploymentMissing"), WithMessageSubstrings("Missing required deployments: [kube-apiserver]")),
+						ContainCondition(OfType(gardencorev1beta1.ShootObservabilityComponentsHealthy), WithStatus(gardencorev1beta1.ConditionTrue), WithReason("ObservabilityComponentsRunning"), WithMessageSubstrings("All observability components are healthy.")),
+						ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("Shoot control plane has not been fully created yet.")),
+						Not(ContainCondition(OfType(gardencorev1beta1.ShootEveryNodeReady))),
+					))
+				})
+			})
+		})
+
+		Context("when all Managed Resources of spec.class=nil in shoot namespace in seed are healthy except one with spec.class!=nil", func() {
+			JustBeforeEach(func() {
+				// kube-apiserver deployment is required because care controller doesn't check any other
+				// condition if APIServer is down.
+				createDeployment([]string{"kube-apiserver"})
+
+				managedResource1 := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1",
+						Namespace: testNamespace.Name,
+						Labels: map[string]string{
+							testID: testRunID,
+						},
+					},
+					Spec: resourcesv1alpha1.ManagedResourceSpec{
+						SecretRefs: []corev1.LocalObjectReference{
+							{Name: "test-1"},
+						},
+					},
+				}
+				Expect(testClient.Create(ctx, managedResource1)).To(Succeed())
+
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(managedResource1), managedResource1)
+				}).Should(Succeed())
+
+				By("Patch Managed Resource to report healthiness")
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(managedResource1), managedResource1)).To(Succeed())
+
+					patch := client.MergeFrom(managedResource1.DeepCopy())
+					managedResource1.Status.ObservedGeneration = managedResource1.Generation
+					managedResource1.Status.Conditions = []gardencorev1beta1.Condition{
+						{
+							Type:               resourcesv1alpha1.ResourcesApplied,
+							Status:             gardencorev1beta1.ConditionTrue,
+							LastTransitionTime: metav1.Time{Time: fakeClock.Now()},
+							LastUpdateTime:     metav1.Time{Time: fakeClock.Now()},
+						},
+						{
+							Type:               resourcesv1alpha1.ResourcesHealthy,
+							Status:             gardencorev1beta1.ConditionTrue,
+							LastTransitionTime: metav1.Time{Time: fakeClock.Now()},
+							LastUpdateTime:     metav1.Time{Time: fakeClock.Now()},
+						},
+						{
+							Type:               resourcesv1alpha1.ResourcesProgressing,
+							Status:             gardencorev1beta1.ConditionFalse,
+							LastTransitionTime: metav1.Time{Time: fakeClock.Now()},
+							LastUpdateTime:     metav1.Time{Time: fakeClock.Now()},
+						},
+					}
+					g.Expect(testClient.Status().Patch(ctx, managedResource1, patch)).To(Succeed())
+				}).Should(Succeed())
+
+				managedResource2 := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-2",
+						Namespace: testNamespace.Name,
+						Labels: map[string]string{
+							testID: testRunID,
+						},
+					},
+					Spec: resourcesv1alpha1.ManagedResourceSpec{
+						Class: new("test"),
+						SecretRefs: []corev1.LocalObjectReference{
+							{Name: "test-2"},
+						},
+					},
+				}
+				Expect(testClient.Create(ctx, managedResource2)).To(Succeed())
+
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(managedResource2), managedResource2)
+				}).Should(Succeed())
+
+				DeferCleanup(func() {
+					By("Delete Managed Resource")
+					Expect(testClient.Delete(ctx, managedResource1)).To(Succeed())
+					Expect(testClient.Delete(ctx, managedResource2)).To(Succeed())
+
+					By("Ensure Managed Resource is gone")
+					Eventually(func() error {
+						return mgrClient.Get(ctx, client.ObjectKeyFromObject(managedResource1), managedResource1)
+					}).Should(BeNotFoundError())
+
+					Eventually(func() error {
+						return mgrClient.Get(ctx, client.ObjectKeyFromObject(managedResource2), managedResource2)
+					}).Should(BeNotFoundError())
+				})
+			})
+
+			Context("Shoot with workers", func() {
+				It("SystemComponentsHealthy condition should not fail because all relevant Managed Resources are healthy", func() {
+					By("Expect conditions to be set")
+					Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+						return shoot.Status.Conditions
+					}).Should(And(
+						// here SystemComponentsHealthy condition is not healthy because for SystemComponentsHealthy to be healthy a tunnel connection is required
+						// which can't be faked, if it would have been failing because of MangedResource is not healthy then the reason will not be `NoTunnelDeployed`.
+						ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("NoTunnelDeployed"), WithMessageSubstrings("no tunnels are currently deployed to perform health-check on")),
+					))
+				})
+			})
+
+			Context("Workerless Shoot", func() {
+				BeforeEach(func() {
+					shoot.Spec.Provider.Workers = nil
+					shoot.Spec.SecretBindingName = nil
+					shoot.Spec.Networking = &gardencorev1beta1.Networking{
+						Services: new("10.0.0.0/16"),
+					}
+				})
+
+				It("SystemComponentsHealthy condition should not fail because all relevant Managed Resources are healthy", func() {
+					By("Expect conditions to be set")
+					Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+						return shoot.Status.Conditions
+					}).Should(And(
+						ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionTrue), WithReason("SystemComponentsRunning"), WithMessageSubstrings("All system components are healthy.")),
+					))
+				})
+			})
+		})
+
+		Context("when Managed Resources of spec.class=nil in shoot namespace in seed are not healthy", func() {
+			JustBeforeEach(func() {
+				// kube-apiserver deployment is required because care controller doesn't check any other
+				// condition if APIServer is down.
+				createDeployment([]string{"kube-apiserver"})
+
+				managedResource1 := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-1",
+						Namespace: testNamespace.Name,
+						Labels: map[string]string{
+							testID: testRunID,
+						},
+					},
+					Spec: resourcesv1alpha1.ManagedResourceSpec{
+						SecretRefs: []corev1.LocalObjectReference{
+							{Name: "test-1"},
+						},
+					},
+				}
+				Expect(testClient.Create(ctx, managedResource1)).To(Succeed())
+
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(managedResource1), managedResource1)
+				}).Should(Succeed())
+
+				By("Patch Managed Resource status")
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(managedResource1), managedResource1)).To(Succeed())
+
+					patch := client.MergeFrom(managedResource1.DeepCopy())
+					managedResource1.Status.ObservedGeneration = managedResource1.Generation
+					managedResource1.Status.Conditions = []gardencorev1beta1.Condition{
+						{
+							Type:               resourcesv1alpha1.ResourcesApplied,
+							Status:             gardencorev1beta1.ConditionFalse,
+							LastTransitionTime: metav1.Time{Time: fakeClock.Now()},
+							LastUpdateTime:     metav1.Time{Time: fakeClock.Now()},
+							Reason:             "ApplyFailed",
+							Message:            "Resources failed to get applied",
+						},
+						{
+							Type:               resourcesv1alpha1.ResourcesHealthy,
+							Status:             gardencorev1beta1.ConditionTrue,
+							LastTransitionTime: metav1.Time{Time: fakeClock.Now()},
+							LastUpdateTime:     metav1.Time{Time: fakeClock.Now()},
+						},
+						{
+							Type:               resourcesv1alpha1.ResourcesProgressing,
+							Status:             gardencorev1beta1.ConditionFalse,
+							LastTransitionTime: metav1.Time{Time: fakeClock.Now()},
+							LastUpdateTime:     metav1.Time{Time: fakeClock.Now()},
+						},
+					}
+					g.Expect(testClient.Status().Patch(ctx, managedResource1, patch)).To(Succeed())
+				}).Should(Succeed())
+
+				DeferCleanup(func() {
+					By("Delete Managed Resource")
+					Expect(testClient.Delete(ctx, managedResource1)).To(Succeed())
+
+					By("Ensure Managed Resource is gone")
+					Eventually(func() error {
+						return mgrClient.Get(ctx, client.ObjectKeyFromObject(managedResource1), managedResource1)
+					}).Should(BeNotFoundError())
+				})
+			})
+
+			Context("Shoot with workers", func() {
+				It("SystemComponentsHealthy condition should fail because of ManagedResource is not healthy", func() {
+					By("Expect conditions to be set")
+					Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+						return shoot.Status.Conditions
+					}).Should(And(
+						ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("ApplyFailed"), WithMessageSubstrings("Resources failed to get applied")),
+					))
+				})
+			})
+
+			Context("Workerless Shoot", func() {
+				BeforeEach(func() {
+					shoot.Spec.Provider.Workers = nil
+					shoot.Spec.SecretBindingName = nil
+					shoot.Spec.Networking = &gardencorev1beta1.Networking{
+						Services: new("10.0.0.0/16"),
+					}
+				})
+
+				It("SystemComponentsHealthy condition should fail because of ManagedResource is not healthy", func() {
+					By("Expect conditions to be set")
+					Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+						return shoot.Status.Conditions
+					}).Should(And(
+						ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionProgressing), WithReason("ApplyFailed"), WithMessageSubstrings("Resources failed to get applied")),
+					))
+				})
+			})
+		})
+	})
+})
+
+var _ = Describe("Shoot Care controller tests (self-hosted shoot)", func() {
+	var (
+		shoot   *gardencorev1beta1.Shoot
+		cluster *extensionsv1alpha1.Cluster
+
+		shootUID = types.UID("some-uid")
+	)
+
+	BeforeEach(func() {
+		DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.InPlaceNodeUpdates, true))
+
+		shoot = &gardencorev1beta1.Shoot{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      shootName,
+				Namespace: v1beta1constants.GardenNamespace,
+				Labels:    map[string]string{testID: testRunID},
+			},
+			Spec: gardencorev1beta1.ShootSpec{
+				CloudProfileName: new("cloudprofile1"),
+				Region:           "europe-central-1",
+				Provider: gardencorev1beta1.Provider{
+					Type: "foo-provider",
+					Workers: []gardencorev1beta1.Worker{
+						{
+							Name:    "cp-worker",
+							Minimum: 1,
+							Maximum: 1,
+							Machine: gardencorev1beta1.Machine{
+								Type: "large",
+								Image: &gardencorev1beta1.ShootMachineImage{
+									Name:    "some-image",
+									Version: new("1.0.0"),
+								},
+							},
+							ControlPlane: &gardencorev1beta1.WorkerControlPlane{},
+						},
+					},
+				},
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					Version: "1.31.1",
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Type:     new("foo-networking"),
+					Services: new("10.0.0.0/16"),
+					Pods:     new("10.1.0.0/16"),
+					Nodes:    new("10.2.0.0/16"),
+				},
+			},
+		}
+		cluster = &extensionsv1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{testID: testRunID},
+			},
+			Spec: extensionsv1alpha1.ClusterSpec{
+				Shoot:        runtime.RawExtension{Object: shoot},
+				Seed:         &runtime.RawExtension{Object: &gardencorev1beta1.Seed{}},
+				CloudProfile: runtime.RawExtension{Object: &gardencorev1beta1.CloudProfile{}},
+			},
+		}
+	})
+
+	JustBeforeEach(func() {
+		By("Create Shoot")
+		Expect(testClient.Create(ctx, shoot)).To(Succeed())
+		log.Info("Created Shoot for test", "shoot", client.ObjectKeyFromObject(shoot))
+
+		By("Patch shoot status")
+		patch := client.MergeFrom(shoot.DeepCopy())
+		shoot.Status.Gardener.Version = "1.2.3"
+		shoot.Status.TechnicalID = selfHostedCPNamespace.Name
+		shoot.Status.UID = shootUID
+		Expect(testClient.Status().Patch(ctx, shoot, patch)).To(Succeed())
+
+		By("Ensure manager has observed status patch")
+		Eventually(func(g Gomega) string {
+			g.Expect(mgrClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+			return shoot.Status.Gardener.Version
+		}).ShouldNot(BeEmpty())
+
+		DeferCleanup(func() {
+			By("Delete Shoot")
+			Expect(testClient.Delete(ctx, shoot)).To(Succeed())
+
+			By("Ensure Shoot is gone")
+			Eventually(func() error {
+				return mgrClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)
+			}).Should(BeNotFoundError())
+		})
+	})
+
+	Context("when operation cannot be initialized", func() {
+		// No Cluster resource is created, so the operation builder cannot find the Cluster
+		// and will set all conditions to Unknown.
+		It("should set all conditions including BackupBucketsReady to Unknown", func() {
+			By("Expect conditions to be Unknown")
+			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				return shoot.Status.Conditions
+			}).Should(And(
+				ContainCondition(OfType(gardencorev1beta1.ShootAPIServerAvailable), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+				ContainCondition(OfType(gardencorev1beta1.ShootControlPlaneHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+				ContainCondition(OfType(gardencorev1beta1.ShootObservabilityComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+				ContainCondition(OfType(gardencorev1beta1.ShootEveryNodeReady), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+				ContainCondition(OfType(gardencorev1beta1.ShootSystemComponentsHealthy), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+				ContainCondition(OfType(gardencorev1beta1.SeedBackupBucketsReady), WithStatus(gardencorev1beta1.ConditionUnknown), WithReason("ConditionCheckError"), WithMessageSubstrings("operation could not be initialized")),
+			))
+		})
+	})
+
+	Context("when operation can be initialized", func() {
+		JustBeforeEach(func() {
+			By("Create Cluster")
+			// For self-hosted shoots, ControlPlaneNamespaceForShoot always returns "kube-system",
+			// so the Cluster resource must be named "kube-system" regardless of the TechnicalID.
+			cluster.Name = metav1.NamespaceSystem
+			Expect(testClient.Create(ctx, cluster)).To(Succeed())
+			log.Info("Created Cluster for test", "cluster", cluster.Name)
+
+			DeferCleanup(func() {
+				By("Delete Cluster")
+				Expect(testClient.Delete(ctx, cluster)).To(Succeed())
+
+				By("Ensure Cluster is gone")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster)
+				}).Should(BeNotFoundError())
+			})
+		})
+
+		Context("BackupBucketsReady condition", func() {
+			It("should set BackupBucketsReady=True/NoBackupEntry when no BackupEntry exists", func() {
+				By("Expect BackupBucketsReady to be True with NoBackupEntry")
+				Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					return shoot.Status.Conditions
+				}).Should(ContainCondition(
+					OfType(gardencorev1beta1.SeedBackupBucketsReady),
+					WithStatus(gardencorev1beta1.ConditionTrue),
+					WithReason("NoBackupEntry"),
+				))
+			})
+
+			It("should set BackupBucketsReady=True when BackupBucket is healthy", func() {
+				// For self-hosted shoots, ControlPlaneNamespaceForShoot always returns "kube-system",
+				// so BackupEntryName is derived from "kube-system".
+				backupEntryName, err := gardenerutils.GenerateBackupEntryName(metav1.NamespaceSystem, shootUID, shoot.UID)
+				Expect(err).NotTo(HaveOccurred())
+
+				backupBucket := &gardencorev1beta1.BackupBucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "bb-" + testRunID,
+						Labels: map[string]string{testID: testRunID},
+					},
+					Spec: gardencorev1beta1.BackupBucketSpec{
+						Provider: gardencorev1beta1.BackupBucketProvider{
+							Type:   "foo",
+							Region: "europe",
+						},
+						SeedName: new("some-seed"),
+						CredentialsRef: &corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Namespace:  v1beta1constants.GardenNamespace,
+							Name:       "some-credentials",
+						},
+					},
+				}
+
+				By("Create BackupBucket")
+				Expect(testClient.Create(ctx, backupBucket)).To(Succeed())
+
+				By("Wait until the manager cache observes the backup bucket")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(backupBucket), backupBucket)
+				}).Should(Succeed())
+
+				backupEntry := &gardencorev1beta1.BackupEntry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      backupEntryName,
+						Namespace: v1beta1constants.GardenNamespace,
+						Labels:    map[string]string{testID: testRunID},
+					},
+					Spec: gardencorev1beta1.BackupEntrySpec{
+						BucketName: backupBucket.Name,
+						SeedName:   new("some-seed"),
+					},
+				}
+
+				By("Create BackupEntry")
+				Expect(testClient.Create(ctx, backupEntry)).To(Succeed())
+
+				DeferCleanup(func() {
+					By("Delete BackupEntry")
+					Expect(testClient.Delete(ctx, backupEntry)).To(Succeed())
+					Eventually(func() error {
+						return mgrClient.Get(ctx, client.ObjectKeyFromObject(backupEntry), backupEntry)
+					}).Should(BeNotFoundError())
+
+					By("Delete BackupBucket")
+					Expect(testClient.Delete(ctx, backupBucket)).To(Succeed())
+					Eventually(func() error {
+						return mgrClient.Get(ctx, client.ObjectKeyFromObject(backupBucket), backupBucket)
+					}).Should(BeNotFoundError())
+				})
+
+				By("Expect BackupBucketsReady to be True")
+				Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					return shoot.Status.Conditions
+				}).Should(ContainCondition(
+					OfType(gardencorev1beta1.SeedBackupBucketsReady),
+					WithStatus(gardencorev1beta1.ConditionTrue),
+					WithReason("BackupBucketsAvailable"),
+				))
+			})
+
+			It("should set BackupBucketsReady=Progressing when BackupBucket is erroneous", func() {
+				// For self-hosted shoots, ControlPlaneNamespaceForShoot always returns "kube-system",
+				// so BackupEntryName is derived from "kube-system".
+				backupEntryName, err := gardenerutils.GenerateBackupEntryName(metav1.NamespaceSystem, shootUID, shoot.UID)
+				Expect(err).NotTo(HaveOccurred())
+
+				errMsg := "some error message"
+				backupBucket := &gardencorev1beta1.BackupBucket{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "bb-err-" + testRunID,
+						Labels: map[string]string{testID: testRunID},
+					},
+					Spec: gardencorev1beta1.BackupBucketSpec{
+						Provider: gardencorev1beta1.BackupBucketProvider{
+							Type:   "foo",
+							Region: "europe",
+						},
+						SeedName: new("some-seed"),
+						CredentialsRef: &corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Namespace:  v1beta1constants.GardenNamespace,
+							Name:       "some-credentials",
+						},
+					},
+				}
+
+				By("Create BackupBucket")
+				Expect(testClient.Create(ctx, backupBucket)).To(Succeed())
+
+				By("Patch BackupBucket to report error")
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(backupBucket), backupBucket)).To(Succeed())
+					patch := client.MergeFrom(backupBucket.DeepCopy())
+					backupBucket.Status.LastError = &gardencorev1beta1.LastError{
+						Description: errMsg,
+					}
+					g.Expect(testClient.Status().Patch(ctx, backupBucket, patch)).To(Succeed())
+				}).Should(Succeed())
+
+				backupEntry := &gardencorev1beta1.BackupEntry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      backupEntryName,
+						Namespace: v1beta1constants.GardenNamespace,
+						Labels:    map[string]string{testID: testRunID},
+					},
+					Spec: gardencorev1beta1.BackupEntrySpec{
+						BucketName: backupBucket.Name,
+						SeedName:   new("some-seed"),
+					},
+				}
+
+				By("Create BackupEntry")
+				Expect(testClient.Create(ctx, backupEntry)).To(Succeed())
+
+				DeferCleanup(func() {
+					By("Delete BackupEntry")
+					Expect(testClient.Delete(ctx, backupEntry)).To(Succeed())
+					Eventually(func() error {
+						return mgrClient.Get(ctx, client.ObjectKeyFromObject(backupEntry), backupEntry)
+					}).Should(BeNotFoundError())
+
+					By("Delete BackupBucket")
+					Expect(testClient.Delete(ctx, backupBucket)).To(Succeed())
+					Eventually(func() error {
+						return mgrClient.Get(ctx, client.ObjectKeyFromObject(backupBucket), backupBucket)
+					}).Should(BeNotFoundError())
+				})
+
+				By("Expect BackupBucketsReady to report the error")
+				Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					return shoot.Status.Conditions
+				}).Should(ContainCondition(
+					OfType(gardencorev1beta1.SeedBackupBucketsReady),
+					WithStatus(gardencorev1beta1.ConditionProgressing),
+					WithReason("BackupBucketsError"),
+					WithMessageSubstrings(fmt.Sprintf("Error: %s", errMsg)),
+				))
+			})
+		})
+	})
+})
+
+func createDeployment(names []string) {
+	for _, name := range names {
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: testNamespace.Name,
+				Labels: map[string]string{
+					testID:                      testRunID,
+					v1beta1constants.GardenRole: getRole(name),
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"foo": "bar"}},
+				Replicas: new(int32(1)),
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"foo": "bar"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{
+							Name:  "foo-container",
+							Image: "foo",
+						}},
+					},
+				},
+			},
+		}
+
+		By("Create Deployment " + name)
+		ExpectWithOffset(1, testClient.Create(ctx, deployment)).To(Succeed(), "for deployment "+name)
+		log.Info("Created Deployment for test", "deployment", client.ObjectKeyFromObject(deployment))
+
+		By("Ensure manager has observed deployment " + name)
+		EventuallyWithOffset(1, func() error {
+			return mgrClient.Get(ctx, client.ObjectKeyFromObject(deployment), deployment)
+		}).Should(Succeed())
+
+		DeferCleanup(func() {
+			By("Delete Deployment " + name)
+			ExpectWithOffset(1, testClient.Delete(ctx, deployment)).To(Succeed(), "for deployment "+name)
+
+			By("Ensure Deployment " + name + " is gone")
+			EventuallyWithOffset(1, func() error {
+				return mgrClient.Get(ctx, client.ObjectKeyFromObject(deployment), deployment)
+			}).Should(BeNotFoundError(), "for deployment "+name)
+
+			By("Ensure manager has observed deployment deletion " + name)
+			EventuallyWithOffset(1, func() error {
+				return mgrClient.Get(ctx, client.ObjectKeyFromObject(deployment), deployment)
+			}).Should(BeNotFoundError())
+		})
+	}
+}
+
+func getRole(name string) string {
+	switch name {
+	case "gardener-resource-manager", "kube-controller-manager", "kube-scheduler":
+		return v1beta1constants.GardenRoleControlPlane
+	case "plutono":
+		return v1beta1constants.GardenRoleMonitoring
+	}
+	return ""
+}
+
+func createETCDs(names []string) {
+	for _, name := range names {
+		etcd := &druidcorev1alpha1.Etcd{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: testNamespace.Name,
+				Labels: map[string]string{
+					testID:                      testRunID,
+					v1beta1constants.GardenRole: v1beta1constants.GardenRoleControlPlane,
+				},
+			},
+			Spec: druidcorev1alpha1.EtcdSpec{
+				Labels:   map[string]string{"foo": "bar"},
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"foo": "bar"}},
+			},
+		}
+
+		By("Create ETCD " + name)
+		ExpectWithOffset(1, testClient.Create(ctx, etcd)).To(Succeed(), "for etcd "+name)
+		log.Info("Created ETCD for test", "etcd", client.ObjectKeyFromObject(etcd))
+
+		By("Ensure manager has observed etcd " + name)
+		EventuallyWithOffset(1, func() error {
+			return mgrClient.Get(ctx, client.ObjectKeyFromObject(etcd), etcd)
+		}).Should(Succeed())
+
+		DeferCleanup(func() {
+			By("Delete ETCD " + name)
+			ExpectWithOffset(1, testClient.Delete(ctx, etcd)).To(Succeed(), "for etcd "+name)
+
+			By("Ensure ETCD " + name + " is gone")
+			EventuallyWithOffset(1, func() error {
+				return mgrClient.Get(ctx, client.ObjectKeyFromObject(etcd), etcd)
+			}).Should(BeNotFoundError(), "for etcd "+name)
+
+			By("Ensure manager has observed etcd deletion " + name)
+			EventuallyWithOffset(1, func() error {
+				return mgrClient.Get(ctx, client.ObjectKeyFromObject(etcd), etcd)
+			}).Should(BeNotFoundError())
+		})
+	}
+}
+
+func updateETCDStatusToHealthy(name string) {
+	By("Update status to healthy for ETCD " + name)
+	etcd := &druidcorev1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace.Name}}
+	ExpectWithOffset(1, testClient.Get(ctx, client.ObjectKeyFromObject(etcd), etcd)).To(Succeed())
+
+	etcd.Status.ObservedGeneration = &etcd.Generation
+	etcd.Status.Conditions = []druidcorev1alpha1.Condition{
+		{Type: druidcorev1alpha1.ConditionTypeBackupReady, Status: druidcorev1alpha1.ConditionTrue, LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now()},
+		{Type: druidcorev1alpha1.ConditionTypeAllMembersUpdated, Status: druidcorev1alpha1.ConditionTrue, LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now()},
+	}
+	etcd.Status.Ready = new(true)
+	ExpectWithOffset(1, testClient.Status().Update(ctx, etcd)).To(Succeed())
+}

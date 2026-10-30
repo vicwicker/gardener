@@ -1,0 +1,324 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package local
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"time"
+
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	"github.com/gardener/machine-controller-manager/pkg/util/provider/driver"
+	"github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/codes"
+	"github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/status"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/gardener/gardener/pkg/provider-local/local"
+	apiv1alpha1 "github.com/gardener/gardener/pkg/provider-local/machine-provider/api/v1alpha1"
+	"github.com/gardener/gardener/pkg/provider-local/machine-provider/api/validation"
+)
+
+// MachinePodContainerName is a constant for the name of the container in the machine pod.
+const MachinePodContainerName = "node"
+
+func (d *localDriver) CreateMachine(ctx context.Context, req *driver.CreateMachineRequest) (*driver.CreateMachineResponse, error) {
+	if req.MachineClass.Provider != apiv1alpha1.Provider {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("requested for provider '%s', we only support '%s'", req.MachineClass.Provider, apiv1alpha1.Provider))
+	}
+
+	providerClient, err := local.GetProviderClient(ctx, d.runtimeClient, *req.MachineClass.CredentialsSecretRef)
+	if err != nil {
+		return nil, fmt.Errorf("could not create client for infrastructure resources: %w", err)
+	}
+
+	klog.V(3).Infof("Machine creation request has been received for %q", req.Machine.Name)
+	defer klog.V(3).Infof("Machine creation request has been processed for %q", req.Machine.Name)
+
+	providerSpec, err := validateProviderSpecAndSecret(req.MachineClass, req.Secret)
+	if err != nil {
+		return nil, err
+	}
+
+	userDataSecret := userDataSecretForMachine(req.Machine, req.MachineClass, providerSpec)
+	userDataSecret.Data = map[string][]byte{"userdata": req.Secret.Data["userData"]}
+
+	pod, err := d.applyPod(ctx, providerClient, req, providerSpec, userDataSecret)
+	if err != nil {
+		return nil, err
+	}
+
+	// The pod object is used as the owner for the userData secret and the service.
+	// We cannot use the machine object here, because it lives in a different cluster in the local setup for self-hosted
+	// shoots (the Machine lives in the shoot cluster, the pod in the bootstrap/kind cluster).
+	// We explicitly delete the Pod on machine deletion, so we can use this object for garbage collection of the others.
+
+	if err := controllerutil.SetControllerReference(pod, userDataSecret, providerClient.Scheme()); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("could not set userData secret ownership: %s", err.Error()))
+	}
+
+	if err := providerClient.Patch(ctx, userDataSecret, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("error applying user data secret: %s", err.Error()))
+	}
+
+	if err := d.applyService(ctx, providerClient, req, pod, providerSpec); err != nil {
+		return nil, err
+	}
+
+	if err := d.waitForPodToBeRunning(ctx, providerClient, pod); err != nil {
+		return nil, err
+	}
+
+	return &driver.CreateMachineResponse{
+		ProviderID: pod.Name,
+		NodeName:   pod.Name,
+		Addresses:  addressesFromStatus(pod.Status),
+	}, nil
+}
+
+func (d *localDriver) applyService(ctx context.Context, providerClient client.Client, req *driver.CreateMachineRequest, owner client.Object, providerSpec *apiv1alpha1.ProviderSpec) error {
+	service := serviceForMachine(req.Machine, req.MachineClass, providerSpec)
+
+	service.Labels = map[string]string{
+		labelKeyProvider: apiv1alpha1.Provider,
+		labelKeyApp:      labelValueMachine,
+		labelKeyMachine:  req.Machine.Name,
+	}
+	service.Spec = corev1.ServiceSpec{
+		Type:      corev1.ServiceTypeClusterIP,
+		ClusterIP: corev1.ClusterIPNone,
+		Selector:  maps.Clone(service.Labels),
+		// Publish the machine pod IP, even if the pod is not ready, because this happens only eventually when the Node
+		// joins the cluster (or never in case of `gardenadm bootstrap`).
+		PublishNotReadyAddresses: true,
+		Ports: []corev1.ServicePort{
+			{
+				Name:        "ssh",
+				Port:        22,
+				Protocol:    corev1.ProtocolTCP,
+				AppProtocol: new("ssh"),
+			},
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(owner, service, providerClient.Scheme()); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("could not set service ownership: %s", err.Error()))
+	}
+
+	if err := providerClient.Patch(ctx, service, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("error applying service: %s", err.Error()))
+	}
+
+	return nil
+}
+
+func (d *localDriver) applyPod(
+	ctx context.Context,
+	providerClient client.Client,
+	req *driver.CreateMachineRequest,
+	providerSpec *apiv1alpha1.ProviderSpec,
+	userDataSecret *corev1.Secret,
+) (
+	*corev1.Pod,
+	error,
+) {
+	pod := podForMachine(req.Machine, req.MachineClass, providerSpec)
+	pod.Annotations = map[string]string{}
+
+	if providerSpec.IPPoolNameV4 != "" {
+		pod.Annotations["cni.projectcalico.org/ipv4pools"] = `["` + providerSpec.IPPoolNameV4 + `"]`
+	}
+	if providerSpec.IPPoolNameV6 != "" {
+		pod.Annotations["cni.projectcalico.org/ipv6pools"] = `["` + providerSpec.IPPoolNameV6 + `"]`
+	}
+
+	pod.Labels = map[string]string{
+		labelKeyProvider: apiv1alpha1.Provider,
+		labelKeyApp:      labelValueMachine,
+		labelKeyMachine:  req.Machine.Name,
+	}
+	maps.Copy(pod.Labels, nodeTemplateLabelsForMachine(req.MachineClass))
+	pod.Spec = corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:            MachinePodContainerName,
+				Image:           providerSpec.Image,
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				SecurityContext: &corev1.SecurityContext{
+					Privileged: new(true),
+				},
+				Env: []corev1.EnvVar{{
+					Name: "NODE_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.name",
+						},
+					},
+				}},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "userdata",
+						MountPath: "/etc/machine",
+					},
+					{
+						Name:      "containerd",
+						MountPath: "/var/lib/containerd",
+					},
+					{
+						Name:      "run",
+						MountPath: "/run",
+					},
+					{
+						Name:      "docker-socket",
+						MountPath: "/var/run/docker.sock",
+					},
+					{
+						Name:      "modules",
+						MountPath: "/lib/modules",
+						ReadOnly:  true,
+					},
+				},
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						Exec: &corev1.ExecAction{
+							Command: []string{"sh", "-c", "/usr/bin/kubectl --kubeconfig /var/lib/kubelet/kubeconfig-real get no $NODE_NAME"},
+						},
+					},
+				},
+				Ports: []corev1.ContainerPort{{
+					ContainerPort: 30123,
+					Name:          "vpn-shoot",
+					Protocol:      corev1.ProtocolTCP,
+				}},
+			},
+		},
+		// Don't use the coredns of the kind cluster. The machine pods should not rely on in-cluster DNS at all because
+		// in the real world, shoot nodes also can't resolve DNS names of the seed (obviously). Using the DNS config of
+		// the kind cluster nodes means that the machine pods will talk directly to the local DNS server (bind9) running
+		// next to the kind nodes.
+		DNSPolicy: corev1.DNSDefault,
+		Volumes: []corev1.Volume{
+			{
+				Name: "userdata",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  userDataSecret.Name,
+						DefaultMode: new(int32(0o777)),
+					},
+				},
+			},
+			{
+				Name: "containerd",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+			{
+				Name: "run",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{
+						Medium: corev1.StorageMediumMemory,
+					},
+				},
+			},
+			{
+				Name: "docker-socket",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/var/run/docker.sock",
+						Type: new(corev1.HostPathSocket),
+					},
+				},
+			},
+			{
+				Name: "modules",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/lib/modules",
+					},
+				},
+			},
+		},
+	}
+
+	if err := providerClient.Patch(ctx, pod, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("error applying pod: %s", err.Error()))
+	}
+
+	return pod, nil
+}
+
+func (d *localDriver) waitForPodToBeRunning(ctx context.Context, providerClient client.Client, pod *corev1.Pod) error {
+	// Actively wait until pod is running. Without doing so, we might not be able to catch misconfigurations or image
+	// problems before the Machine transitions to Available/Pending.
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	if err := wait.PollUntilContextCancel(timeoutCtx, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+		if err := providerClient.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+			return true, err
+		}
+
+		if pod.Status.Phase == corev1.PodRunning {
+			return true, nil
+		}
+
+		return false, nil
+	}); err != nil {
+		// will be retried with short retry by machine controller
+		return status.Error(codes.DeadlineExceeded, fmt.Sprintf("pod %q is in phase %q, failed waiting for phase %q: %v", pod.Name, pod.Status.Phase, corev1.PodRunning, err))
+	}
+
+	return nil
+}
+
+func validateProviderSpecAndSecret(machineClass *machinev1alpha1.MachineClass, secret *corev1.Secret) (*apiv1alpha1.ProviderSpec, error) {
+	if machineClass == nil {
+		return nil, status.Error(codes.Internal, "MachineClass ProviderSpec is nil")
+	}
+
+	var providerSpec *apiv1alpha1.ProviderSpec
+	if err := json.Unmarshal(machineClass.ProviderSpec.Raw, &providerSpec); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	validationErr := validation.ValidateProviderSpec(providerSpec, secret, field.NewPath("providerSpec"))
+	if validationErr.ToAggregate() != nil && len(validationErr.ToAggregate().Errors()) > 0 {
+		err := fmt.Errorf("error while validating ProviderSpec: %v", validationErr.ToAggregate().Error())
+		klog.V(2).Infof("Validation of AWSMachineClass failed %s", err)
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return providerSpec, nil
+}
+
+// nodeTemplateLabelsForMachine returns the labels for the machine pod carrying the zone, region, and instance type
+// from the node template of the machine class. There is no real concept of zones, regions, or instance types in the
+// local setup. Instead, the desired values are stored as labels on the machine pod, which cloud-controller-manager-local's
+// node controller reads and applies to the corresponding Node object.
+func nodeTemplateLabelsForMachine(machineClass *machinev1alpha1.MachineClass) map[string]string {
+	labels := make(map[string]string, 3)
+	if machineClass == nil || machineClass.NodeTemplate == nil {
+		return labels
+	}
+
+	if zone := machineClass.NodeTemplate.Zone; zone != "" {
+		labels[apiv1alpha1.LabelZone] = zone
+	}
+	if region := machineClass.NodeTemplate.Region; region != "" {
+		labels[apiv1alpha1.LabelRegion] = region
+	}
+	if instanceType := machineClass.NodeTemplate.InstanceType; instanceType != "" {
+		labels[apiv1alpha1.LabelInstanceType] = instanceType
+	}
+
+	return labels
+}

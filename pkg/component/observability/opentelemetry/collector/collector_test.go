@@ -1,0 +1,1344 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package collector_test
+
+import (
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/format"
+	"github.com/onsi/gomega/types"
+	otelv1beta1 "github.com/open-telemetry/opentelemetry-operator/apis/v1beta1"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	"google.golang.org/protobuf/types/known/durationpb"
+	istioapinetworkingv1beta1 "istio.io/api/networking/v1beta1"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
+	. "github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector"
+	comptest "github.com/gardener/gardener/pkg/component/test"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/retry"
+	retryfake "github.com/gardener/gardener/pkg/utils/retry/fake"
+	"github.com/gardener/gardener/pkg/utils/secrets"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
+	"github.com/gardener/gardener/pkg/utils/test"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+)
+
+const (
+	ingressName                     = "logging"
+	namespace                       = "some-namespace"
+	valiHost                        = "vali.foo.bar"
+	ingressHost                     = "otel.foo.bar"
+	managedResourceNameTarget       = "logging-target"
+	managedResourceSecretNameTarget = "managedresource-logging-target"
+	kubeRBACProxyImage              = "kube-rbac-proxy:latest"
+)
+
+var _ = Describe("OpenTelemetry Collector", func() {
+	var (
+		ctx = context.Background()
+
+		image                                       = "some-image:some-tag"
+		lokiEndpoint                                = "logging"
+		genericTokenKubeconfigSecretName            = "generic-token-kubeconfig"
+		kubeRBACProxyShootAccessSecretName          = "shoot-access-rbac-proxy"
+		opentelemetryCollectorShootAccessSecretName = "shoot-access-opentelemetry-collector"
+		values                                      Values
+		c                                           client.Client
+		component                                   Interface
+		consistOf                                   func(...client.Object) types.GomegaMatcher
+
+		customResourcesManagedResourceName   = "opentelemetry-collector"
+		customResourcesManagedResource       *resourcesv1alpha1.ManagedResource
+		customResourcesManagedResourceSecret *corev1.Secret
+		managedResourceSecretTarget          *corev1.Secret
+		fakeSecretManager                    secretsmanager.Interface
+		kubeRBACProxyValiContainer           corev1.Container
+		kubeRBACProxyOTLPContainer           corev1.Container
+
+		volume                  corev1.Volume
+		volumeMount             corev1.VolumeMount
+		vpa                     *vpaautoscalingv1.VerticalPodAutoscaler
+		managedResourceTarget   *resourcesv1alpha1.ManagedResource
+		openTelemetryCollector  *otelv1beta1.OpenTelemetryCollector
+		serviceMonitor          *monitoringv1.ServiceMonitor
+		serviceAccount          *corev1.ServiceAccount
+		kubeRBACValiServicePort corev1.ServicePort
+		kubeRBACOTLPServicePort corev1.ServicePort
+	)
+
+	BeforeEach(func() {
+		format.MaxDepth = 100000
+		format.MaxLength = 100000
+		format.TruncateThreshold = 100000
+		c = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+		values = Values{
+			Image:                        image,
+			KubeRBACProxyImage:           kubeRBACProxyImage,
+			LokiEndpoint:                 lokiEndpoint,
+			Replicas:                     1,
+			ShootNodeLoggingEnabled:      true,
+			WithRBACProxy:                true,
+			IngressHost:                  ingressHost,
+			ValiHost:                     valiHost,
+			SecretNameServerCA:           v1beta1constants.SecretNameCACluster,
+			PriorityClassName:            "gardener-system-100",
+			ClusterType:                  "shoot",
+			IstioIngressGatewayNamespace: "istio-ingress",
+		}
+		fakeSecretManager = fakesecretsmanager.New(c, namespace)
+		component = New(c, namespace, fakeSecretManager, values)
+		consistOf = NewManagedResourceConsistOfObjectsMatcher(c, comptest.CmpOptsForIstio()...)
+
+		By("Create secrets managed outside of this package for which secretsmanager.Get() will be called")
+		Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "generic-token-kubeconfig", Namespace: namespace}})).To(Succeed())
+		Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ca", Namespace: namespace}, Data: map[string][]byte{"bundle.crt": []byte("ca-bundle")}})).To(Succeed())
+	})
+
+	JustBeforeEach(func() {
+		customResourcesManagedResource = &resourcesv1alpha1.ManagedResource{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "opentelemetry-collector",
+				Namespace: namespace,
+			},
+		}
+		managedResourceTarget = &resourcesv1alpha1.ManagedResource{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      managedResourceNameTarget,
+				Namespace: namespace,
+			},
+		}
+		customResourcesManagedResourceSecret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "managedresource-" + customResourcesManagedResource.Name,
+				Namespace: namespace,
+			},
+		}
+		managedResourceSecretTarget = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      managedResourceSecretNameTarget,
+				Namespace: namespace,
+			},
+		}
+
+		volume = corev1.Volume{
+			Name: "kubeconfig",
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					DefaultMode: new(int32(420)),
+					Sources: []corev1.VolumeProjection{
+						{
+							Secret: &corev1.SecretProjection{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: genericTokenKubeconfigSecretName,
+								},
+								Items: []corev1.KeyToPath{{
+									Key:  secrets.DataKeyKubeconfig,
+									Path: secrets.DataKeyKubeconfig,
+								}},
+								Optional: new(false),
+							},
+						},
+						{
+							Secret: &corev1.SecretProjection{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "shoot-access-rbac-proxy",
+								},
+								Items: []corev1.KeyToPath{{
+									Key:  resourcesv1alpha1.DataKeyToken,
+									Path: resourcesv1alpha1.DataKeyToken,
+								}},
+								Optional: new(false),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		volumeMount = corev1.VolumeMount{
+			Name:      volume.Name,
+			MountPath: "/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig",
+			ReadOnly:  true,
+		}
+
+		serviceAccount = &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "opentelemetry-collector",
+				Namespace: namespace,
+				Labels:    getLabels(),
+			},
+			AutomountServiceAccountToken: new(false),
+		}
+
+		kubeRBACProxyValiContainer = getSecureValiKubeRBACContainer(volumeMount)
+		kubeRBACProxyOTLPContainer = getSecureOtlpKubeRBACContainer(volumeMount)
+
+		allowedMetrics := []string{
+			"otelcol_exporter_enqueue_failed_log_records",
+			"otelcol_exporter_enqueue_failed_metric_points",
+			"otelcol_exporter_enqueue_failed_spans",
+			"otelcol_exporter_queue_capacity",
+			"otelcol_exporter_queue_size",
+			"otelcol_exporter_send_failed_log_records_total",
+			"otelcol_exporter_send_failed_metric_points",
+			"otelcol_exporter_send_failed_spans",
+			"otelcol_exporter_sent_log_records",
+			"otelcol_exporter_sent_log_records_total",
+			"otelcol_exporter_sent_metric_points",
+			"otelcol_exporter_sent_spans",
+			"otelcol_process_cpu_seconds",
+			"otelcol_process_cpu_seconds_total",
+			"otelcol_process_memory_rss",
+			"otelcol_process_memory_rss_bytes",
+			"otelcol_process_runtime_heap_alloc_bytes",
+			"otelcol_process_runtime_total_alloc_bytes_total",
+			"otelcol_process_runtime_total_sys_memory_bytes",
+			"otelcol_process_uptime",
+			"otelcol_process_uptime_seconds_total",
+			"otelcol_processor_incoming_items",
+			"otelcol_processor_incoming_items_total",
+			"otelcol_processor_outgoing_items",
+			"otelcol_processor_outgoing_items_total",
+			"otelcol_receiver_accepted_log_records",
+			"otelcol_receiver_accepted_log_records_total",
+			"otelcol_receiver_accepted_metric_points",
+			"otelcol_receiver_accepted_spans",
+			"otelcol_receiver_refused_log_records",
+			"otelcol_receiver_refused_log_records_total",
+			"otelcol_receiver_refused_metric_points",
+			"otelcol_receiver_refused_spans",
+			"otelcol_scraper_errored_metric_points",
+			"otelcol_scraper_scraped_metric_points",
+		}
+
+		serviceMonitor = &monitoringv1.ServiceMonitor{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "shoot-opentelemetry-collector",
+				Namespace: namespace,
+				Labels:    map[string]string{"prometheus": "shoot"},
+			},
+			Spec: monitoringv1.ServiceMonitorSpec{
+				Selector: metav1.LabelSelector{MatchLabels: getLabels()},
+				Endpoints: []monitoringv1.Endpoint{{
+					Port: "monitoring",
+					RelabelConfigs: []monitoringv1.RelabelConfig{
+						// This service monitor is targeting the logging service. Without explicitly overriding the
+						// job label, prometheus-operator would choose job=logging (service name).
+						{
+							Action:      "replace",
+							Replacement: new("opentelemetry-collector"),
+							TargetLabel: "job",
+						},
+						{
+							Action: "labelmap",
+							Regex:  `__meta_kubernetes_service_label_(.+)`,
+						},
+					},
+					MetricRelabelConfigs: monitoringutils.StandardMetricRelabelConfig(allowedMetrics...),
+				}},
+			},
+		}
+
+		kubeRBACValiServicePort = corev1.ServicePort{
+			Name: "rbac-proxy-vali",
+			Port: 8081,
+		}
+
+		kubeRBACOTLPServicePort = corev1.ServicePort{
+			Name: "rbac-proxy-otlp",
+			Port: 8080,
+		}
+
+		openTelemetryCollector = &otelv1beta1.OpenTelemetryCollector{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "opentelemetry-collector",
+				Namespace: namespace,
+				Labels:    getLabels(),
+				Annotations: map[string]string{
+					resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix +
+						v1beta1constants.LabelNetworkPolicyScrapeTargets +
+						resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"protocol":"TCP","port":8888}]`,
+					resourcesv1alpha1.NetworkingPodLabelSelectorNamespaceAlias: "all-shoots",
+					resourcesv1alpha1.NetworkingNamespaceSelectors:             `[{"matchLabels":{"kubernetes.io/metadata.name":"garden"}}]`,
+					"networking.istio.io/exportTo":                             "istio-ingress",
+				},
+			},
+			Spec: otelv1beta1.OpenTelemetryCollectorSpec{
+				Observability: otelv1beta1.ObservabilitySpec{
+					Metrics: otelv1beta1.MetricsConfigSpec{
+						DisablePrometheusAnnotations: true,
+					},
+				},
+				NetworkPolicy: otelv1beta1.NetworkPolicy{
+					Enabled: new(false),
+				},
+				Mode:            "deployment",
+				UpgradeStrategy: "none",
+				OpenTelemetryCommonFields: otelv1beta1.OpenTelemetryCommonFields{
+					Image:             image,
+					Replicas:          new(int32(1)),
+					PriorityClassName: "gardener-system-100",
+					SecurityContext: &corev1.SecurityContext{
+						AllowPrivilegeEscalation: new(false),
+					},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("10m"),
+							corev1.ResourceMemory: resource.MustParse("64Mi"),
+						},
+					},
+					ServiceAccount: "opentelemetry-collector",
+				},
+				Config: otelv1beta1.Config{
+					Receivers: otelv1beta1.AnyConfig{
+						Object: map[string]any{
+							"otlp": map[string]any{
+								"protocols": map[string]any{
+									"grpc": map[string]any{
+										"endpoint": "[::]:4317",
+									},
+								},
+							},
+						},
+					},
+					Processors: &otelv1beta1.AnyConfig{
+						Object: map[string]any{
+							"batch": map[string]any{
+								// Field needs to be cast to `float64` due to an issue with serialization during tests.
+								// When fetching the object from the apiserver, since there's no type information regarding this field.
+								// the deserializer will interpret it as a `float64`. By setting the value to `float64` here, we ensure that
+								// when this object is compared to the fetched one, the types match.
+								"send_batch_size":     float64(2000),
+								"send_batch_max_size": float64(4000),
+								"timeout":             "10s",
+							},
+							"memory_limiter": map[string]any{
+								"check_interval":  "1s",
+								"limit_mib":       float64(3000),
+								"spike_limit_mib": float64(600),
+							},
+							"resource/vali": map[string]any{
+								"attributes": []any{
+									map[string]any{
+										"key":            "nodename",
+										"from_attribute": "k8s.node.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "pod_name",
+										"from_attribute": "k8s.pod.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "container_name",
+										"from_attribute": "k8s.container.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "namespace_name",
+										"from_attribute": "k8s.namespace.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":    "loki.resource.labels",
+										"value":  "job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role, host.name",
+										"action": "insert",
+									},
+									map[string]any{
+										"key":    "loki.format",
+										"value":  "raw",
+										"action": "insert",
+									},
+								},
+							},
+							"attributes/vali": map[string]any{
+								"actions": []any{
+									map[string]any{
+										"key":            "nodename",
+										"from_attribute": "k8s.node.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "pod_name",
+										"from_attribute": "k8s.pod.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "container_name",
+										"from_attribute": "k8s.container.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "namespace_name",
+										"from_attribute": "k8s.namespace.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":    "loki.attribute.labels",
+										"value":  "priority, level, process.command, process.pid, host.id, service.name, service.namespace, job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
+										"action": "upsert",
+									},
+									map[string]any{
+										"key":    "loki.format",
+										"value":  "raw",
+										"action": "insert",
+									},
+								},
+							},
+						},
+					},
+					Exporters: otelv1beta1.AnyConfig{
+						Object: map[string]any{
+							"loki": map[string]any{
+								"endpoint": lokiEndpoint,
+								"default_labels_enabled": map[string]any{
+									"exporter": false,
+									"job":      false,
+								},
+								"sending_queue": map[string]any{
+									"queue_size": float64(16777216),
+									"sizer":      "bytes",
+									"batch": map[string]any{
+										"flush_timeout": "1s",
+										"max_size":      float64(4194304),
+										"sizer":         "bytes",
+									},
+								},
+							},
+							"debug/logs": map[string]any{
+								"verbosity": "basic",
+							},
+							"otlphttp/victorialogs": map[string]any{
+								"logs_endpoint": "https://logging-vl:9429/insert/opentelemetry/v1/logs",
+								"headers": map[string]any{
+									"VL-Stream-Fields": "host.name,k8s.node.name,k8s.namespace.name,k8s.pod.name,k8s.container.name,k8s.deployment.name,k8s.daemonset.name,k8s.statefulset.name,severity,unit,origin,service.name,job",
+								},
+								"tls": map[string]any{"ca_file": "/etc/otel/tls/bundle.crt"},
+							},
+						},
+					},
+					Service: otelv1beta1.Service{
+						Telemetry: &otelv1beta1.AnyConfig{
+							Object: map[string]any{
+								"metrics": map[string]any{
+									"level": "basic",
+									"readers": []any{
+										map[string]any{
+											"pull": map[string]any{
+												"exporter": map[string]any{
+													"prometheus": map[string]any{
+														"host": "[::]",
+														// Field needs to be cast to `float64` due to an issue with serialization during tests.
+														// When fetching the object from the apiserver, since there's no type information regarding this field.
+														// the deserializer will interpret it as a `float64`. By setting the value to `float64` here, we ensure that
+														// when this object is compared to the fetched one, the types match.
+														"port": float64(8888),
+													},
+												},
+											},
+										},
+									},
+								},
+								"logs": map[string]any{
+									"level":    "info",
+									"encoding": "json",
+								},
+							},
+						},
+						Pipelines: map[string]*otelv1beta1.Pipeline{
+							"logs/vali": {
+								Exporters:  []string{"loki", "debug/logs"},
+								Receivers:  []string{"otlp"},
+								Processors: []string{"memory_limiter", "resource/vali", "attributes/vali", "batch"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "opentelemetry-collector",
+				Namespace: namespace,
+				Labels:    getLabels(),
+			},
+			Spec: vpaautoscalingv1.VerticalPodAutoscalerSpec{
+				TargetRef: &autoscalingv1.CrossVersionObjectReference{
+					APIVersion: otelv1beta1.GroupVersion.String(),
+					Kind:       "OpenTelemetryCollector",
+					Name:       "opentelemetry-collector",
+				},
+				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
+					UpdateMode: new(vpaautoscalingv1.UpdateModeInPlaceOrRecreate),
+				},
+				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
+					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+						{
+							ContainerName: "otc-container",
+							MinAllowed: corev1.ResourceList{
+								corev1.ResourceMemory: resource.MustParse("64Mi"),
+							},
+							ControlledValues: new(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          new(vpaautoscalingv1.ContainerScalingModeOff),
+						},
+					},
+				},
+			},
+		}
+
+		openTelemetryCollector.Spec.AdditionalContainers = []corev1.Container{kubeRBACProxyValiContainer, kubeRBACProxyOTLPContainer}
+		openTelemetryCollector.Spec.Volumes = []corev1.Volume{getCaBundleVolume(), volume, {
+			Name: "tls-certificate",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: "logging-tls",
+				},
+			},
+		}}
+		openTelemetryCollector.Spec.VolumeMounts = []corev1.VolumeMount{getCaBundleVolumeMount()}
+		openTelemetryCollector.Spec.Ports = append(openTelemetryCollector.Spec.Ports, otelv1beta1.PortsSpec{
+			ServicePort: kubeRBACValiServicePort,
+		})
+		openTelemetryCollector.Spec.Ports = append(openTelemetryCollector.Spec.Ports, otelv1beta1.PortsSpec{
+			ServicePort: kubeRBACOTLPServicePort,
+		})
+		metav1.SetMetaDataLabel(&openTelemetryCollector.ObjectMeta, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443", "allowed")
+
+	})
+
+	Describe("#Deploy", func() {
+		It("should successfully deploy all resources without kubeRBACProxy when AuthenticationProxy is false", func() {
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKey{Name: opentelemetryCollectorShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(BeNotFoundError())
+
+			component.WithAuthenticationProxy(false)
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			tlsSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "logging-tls",
+					Namespace: namespace,
+				},
+			}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+			expectedMr := &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "opentelemetry-collector",
+					Namespace: namespace,
+					Labels: map[string]string{
+						v1beta1constants.GardenRole:          "seed-system-component",
+						"care.gardener.cloud/condition-type": "ObservabilityComponentsHealthy",
+					},
+					ResourceVersion: "1",
+				},
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class: new("seed"),
+					SecretRefs: []corev1.LocalObjectReference{{
+						Name: customResourcesManagedResource.Spec.SecretRefs[0].Name,
+					}},
+					KeepObjects: new(false),
+				},
+			}
+			utilruntime.Must(references.InjectAnnotations(expectedMr))
+			Expect(customResourcesManagedResource).To(DeepEqual(expectedMr))
+
+			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+			openTelemetryCollector.Spec.AdditionalContainers = nil
+			openTelemetryCollector.Spec.Volumes = []corev1.Volume{getCaBundleVolume()}
+			openTelemetryCollector.Spec.VolumeMounts = []corev1.VolumeMount{getCaBundleVolumeMount()}
+			openTelemetryCollector.Spec.Ports = nil
+			delete(openTelemetryCollector.Labels, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443")
+			Expect(customResourcesManagedResource).To(consistOf(
+				openTelemetryCollector,
+				getGateway(),
+				getVirtualService(),
+				getDestinationRule(),
+				getTLSSecret(tlsSecret),
+				getCaBundleSecret(),
+				vpa,
+				serviceMonitor,
+				serviceAccount,
+			))
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKey{Name: "logging-tls", Namespace: namespace}, &corev1.Secret{})).To(Succeed())
+			Expect(customResourcesManagedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
+			Expect(customResourcesManagedResourceSecret.Immutable).To(Equal(new(true)))
+			Expect(customResourcesManagedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+		})
+
+		It("should successfully deploy all resources with kubeRBACProxy when AuthenticationProxy is true", func() {
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKey{Name: opentelemetryCollectorShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(BeNotFoundError())
+
+			component.WithAuthenticationProxy(true)
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			tlsSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "logging-tls",
+					Namespace: namespace,
+				},
+			}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+			expectedMr := &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "opentelemetry-collector",
+					Namespace: namespace,
+					Labels: map[string]string{
+						v1beta1constants.GardenRole:          "seed-system-component",
+						"care.gardener.cloud/condition-type": "ObservabilityComponentsHealthy",
+					},
+					ResourceVersion: "1",
+				},
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class: new("seed"),
+					SecretRefs: []corev1.LocalObjectReference{{
+						Name: customResourcesManagedResource.Spec.SecretRefs[0].Name,
+					}},
+					KeepObjects: new(false),
+				},
+			}
+			utilruntime.Must(references.InjectAnnotations(expectedMr))
+			Expect(customResourcesManagedResource).To(DeepEqual(expectedMr))
+
+			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+			Expect(customResourcesManagedResource).To(consistOf(
+				openTelemetryCollector,
+				getGateway(),
+				getVirtualService(),
+				getDestinationRule(),
+				getTLSSecret(tlsSecret),
+				getCaBundleSecret(),
+				vpa,
+				serviceMonitor,
+				serviceAccount,
+			))
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(Succeed())
+			Expect(customResourcesManagedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
+			Expect(customResourcesManagedResourceSecret.Immutable).To(Equal(new(true)))
+			Expect(customResourcesManagedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceTarget), managedResourceTarget)).To(Succeed())
+			expectedTargetMr := &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            managedResourceNameTarget,
+					Namespace:       namespace,
+					ResourceVersion: "1",
+					Labels:          map[string]string{"origin": "gardener"},
+				},
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					InjectLabels: map[string]string{"shoot.gardener.cloud/no-cleanup": "true"},
+					SecretRefs: []corev1.LocalObjectReference{{
+						Name: managedResourceTarget.Spec.SecretRefs[0].Name,
+					}},
+					KeepObjects: new(false),
+				},
+			}
+			utilruntime.Must(references.InjectAnnotations(expectedTargetMr))
+			Expect(managedResourceTarget).To(DeepEqual(expectedTargetMr))
+			Expect(managedResourceTarget).To(consistOf(
+				getKubeRBACProxyClusterRoleBinding(),
+				getValitailClusterRole("gardener.cloud:logging:opentelemetry-collector", "gardener-opentelemetry-collector", "/opentelemetry.proto.collector.logs.v1.LogsService/Export"),
+				getValitailClusterRoleBinding("gardener.cloud:logging:opentelemetry-collector", "gardener-opentelemetry-collector", "gardener.cloud:logging:opentelemetry-collector", "gardener-opentelemetry-collector"),
+			))
+
+			managedResourceSecretTarget.Name = managedResourceTarget.Spec.SecretRefs[0].Name
+			Expect(c.Get(ctx, client.ObjectKey{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecretTarget), managedResourceSecretTarget)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKey{Name: "logging-tls", Namespace: namespace}, &corev1.Secret{})).To(Succeed())
+			Expect(managedResourceSecretTarget.Type).To(Equal(corev1.SecretTypeOpaque))
+			Expect(managedResourceSecretTarget.Immutable).To(Equal(new(true)))
+			Expect(managedResourceSecretTarget.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+
+		})
+
+		It("should use custom CA secret name for certificate signing", func() {
+			values.SecretNameServerCA = "custom-ca-secret"
+			values.ShootNodeLoggingEnabled = false // Disable node logging for simpler test
+			Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "custom-ca-secret", Namespace: namespace}, Data: map[string][]byte{"bundle.crt": []byte("custom-ca-bundle")}})).To(Succeed())
+
+			component = New(c, namespace, fakeSecretManager, values)
+
+			// The main test is that deploy succeeds with a custom CA secret name
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			// Verify that the component created the managed resource
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+		})
+
+		It("should use seed CA secret when SecretNameServerCA is set to SecretNameCASeed", func() {
+			values.SecretNameServerCA = v1beta1constants.SecretNameCASeed
+			values.ShootNodeLoggingEnabled = false // Disable node logging for simpler test
+			Expect(c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.SecretNameCASeed, Namespace: namespace}, Data: map[string][]byte{"bundle.crt": []byte("seed-ca-bundle")}})).To(Succeed())
+
+			component = New(c, namespace, fakeSecretManager, values)
+
+			// The main test is that deploy succeeds with the seed CA secret
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			// Verify that the component created the managed resource
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+		})
+
+		It("should create ingress and kubeRBACProxy resources when ShootNodeLoggingEnabled is false", func() {
+			values.ShootNodeLoggingEnabled = false
+			component = New(c, namespace, fakeSecretManager, values)
+
+			Expect(component.Deploy(ctx)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+			tlsSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "logging-tls",
+					Namespace: namespace,
+				},
+			}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKey{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(Succeed())
+			Expect(customResourcesManagedResource).To(consistOf(
+				openTelemetryCollector,
+				getGateway(),
+				getVirtualService(),
+				getDestinationRule(),
+				getTLSSecret(tlsSecret),
+				getCaBundleSecret(),
+				vpa,
+				serviceMonitor,
+				serviceAccount,
+			))
+			Expect(managedResourceTarget).To(consistOf(
+				getKubeRBACProxyClusterRoleBinding(),
+			))
+		})
+
+		It("should remove the logs/vali pipeline when RemoveVali is enabled", func() {
+			values.RemoveVali = true
+			component = New(c, namespace, fakeSecretManager, values)
+
+			Expect(component.Deploy(ctx)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+
+			tlsSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "logging-tls",
+					Namespace: namespace,
+				},
+			}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret)).To(Succeed())
+
+			delete(openTelemetryCollector.Spec.Config.Service.Pipelines, "logs/vali")
+			Expect(customResourcesManagedResource).To(consistOf(
+				openTelemetryCollector,
+				getGateway(),
+				getVirtualService(),
+				getDestinationRule(),
+				getTLSSecret(tlsSecret),
+				getCaBundleSecret(),
+				vpa,
+				serviceMonitor,
+				serviceAccount,
+			))
+		})
+
+		It("should add the logs/victorialogs pipeline when VictoriaLogsBackend is enabled", func() {
+			values.VictoriaLogsBackend = true
+			component = New(c, namespace, fakeSecretManager, values)
+
+			Expect(component.Deploy(ctx)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+
+			tlsSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "logging-tls",
+					Namespace: namespace,
+				},
+			}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret)).To(Succeed())
+
+			openTelemetryCollector.Spec.Config.Service.Pipelines["logs/victorialogs"] = &otelv1beta1.Pipeline{
+				Exporters:  []string{"otlphttp/victorialogs"},
+				Receivers:  []string{"otlp"},
+				Processors: []string{"memory_limiter", "batch"},
+			}
+
+			Expect(customResourcesManagedResource).To(consistOf(
+				openTelemetryCollector,
+				getGateway(),
+				getVirtualService(),
+				getDestinationRule(),
+				getTLSSecret(tlsSecret),
+				getCaBundleSecret(),
+				vpa,
+				serviceMonitor,
+				serviceAccount,
+			))
+		})
+
+		It("should create kubeRBACProxy with insecure listen and no tls volumes when TLS secret is not installed", func() {
+			values.ClusterType = "seed"
+			values.ShootNodeLoggingEnabled = false
+			component = New(c, namespace, fakeSecretManager, values)
+
+			Expect(component.Deploy(ctx)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+
+			// Extract the OpenTelemetryCollector from the managed resource and verify insecure proxy args and no TLS volume
+			seedVolumeMount := corev1.VolumeMount{
+				Name:      "kubeconfig",
+				MountPath: "/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig",
+				ReadOnly:  true,
+			}
+
+			seedCollector := openTelemetryCollector.DeepCopy()
+			seedCollector.Spec.AdditionalContainers = []corev1.Container{getInsecureValiKubeRBACContainer(seedVolumeMount), getInsecureOtlpKubeRBACContainer(seedVolumeMount)}
+			seedCollector.Spec.Volumes = []corev1.Volume{getCaBundleVolume(), {
+				Name: "kubeconfig",
+				VolumeSource: corev1.VolumeSource{
+					Projected: &corev1.ProjectedVolumeSource{
+						DefaultMode: new(int32(420)),
+						Sources: []corev1.VolumeProjection{
+							{
+								Secret: &corev1.SecretProjection{
+									LocalObjectReference: corev1.LocalObjectReference{Name: ""},
+									Items:                []corev1.KeyToPath{{Key: secrets.DataKeyKubeconfig, Path: secrets.DataKeyKubeconfig}},
+									Optional:             new(false),
+								},
+							},
+							{
+								Secret: &corev1.SecretProjection{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-rbac-proxy"},
+									Items:                []corev1.KeyToPath{{Key: resourcesv1alpha1.DataKeyToken, Path: resourcesv1alpha1.DataKeyToken}},
+									Optional:             new(false),
+								},
+							},
+						},
+					},
+				},
+			}}
+			seedCollector.Spec.VolumeMounts = []corev1.VolumeMount{getCaBundleVolumeMount()}
+			seedCollector.Annotations = map[string]string{
+				resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix +
+					v1beta1constants.LabelNetworkPolicySeedScrapeTargets +
+					resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"protocol":"TCP","port":8888}]`,
+			}
+			metav1.SetMetaDataLabel(&seedCollector.ObjectMeta, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443", "allowed")
+
+			seedServiceMonitor := serviceMonitor.DeepCopy()
+			seedServiceMonitor.Name = "seed-opentelemetry-collector"
+			seedServiceMonitor.Labels = map[string]string{"prometheus": "seed"}
+
+			Expect(customResourcesManagedResource).To(consistOf(
+				seedCollector,
+				seedServiceMonitor,
+				serviceAccount,
+				vpa,
+			))
+		})
+	})
+
+	Describe("#Destroy", func() {
+		It("should successfully destroy all resources", func() {
+			Expect(c.Create(ctx, customResourcesManagedResource)).To(Succeed())
+			Expect(c.Create(ctx, customResourcesManagedResourceSecret)).To(Succeed())
+
+			Expect(component.Destroy(ctx)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(BeNotFoundError())
+		})
+	})
+
+	Context("waiting functions", func() {
+		var fakeOps *retryfake.Ops
+
+		BeforeEach(func() {
+			fakeOps = &retryfake.Ops{MaxAttempts: 1}
+			DeferCleanup(test.WithVars(
+				&retry.Until, fakeOps.Until,
+				&retry.UntilTimeout, fakeOps.UntilTimeout,
+			))
+		})
+
+		Describe("#Wait", func() {
+			It("should fail because reading the ManagedResources fails", func() {
+				Expect(component.Wait(ctx)).To(MatchError(ContainSubstring("not found")))
+			})
+
+			It("should fail because the ManagedResources doesn't become healthy", func() {
+				fakeOps.MaxAttempts = 2
+
+				Expect(c.Create(ctx, &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       customResourcesManagedResourceName,
+						Namespace:  namespace,
+						Generation: 1,
+					},
+					Status: resourcesv1alpha1.ManagedResourceStatus{
+						ObservedGeneration: 1,
+						Conditions: []gardencorev1beta1.Condition{
+							{
+								Type:   resourcesv1alpha1.ResourcesApplied,
+								Status: gardencorev1beta1.ConditionFalse,
+							},
+							{
+								Type:   resourcesv1alpha1.ResourcesHealthy,
+								Status: gardencorev1beta1.ConditionFalse,
+							},
+						},
+					},
+				})).To(Succeed())
+
+				Expect(component.Wait(ctx)).To(MatchError(ContainSubstring("is not healthy")))
+			})
+
+			It("should successfully wait for the managed resources to become healthy", func() {
+				fakeOps.MaxAttempts = 2
+
+				Expect(c.Create(ctx, &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       customResourcesManagedResourceName,
+						Namespace:  namespace,
+						Generation: 1,
+					},
+					Status: resourcesv1alpha1.ManagedResourceStatus{
+						ObservedGeneration: 1,
+						Conditions: []gardencorev1beta1.Condition{
+							{
+								Type:   resourcesv1alpha1.ResourcesApplied,
+								Status: gardencorev1beta1.ConditionTrue,
+							},
+							{
+								Type:   resourcesv1alpha1.ResourcesHealthy,
+								Status: gardencorev1beta1.ConditionTrue,
+							},
+						},
+					},
+				})).To(Succeed())
+
+				Expect(component.Wait(ctx)).To(Succeed())
+			})
+		})
+
+		Describe("#WaitCleanup", func() {
+			It("should fail when the wait for the managed resources deletion times out", func() {
+				fakeOps.MaxAttempts = 2
+
+				customResourcesManagedResource := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      customResourcesManagedResourceName,
+						Namespace: namespace,
+					},
+				}
+				Expect(c.Create(ctx, customResourcesManagedResource)).To(Succeed())
+
+				Expect(component.WaitCleanup(ctx)).To(MatchError(ContainSubstring("still exists")))
+			})
+
+			It("should not return an error when it's already removed", func() {
+				Expect(component.WaitCleanup(ctx)).To(Succeed())
+			})
+		})
+	})
+})
+
+func getGateway() *istionetworkingv1beta1.Gateway {
+	return &istionetworkingv1beta1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "logging",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: istioapinetworkingv1beta1.Gateway{
+			Servers: []*istioapinetworkingv1beta1.Server{{
+				Port: &istioapinetworkingv1beta1.Port{
+					Name:     "tls",
+					Number:   443,
+					Protocol: "HTTPS",
+				},
+				Hosts: []string{ingressHost, valiHost},
+				Tls: &istioapinetworkingv1beta1.ServerTLSSettings{
+					Mode:           istioapinetworkingv1beta1.ServerTLSSettings_SIMPLE,
+					CredentialName: "some-namespace-logging-logging-tls",
+				},
+			}},
+		},
+	}
+}
+
+func getVirtualService() *istionetworkingv1beta1.VirtualService {
+	return &istionetworkingv1beta1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "logging",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: istioapinetworkingv1beta1.VirtualService{
+			ExportTo: []string{"istio-ingress"},
+			Gateways: []string{"logging"},
+			Hosts:    []string{ingressHost, valiHost},
+			Http: []*istioapinetworkingv1beta1.HTTPRoute{
+				{
+					Match: []*istioapinetworkingv1beta1.HTTPMatchRequest{{
+						Uri: &istioapinetworkingv1beta1.StringMatch{
+							MatchType: &istioapinetworkingv1beta1.StringMatch_Prefix{Prefix: "/opentelemetry.proto.collector.logs.v1.LogsService/Export"},
+						},
+					}},
+					Route: []*istioapinetworkingv1beta1.HTTPRouteDestination{{
+						Destination: &istioapinetworkingv1beta1.Destination{
+							Host: "opentelemetry-collector-collector.some-namespace.svc.cluster.local",
+							Port: &istioapinetworkingv1beta1.PortSelector{
+								Number: 8080,
+							},
+						},
+					}},
+				},
+				{
+					Match: []*istioapinetworkingv1beta1.HTTPMatchRequest{{
+						Uri: &istioapinetworkingv1beta1.StringMatch{
+							MatchType: &istioapinetworkingv1beta1.StringMatch_Prefix{Prefix: "/vali/api/v1/push"},
+						},
+					}},
+					Route: []*istioapinetworkingv1beta1.HTTPRouteDestination{{
+						Destination: &istioapinetworkingv1beta1.Destination{
+							Host: "opentelemetry-collector-collector.some-namespace.svc.cluster.local",
+							Port: &istioapinetworkingv1beta1.PortSelector{
+								Number: 8081,
+							},
+						},
+					}},
+				},
+			},
+		},
+	}
+}
+
+func getDestinationRule() *istionetworkingv1beta1.DestinationRule {
+	return &istionetworkingv1beta1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "logging",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: istioapinetworkingv1beta1.DestinationRule{
+			ExportTo: []string{"istio-ingress"},
+			Host:     "opentelemetry-collector-collector.some-namespace.svc.cluster.local",
+			TrafficPolicy: &istioapinetworkingv1beta1.TrafficPolicy{
+				LoadBalancer: &istioapinetworkingv1beta1.LoadBalancerSettings{
+					LbPolicy: &istioapinetworkingv1beta1.LoadBalancerSettings_Simple{
+						Simple: istioapinetworkingv1beta1.LoadBalancerSettings_LEAST_REQUEST,
+					},
+				},
+				ConnectionPool: &istioapinetworkingv1beta1.ConnectionPoolSettings{
+					Tcp: &istioapinetworkingv1beta1.ConnectionPoolSettings_TCPSettings{
+						TcpKeepalive: &istioapinetworkingv1beta1.ConnectionPoolSettings_TCPSettings_TcpKeepalive{
+							Time:     &durationpb.Duration{Seconds: 60},
+							Interval: &durationpb.Duration{Seconds: 30},
+							Probes:   5,
+						},
+						MaxConnectionDuration: &durationpb.Duration{Seconds: 86400},
+					},
+					Http: &istioapinetworkingv1beta1.ConnectionPoolSettings_HTTPSettings{
+						UseClientProtocol: true,
+					},
+				},
+				Tls: &istioapinetworkingv1beta1.ClientTLSSettings{
+					Mode:           istioapinetworkingv1beta1.ClientTLSSettings_SIMPLE,
+					CredentialName: "some-namespace-logging-" + v1beta1constants.SecretNameCACluster,
+					Sni:            ingressHost,
+				},
+			},
+		},
+	}
+}
+
+func getTLSSecret(tlsSecret *corev1.Secret) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "some-namespace-logging-logging-tls",
+			Namespace: "istio-ingress",
+			Labels:    getLabels(),
+		},
+		Data: tlsSecret.Data,
+	}
+}
+
+func getCaBundleSecret() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "some-namespace-logging-" + v1beta1constants.SecretNameCACluster,
+			Namespace: "istio-ingress",
+			Labels:    getLabels(),
+		},
+		Data: map[string][]byte{
+			"cacert": []byte("ca-bundle"),
+		},
+	}
+}
+
+func getKubeRBACProxyClusterRoleBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "gardener.cloud:logging:rbac-proxy",
+			Labels: map[string]string{"app": "rbac-proxy"},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "system:auth-delegator",
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      "rbac-proxy",
+			Namespace: "kube-system",
+		}},
+	}
+}
+
+func getValitailClusterRole(name, appName, path string) *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"app": appName},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"", "apps"},
+				Resources: []string{
+					"nodes",
+					"nodes/proxy",
+					"services",
+					"endpoints",
+					"pods",
+					"replicasets",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+				},
+			},
+			{
+				NonResourceURLs: []string{path},
+				Verbs:           []string{"create"},
+			},
+		},
+	}
+}
+
+func getValitailClusterRoleBinding(name, appName, roleName, subjectName string) *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"app": appName},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     roleName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      subjectName,
+			Namespace: "kube-system",
+		}},
+	}
+}
+
+func getLabels() map[string]string {
+	return map[string]string{
+		v1beta1constants.LabelApp:                            "opentelemetry-collector",
+		v1beta1constants.LabelRole:                           "observability",
+		v1beta1constants.GardenRole:                          "observability",
+		gardenerutils.NetworkPolicyLabel("logging", 3100):    "allowed",
+		gardenerutils.NetworkPolicyLabel("logging-vl", 9429): "allowed",
+		v1beta1constants.LabelNetworkPolicyToDNS:             "allowed",
+		v1beta1constants.LabelObservabilityApplication:       "opentelemetry-collector",
+	}
+}
+
+func getInsecureValiKubeRBACContainer(volumeMount corev1.VolumeMount) corev1.Container {
+	return corev1.Container{
+		Name:  "rbac-proxy-vali",
+		Image: kubeRBACProxyImage,
+		Args: []string{
+			"--kubeconfig=/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig/kubeconfig",
+			"--logtostderr=true",
+			"--v=6",
+			"--kube-api-burst=100",
+			"--kube-api-qps=50",
+			"--insecure-listen-address=[::]:8081",
+			"--upstream=http://logging:3100/",
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("5m"),
+				corev1.ResourceMemory: resource.MustParse("30Mi"),
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: new(false),
+			RunAsUser:                new(int64(65532)),
+			RunAsGroup:               new(int64(65534)),
+			RunAsNonRoot:             new(true),
+			ReadOnlyRootFilesystem:   new(true),
+		},
+		VolumeMounts: []corev1.VolumeMount{volumeMount},
+	}
+}
+
+func getInsecureOtlpKubeRBACContainer(volumeMount corev1.VolumeMount) corev1.Container {
+	return corev1.Container{
+		Name:  "rbac-proxy-otlp",
+		Image: kubeRBACProxyImage,
+		Args: []string{
+			"--kubeconfig=/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig/kubeconfig",
+			"--logtostderr=true",
+			"--v=6",
+			"--kube-api-burst=100",
+			"--kube-api-qps=50",
+			"--insecure-listen-address=[::]:8080",
+			"--upstream=http://127.0.0.1:4317/",
+			"--upstream-force-h2c",
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("5m"),
+				corev1.ResourceMemory: resource.MustParse("30Mi"),
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: new(false),
+			RunAsUser:                new(int64(65532)),
+			RunAsGroup:               new(int64(65534)),
+			RunAsNonRoot:             new(true),
+			ReadOnlyRootFilesystem:   new(true),
+		},
+		VolumeMounts: []corev1.VolumeMount{volumeMount},
+	}
+}
+
+func getSecureValiKubeRBACContainer(volumeMount corev1.VolumeMount) corev1.Container {
+	return corev1.Container{
+		Name:  "rbac-proxy-vali",
+		Image: kubeRBACProxyImage,
+		Args: []string{
+			"--kubeconfig=/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig/kubeconfig",
+			"--logtostderr=true",
+			"--v=6",
+			"--kube-api-burst=100",
+			"--kube-api-qps=50",
+			"--secure-listen-address=[::]:8081",
+			"--upstream=http://logging:3100/",
+			"--tls-cert-file=/tls/tls.crt",
+			"--tls-private-key-file=/tls/tls.key",
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("5m"),
+				corev1.ResourceMemory: resource.MustParse("30Mi"),
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: new(false),
+			RunAsUser:                new(int64(65532)),
+			RunAsGroup:               new(int64(65534)),
+			RunAsNonRoot:             new(true),
+			ReadOnlyRootFilesystem:   new(true),
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			volumeMount,
+			{Name: "tls-certificate", MountPath: "/tls", ReadOnly: true},
+		},
+	}
+}
+
+func getSecureOtlpKubeRBACContainer(volumeMount corev1.VolumeMount) corev1.Container {
+	return corev1.Container{
+		Name:  "rbac-proxy-otlp",
+		Image: kubeRBACProxyImage,
+		Args: []string{
+			"--kubeconfig=/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig/kubeconfig",
+			"--logtostderr=true",
+			"--v=6",
+			"--kube-api-burst=100",
+			"--kube-api-qps=50",
+			"--secure-listen-address=[::]:8080",
+			"--upstream=http://127.0.0.1:4317/",
+			"--upstream-force-h2c",
+			"--tls-cert-file=/tls/tls.crt",
+			"--tls-private-key-file=/tls/tls.key",
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("5m"),
+				corev1.ResourceMemory: resource.MustParse("30Mi"),
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: new(false),
+			RunAsUser:                new(int64(65532)),
+			RunAsGroup:               new(int64(65534)),
+			RunAsNonRoot:             new(true),
+			ReadOnlyRootFilesystem:   new(true),
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			volumeMount,
+			{Name: "tls-certificate", MountPath: "/tls", ReadOnly: true},
+		},
+	}
+}
+
+func getCaBundleVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: "ca-bundle",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: v1beta1constants.SecretNameCACluster,
+				Items: []corev1.KeyToPath{{
+					Key:  "bundle.crt",
+					Path: "bundle.crt",
+				}},
+			},
+		},
+	}
+}
+
+func getCaBundleVolumeMount() corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      "ca-bundle",
+		MountPath: "/etc/otel/tls",
+		ReadOnly:  true,
+	}
+}

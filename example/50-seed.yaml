@@ -1,0 +1,133 @@
+# Seed cluster registration manifest into which the control planes of Shoot clusters will be deployed.
+---
+apiVersion: core.gardener.cloud/v1beta1
+kind: Seed
+metadata:
+  name: my-seed
+spec:
+  provider:
+    type: <provider-name> # e.g., aws, azure, gcp, ...
+    region: europe-1
+    zones:
+    - europe-1a
+  # providerConfig:
+  #   <some-provider-specific-config-for-the-seed>
+# Configuration of backup object store provider into which the backups will be stored.
+# If you don't want to have backups then don't specify the `.spec.backup` key.
+  backup:
+    provider: <provider-name> # e.g., aws, azure, gcp, ...
+  # providerConfig:
+  #   <some-provider-specific-config-for-the-backup-buckets>
+    region: europe-1
+    credentialsRef:
+      apiVersion: v1
+      kind: Secret
+      name: backup-secret
+      namespace: garden
+  dns:
+    provider:
+      type: aws-route53
+      credentialsRef:
+        apiVersion: v1
+        kind: Secret
+        name: ingress-secret
+        namespace: garden
+    internal:
+      credentialsRef:
+        apiVersion: v1
+        kind: Secret
+        name: internal-domain-secret
+        namespace: garden
+      type: aws-route53
+      domain: internal.dev.example.com
+  extensions:
+  - type: foobar
+  # providerConfig:
+  #   apiVersion: foobar.extensions.gardener.cloud/v1alpha1
+  #   kind: FooBarConfig
+  #   foo: bar
+  #   secretRef: foobar-secret # See the resources section below for the actual reference
+  # List resources referenced by providerConfig and other sections
+  # resources:
+  # - name: foobar-secret
+  #   resourceRef:
+  #     apiVersion: v1
+  #     kind: Secret
+  #     name: my-foobar-secret
+  ingress:
+    domain: ingress.dev.my-seed.example.com
+    controller:
+      kind: nginx
+    # providerConfig:
+    #   <some-optional-config-for-the-nginx-ingress-controller>
+  networks: # seed and shoot networks must be disjunct
+    ipFamilies:
+    - IPv4
+    nodes: 10.240.0.0/16
+    pods: 10.241.128.0/17
+    services: 10.241.0.0/17
+  # shootDefaults:
+  #   pods: 100.96.0.0/11
+  #   services: 100.64.0.0/13
+    blockCIDRs:
+    - 169.254.169.254/32
+  settings:
+    dependencyWatchdog:
+      weeder:
+        enabled: true # crashlooping pods will be restarted once their dependants become ready
+      prober:
+        enabled: true # shoot's kube-controller-managers get scaled down when the kube-apiserver is not reachable via external DNS
+  # excessCapacityReservation:
+  #  enabled: true # optional: automatically assumed 'true' if not set and `configs` are specified.
+  #  configs: # this seed has the following excess-capacity-reservation deployments
+  #  - resources:
+  #      cpu: "4"
+  #      memory: 16Gi
+  #    nodeSelector:
+  #      worker.gardener.cloud/pool: etcd
+  #    tolerations:
+  #    - effect: NoExecute
+  #      key: pool.worker.gardener.cloud/dedicated-for
+  #      operator: Equal
+  #      value: etcd
+    scheduling:
+      visible: true # the gardener-scheduler will consider this seed for shoots
+  # loadBalancerServices:
+  #   annotations:
+  #     foo: bar
+  #   class: non-default-load-balancer-class
+  #   externalTrafficPolicy: Local
+  #   proxyProtocol:
+  #     allowed: true
+  #   zones:
+  #   - name: europe-1a
+  #     annotations:
+  #       foo: bar
+  #     externalTrafficPolicy: Local
+  #     proxyProtocol:
+  #       allowed: true
+  #   zonalIngress:
+  #     enabled: true # istio ingress gateways will be created in every zone of the seed
+  # zoneSelection:
+  #   mode: Prefer|Enforce
+    verticalPodAutoscaler:
+      enabled: true # a Gardener-managed VPA deployment is enabled
+    # featureGates:
+    #   SomeKubernetesFeature: true
+    # maxAllowed:
+    #   cpu: 8
+    #   memory: 32Gi
+  # persistentVolumeClaimAutoscaler:
+  #   enabled: false
+    topologyAwareRouting:
+      enabled: true # certain Services deployed in the seed will be topology-aware
+# taints:
+# - key: seed.gardener.cloud/protected # only shoots in the `garden` namespace can use this seed
+# - key: <some-key>
+# volume:
+#  minimumSize: 20Gi
+#  providers:
+#  - purpose: etcd-main
+#    name: flexvolume
+# accessRestrictions:
+# - name: eu-access-only

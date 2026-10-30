@@ -1,0 +1,43 @@
+# This is a dummy multi-line comment.
+# It is used for verifying file parsing and validation logic if the file has a license header.
+# No actual functionality is implemented here.
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: alpine
+  namespace: {{ .Release.Namespace }}
+  labels:
+    chartName: {{ .Chart.Name }}
+    chartVersion: {{ .Chart.Version | quote }}
+spec:
+  restartPolicy: {{ default "Never" .restartPolicy }}
+  containers:
+  - name: waiter
+    image: {{ .Values.image }}
+    command: ["/bin/sleep", "9000"]
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    chartName: {{ .Chart.Name }}
+    chartVersion: {{ .Chart.Version | quote }}
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gardener.cloud:test
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - gardener.privileged
+  resources:
+  - configmaps
+  verbs:
+  - create

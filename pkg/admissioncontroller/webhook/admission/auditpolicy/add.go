@@ -1,0 +1,60 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package auditpolicy
+
+import (
+	"context"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
+	gardencore "github.com/gardener/gardener/pkg/apis/core"
+	"github.com/gardener/gardener/pkg/features"
+	"github.com/gardener/gardener/pkg/webhook/configvalidator"
+)
+
+const (
+	// HandlerName is the name of this admission webhook handler.
+	HandlerName = "auditpolicy_validator"
+	// WebhookPath is the HTTP handler path for this admission webhook handler.
+	WebhookPath = "/webhooks/audit-policies"
+)
+
+// AddToManager adds the webhook to the given manager.
+func AddToManager(mgr manager.Manager) error {
+	webhook := &admission.Webhook{
+		Handler: NewHandler(
+			mgr.GetAPIReader(),
+			mgr.GetClient(),
+			admission.NewDecoder(mgr.GetScheme()),
+		),
+		RecoverPanic: new(true),
+	}
+
+	mgr.GetWebhookServer().Register(WebhookPath, webhook)
+	return nil
+}
+
+// NewHandler returns a new handler for validating audit policies. If the StrictAuditPolicyValidation feature gate is
+// enabled, unknown or misspelled fields in the audit policy are rejected instead of being silently dropped.
+func NewHandler(apiReader, c client.Reader, decoder admission.Decoder) admission.Handler {
+	return &configvalidator.Handler{
+		APIReader: apiReader,
+		Client:    c,
+		Decoder:   decoder,
+
+		ConfigMapPurpose: "audit policy",
+		ConfigMapDataKey: "policy",
+		GetConfigMapNameFromShoot: func(shoot *gardencore.Shoot) string {
+			return gardencorehelper.GetShootAuditPolicyConfigMapName(shoot.Spec.Kubernetes.KubeAPIServer)
+		},
+		ShootFieldSelector: gardencore.ShootAuditPolicyConfigMapName,
+		AdmitConfig: func(_ context.Context, auditPolicyRaw string, _ []*gardencore.Shoot) (int32, error) {
+			return configvalidator.AdmitAuditPolicy(auditPolicyRaw, features.DefaultFeatureGate.Enabled(features.StrictAuditPolicyValidation))
+		},
+	}
+}

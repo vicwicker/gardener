@@ -1,0 +1,231 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package backupentry
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/registry/generic"
+	"k8s.io/apiserver/pkg/storage"
+	"k8s.io/apiserver/pkg/storage/names"
+	"k8s.io/utils/ptr"
+
+	"github.com/gardener/gardener/pkg/api"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/api/core/validation"
+	"github.com/gardener/gardener/pkg/apis/core"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+)
+
+type backupEntryStrategy struct {
+	runtime.ObjectTyper
+	names.NameGenerator
+}
+
+// NewStrategy returns a new storage strategy for BackupEntries.
+func NewStrategy() backupEntryStrategy {
+	return backupEntryStrategy{api.Scheme, names.SimpleNameGenerator}
+}
+
+// Strategy defines the storage strategy for BackupEntries.
+var Strategy = backupEntryStrategy{api.Scheme, names.SimpleNameGenerator}
+
+func (backupEntryStrategy) NamespaceScoped() bool {
+	return true
+}
+
+func (backupEntryStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
+	backupEntry := obj.(*core.BackupEntry)
+
+	backupEntry.Generation = 1
+	backupEntry.Status = core.BackupEntryStatus{}
+}
+
+func (backupEntryStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
+	newBackupEntry := obj.(*core.BackupEntry)
+	oldBackupEntry := old.(*core.BackupEntry)
+	newBackupEntry.Status = oldBackupEntry.Status
+
+	if mustIncreaseGeneration(oldBackupEntry, newBackupEntry) {
+		newBackupEntry.Generation = oldBackupEntry.Generation + 1
+	}
+}
+
+func mustIncreaseGeneration(oldBackupEntry, newBackupEntry *core.BackupEntry) bool {
+	// The BackupEntry specification changes.
+	if !apiequality.Semantic.DeepEqual(oldBackupEntry.Spec, newBackupEntry.Spec) {
+		return true
+	}
+
+	// The deletion timestamp was set.
+	if oldBackupEntry.DeletionTimestamp == nil && newBackupEntry.DeletionTimestamp != nil {
+		return true
+	}
+
+	oldPresent, _ := strconv.ParseBool(oldBackupEntry.Annotations[core.BackupEntryForceDeletion])
+	newPresent, _ := strconv.ParseBool(newBackupEntry.Annotations[core.BackupEntryForceDeletion])
+	if oldPresent != newPresent && newPresent {
+		return true
+	}
+
+	if v1beta1helper.HasOperationAnnotation(newBackupEntry.Annotations) {
+		// Remove the operation annotation if its value is not "restore"
+		// If it's "restore", it will be removed at the end of the reconciliation since it's needed
+		// to properly determine that the operation is "restore, and not "reconcile"
+		if newBackupEntry.Annotations[v1beta1constants.GardenerOperation] != v1beta1constants.GardenerOperationRestore {
+			delete(newBackupEntry.Annotations, v1beta1constants.GardenerOperation)
+		} else if oldBackupEntry.Annotations[v1beta1constants.GardenerOperation] == v1beta1constants.GardenerOperationRestore {
+			// we don't want to cause duplicate reconciliations because this annotation is removed only at the end of operation
+			return false
+		}
+
+		return true
+	}
+
+	return false
+}
+
+func (backupEntryStrategy) Validate(_ context.Context, obj runtime.Object) field.ErrorList {
+	backupEntry := obj.(*core.BackupEntry)
+	return validation.ValidateBackupEntry(backupEntry)
+}
+
+func (backupEntryStrategy) Canonicalize(obj runtime.Object) {
+	backupEntry := obj.(*core.BackupEntry)
+
+	gardenerutils.MaintainSeedNameLabels(backupEntry, backupEntry.Spec.SeedName, backupEntry.Status.SeedName)
+}
+
+func (backupEntryStrategy) AllowCreateOnUpdate(_ context.Context) bool {
+	return false
+}
+
+func (backupEntryStrategy) ValidateUpdate(_ context.Context, newObj, oldObj runtime.Object) field.ErrorList {
+	oldBackupEntry, newBackupEntry := oldObj.(*core.BackupEntry), newObj.(*core.BackupEntry)
+	return validation.ValidateBackupEntryUpdate(newBackupEntry, oldBackupEntry)
+}
+
+func (backupEntryStrategy) AllowUnconditionalUpdate(_ context.Context) bool {
+	return false
+}
+
+// WarningsOnCreate returns warnings to the client performing a create.
+func (backupEntryStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string {
+	return nil
+}
+
+// WarningsOnUpdate returns warnings to the client performing the update.
+func (backupEntryStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string {
+	return nil
+}
+
+type backupEntryStatusStrategy struct {
+	backupEntryStrategy
+}
+
+// StatusStrategy defines the storage strategy for the status subresource of BackupEntries.
+var StatusStrategy = backupEntryStatusStrategy{Strategy}
+
+func (backupEntryStatusStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
+	newBackupEntry := obj.(*core.BackupEntry)
+	oldBackupEntry := old.(*core.BackupEntry)
+	newBackupEntry.Spec = oldBackupEntry.Spec
+}
+
+func (backupEntryStatusStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
+	return validation.ValidateBackupEntryStatusUpdate(obj.(*core.BackupEntry), old.(*core.BackupEntry))
+}
+
+// ToSelectableFields returns a field set that represents the object
+func ToSelectableFields(backupEntry *core.BackupEntry) fields.Set {
+	// The purpose of allocation with a given number of elements is to reduce
+	// amount of allocations needed to create the fields.Set. If you add any
+	// field here or the number of object-meta related fields changes, this should
+	// be adjusted.
+	backupEntrySpecificFieldsSet := make(fields.Set, 4)
+	backupEntrySpecificFieldsSet[core.BackupEntrySeedName] = ptr.Deref(backupEntry.Spec.SeedName, "")
+	backupEntrySpecificFieldsSet[core.BackupEntryBucketName] = backupEntry.Spec.BucketName
+	if backupEntry.Spec.ShootRef != nil {
+		backupEntrySpecificFieldsSet[core.BackupEntryShootRefName] = backupEntry.Spec.ShootRef.Name
+		backupEntrySpecificFieldsSet[core.BackupEntryShootRefNamespace] = backupEntry.Spec.ShootRef.Namespace
+	}
+	return generic.AddObjectMetaFieldsSet(backupEntrySpecificFieldsSet, &backupEntry.ObjectMeta, true)
+}
+
+// GetAttrs returns labels and fields of a given object for filtering purposes.
+func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
+	backupEntry, ok := obj.(*core.BackupEntry)
+	if !ok {
+		return nil, nil, errors.New("not a backupEntry")
+	}
+	return backupEntry.Labels, ToSelectableFields(backupEntry), nil
+}
+
+// MatchBackupEntry returns a generic matcher for a given label and field selector.
+func MatchBackupEntry(label labels.Selector, field fields.Selector) storage.SelectionPredicate {
+	return storage.SelectionPredicate{
+		Label:       label,
+		Field:       field,
+		GetAttrs:    GetAttrs,
+		IndexFields: []string{core.BackupEntrySeedName, core.BackupEntryBucketName, core.BackupEntryShootRefName, core.BackupEntryShootRefNamespace},
+	}
+}
+
+// SeedNameIndexFunc returns spec.seedName of given BackupEntry.
+func SeedNameIndexFunc(obj any) ([]string, error) {
+	backupEntry, ok := obj.(*core.BackupEntry)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupEntry but got %T", obj)
+	}
+
+	return []string{ptr.Deref(backupEntry.Spec.SeedName, "")}, nil
+}
+
+// ShootRefNameIndexFunc returns spec.shootRef.name of given BackupEntry.
+func ShootRefNameIndexFunc(obj any) ([]string, error) {
+	backupEntry, ok := obj.(*core.BackupEntry)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupEntry but got %T", obj)
+	}
+
+	if backupEntry.Spec.ShootRef == nil {
+		return []string{""}, nil
+	}
+
+	return []string{backupEntry.Spec.ShootRef.Name}, nil
+}
+
+// ShootRefNamespaceIndexFunc returns spec.shootRef.namespace of given BackupEntry.
+func ShootRefNamespaceIndexFunc(obj any) ([]string, error) {
+	backupEntry, ok := obj.(*core.BackupEntry)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupEntry but got %T", obj)
+	}
+
+	if backupEntry.Spec.ShootRef == nil {
+		return []string{""}, nil
+	}
+
+	return []string{backupEntry.Spec.ShootRef.Namespace}, nil
+}
+
+// BucketNameIndexFunc returns spec.BucketName of given BackupEntry.
+func BucketNameIndexFunc(obj any) ([]string, error) {
+	backupEntry, ok := obj.(*core.BackupEntry)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupEntry but got %T", obj)
+	}
+
+	return []string{backupEntry.Spec.BucketName}, nil
+}

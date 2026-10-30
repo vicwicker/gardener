@@ -1,0 +1,239 @@
+/*
+Copyright 2015 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Modifications Contributors to the Gardener project
+
+// This file contains several helper functions copied from the DaemonSet controller for determining which Nodes should
+// run daemon pods.
+// All code in this file is copied instead of vendored because it is located in unexported parts of the Kubernetes
+// codebase.
+// The logic for determining which Nodes should run daemon pods hasn't changed for quite some time. Hence, we assume
+// that it is consistent across Kubernetes versions.
+
+package helper
+
+import (
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/conversion"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
+	v1helper "k8s.io/component-helpers/scheduling/corev1"
+	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
+	"k8s.io/klog/v2"
+)
+
+// NodeShouldRunDaemonPod checks a set of preconditions against a (node,daemonset) and returns a
+// summary. Returned booleans are:
+//   - shouldRun:
+//     Returns true when a daemonset should run on the node if a daemonset pod is not already
+//     running on that node.
+//   - shouldContinueRunning:
+//     Returns true when a daemonset should continue running on a node if a daemonset pod is already
+//     running on that node.
+//
+// Copied from https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/daemon/daemon_controller.go#L1389-L1392
+func NodeShouldRunDaemonPod(logger klog.Logger, node *corev1.Node, ds *appsv1.DaemonSet) (bool, bool) {
+	return nodeShouldRunDaemonPod(logger, node, ds, daemonPodTolerations(ds),
+		nodeaffinity.NewRequiredNodeAffinity(ds.Spec.Template.Spec.NodeSelector, ds.Spec.Template.Spec.Affinity))
+}
+
+// daemonPodTolerations returns the tolerations of the pods this DaemonSet
+// creates: the template's tolerations plus the defaults every daemon pod
+// gets. The template is not modified.
+// Copied from https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/daemon/daemon_controller.go#L1394-L1401
+func daemonPodTolerations(ds *appsv1.DaemonSet) []corev1.Toleration {
+	spec := ds.Spec.Template.Spec
+	AddOrUpdateDaemonPodTolerations(&spec)
+	return spec.Tolerations
+}
+
+// nodeShouldRunDaemonPod is NodeShouldRunDaemonPod for callers that evaluate
+// many nodes against the same DaemonSet: tolerations and requiredNodeAffinity
+// depend only on ds — daemonPodTolerations(ds) and the parsing result of the
+// pod template's nodeSelector and affinity — so per-node loops build them
+// once instead of once per node. Parsing the required node affinity
+// dominates the cost of this check, and the sync paths run it for every node
+// in the cluster.
+//
+// Copied from https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/daemon/daemon_controller.go#L1403C1-L1431C2
+// First if block semantically equally changed due to golangci-lint finding QF1001.
+// Last argument of FindMatchingUntoleratedTaint hardcoded to false instead of utilfeature.DefaultFeatureGate.Enabled(features.TaintTolerationComparisonOperators)
+// to avoid importing the k8s internal feature gate package. This is equivalent as the gate defaults to false (alpha since 1.35).
+func nodeShouldRunDaemonPod(logger klog.Logger, node *corev1.Node, ds *appsv1.DaemonSet, tolerations []corev1.Toleration, requiredNodeAffinity nodeaffinity.RequiredNodeAffinity) (bool, bool) {
+	// If the daemon set specifies a node name, check that it matches with node.Name.
+	if ds.Spec.Template.Spec.NodeName != "" && ds.Spec.Template.Spec.NodeName != node.Name {
+		return false, false
+	}
+
+	taints := node.Spec.Taints
+	fitsNodeAffinity, fitsTaints := predicates(logger, node, taints, tolerations, requiredNodeAffinity)
+	if !fitsNodeAffinity {
+		return false, false
+	}
+
+	if !fitsTaints {
+		// Scheduled daemon pods should continue running if they tolerate NoExecute taint.
+		_, hasUntoleratedTaint := v1helper.FindMatchingUntoleratedTaint(logger, taints, tolerations, func(t *corev1.Taint) bool {
+			return t.Effect == corev1.TaintEffectNoExecute
+		}, false)
+		return false, !hasUntoleratedTaint
+	}
+
+	return true, true
+}
+
+// predicates checks if a DaemonSet's pod can run on a node.
+// Copied from https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/daemon/daemon_controller.go#L1433-L1444
+// Last argument of FindMatchingUntoleratedTaint hardcoded to false instead of utilfeature.DefaultFeatureGate.Enabled(features.TaintTolerationComparisonOperators)
+// to avoid importing the k8s internal feature gate package. This is equivalent as the gate defaults to false (alpha since 1.35).
+func predicates(logger klog.Logger, node *corev1.Node, taints []corev1.Taint, tolerations []corev1.Toleration, requiredNodeAffinity nodeaffinity.RequiredNodeAffinity) (fitsNodeAffinity, fitsTaints bool) {
+	// Ignore parsing errors for backwards compatibility.
+	fitsNodeAffinity, _ = requiredNodeAffinity.Match(node)
+	_, hasUntoleratedTaint := v1helper.FindMatchingUntoleratedTaint(logger, taints, tolerations, func(t *corev1.Taint) bool {
+		return t.Effect == corev1.TaintEffectNoExecute || t.Effect == corev1.TaintEffectNoSchedule
+	}, false)
+	fitsTaints = !hasUntoleratedTaint
+	return
+}
+
+// NewPod creates a new pod
+// Copied from https://github.com/kubernetes/kubernetes/blob/v1.36.0/pkg/controller/daemon/daemon_controller.go#L1456-L1467
+func NewPod(ds *appsv1.DaemonSet, nodeName string) *corev1.Pod {
+	newPod := &corev1.Pod{Spec: ds.Spec.Template.Spec, ObjectMeta: ds.Spec.Template.ObjectMeta}
+	newPod.Namespace = ds.Namespace
+	newPod.Spec.NodeName = nodeName
+
+	// Added default tolerations for DaemonSet pods.
+	AddOrUpdateDaemonPodTolerations(&newPod.Spec)
+
+	return newPod
+}
+
+// AddOrUpdateDaemonPodTolerations apply necessary tolerations to DaemonSet Pods, e.g. node.kubernetes.io/not-ready:NoExecute.
+// Copied from https://github.com/kubernetes/kubernetes/blob/v1.36.0/pkg/controller/daemon/util/daemonset_util.go#L44-L87
+func AddOrUpdateDaemonPodTolerations(spec *corev1.PodSpec) {
+	// DaemonSet pods shouldn't be deleted by NodeController in case of node problems.
+	// Add infinite toleration for taint notReady:NoExecute here
+	// to survive taint-based eviction enforced by NodeController
+	// when node turns not ready.
+	AddOrUpdateTolerationInPodSpec(spec, &corev1.Toleration{
+		Key:      corev1.TaintNodeNotReady,
+		Operator: corev1.TolerationOpExists,
+		Effect:   corev1.TaintEffectNoExecute,
+	})
+
+	// DaemonSet pods shouldn't be deleted by NodeController in case of node problems.
+	// Add infinite toleration for taint unreachable:NoExecute here
+	// to survive taint-based eviction enforced by NodeController
+	// when node turns unreachable.
+	AddOrUpdateTolerationInPodSpec(spec, &corev1.Toleration{
+		Key:      corev1.TaintNodeUnreachable,
+		Operator: corev1.TolerationOpExists,
+		Effect:   corev1.TaintEffectNoExecute,
+	})
+
+	// According to TaintNodesByCondition feature, all DaemonSet pods should tolerate
+	// MemoryPressure, DiskPressure, PIDPressure, Unschedulable and NetworkUnavailable taints.
+	AddOrUpdateTolerationInPodSpec(spec, &corev1.Toleration{
+		Key:      corev1.TaintNodeDiskPressure,
+		Operator: corev1.TolerationOpExists,
+		Effect:   corev1.TaintEffectNoSchedule,
+	})
+
+	AddOrUpdateTolerationInPodSpec(spec, &corev1.Toleration{
+		Key:      corev1.TaintNodeMemoryPressure,
+		Operator: corev1.TolerationOpExists,
+		Effect:   corev1.TaintEffectNoSchedule,
+	})
+
+	AddOrUpdateTolerationInPodSpec(spec, &corev1.Toleration{
+		Key:      corev1.TaintNodePIDPressure,
+		Operator: corev1.TolerationOpExists,
+		Effect:   corev1.TaintEffectNoSchedule,
+	})
+
+	AddOrUpdateTolerationInPodSpec(spec, &corev1.Toleration{
+		Key:      corev1.TaintNodeUnschedulable,
+		Operator: corev1.TolerationOpExists,
+		Effect:   corev1.TaintEffectNoSchedule,
+	})
+
+	if spec.HostNetwork {
+		AddOrUpdateTolerationInPodSpec(spec, &corev1.Toleration{
+			Key:      corev1.TaintNodeNetworkUnavailable,
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoSchedule,
+		})
+	}
+}
+
+// AddOrUpdateTolerationInPodSpec tries to add a toleration to the toleration list in PodSpec.
+// Returns true if something was updated, false otherwise.
+// Copied from https://github.com/kubernetes/kubernetes/blob/v1.36.0/pkg/apis/core/v1/helper/helpers.go#L218-L237
+func AddOrUpdateTolerationInPodSpec(spec *corev1.PodSpec, toleration *corev1.Toleration) bool {
+	podTolerations := spec.Tolerations
+
+	var newTolerations []corev1.Toleration
+	updated := false
+	for i := range podTolerations {
+		if toleration.MatchToleration(&podTolerations[i]) {
+			if Semantic.DeepEqual(toleration, podTolerations[i]) {
+				return false
+			}
+			newTolerations = append(newTolerations, *toleration)
+			updated = true
+			continue
+		}
+
+		newTolerations = append(newTolerations, podTolerations[i])
+	}
+
+	if !updated {
+		newTolerations = append(newTolerations, *toleration)
+	}
+
+	spec.Tolerations = newTolerations
+	return true
+}
+
+// Semantic can do semantic deep equality checks for core objects.
+// Example: apiequality.Semantic.DeepEqual(aPod, aPodWithNonNilButEmptyMaps) == true
+// Copied from https://github.com/kubernetes/kubernetes/blob/v1.36.0/pkg/apis/core/helper/helpers.go#L98-L111
+// Changed time comparisons changed due to golangci-lint finding QF1009.
+var Semantic = conversion.EqualitiesOrDie(
+	func(a, b resource.Quantity) bool {
+		// Ignore formatting, only care that numeric value stayed the same.
+		// TODO: if we decide it's important, it should be safe to start comparing the format.
+		//
+		// Uninitialized quantities are equivalent to 0 quantities.
+		return a.Cmp(b) == 0
+	},
+	func(a, b metav1.MicroTime) bool {
+		return a.Time.Equal(b.Time)
+	},
+	func(a, b metav1.Time) bool {
+		return a.Time.Equal(b.Time)
+	},
+	func(a, b labels.Selector) bool {
+		return a.String() == b.String()
+	},
+	func(a, b fields.Selector) bool {
+		return a.String() == b.String()
+	},
+)

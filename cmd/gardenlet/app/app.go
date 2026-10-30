@@ -1,0 +1,822 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package app
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	goruntime "runtime"
+	"strconv"
+	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/spf13/cobra"
+	certificatesv1 "k8s.io/api/certificates/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/rest"
+	"k8s.io/component-base/version/verflag"
+	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	controllerconfig "sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	"github.com/gardener/gardener/cmd/utils/initrun"
+	"github.com/gardener/gardener/pkg/api/indexer"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	gardencore "github.com/gardener/gardener/pkg/apis/core"
+	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/apis/operations"
+	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/apis/seedmanagement"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
+	clientmapbuilder "github.com/gardener/gardener/pkg/client/kubernetes/clientmap/builder"
+	kubeapiserverexposure "github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/controllerutils/routes"
+	"github.com/gardener/gardener/pkg/features"
+	"github.com/gardener/gardener/pkg/gardenlet/bootstrap"
+	"github.com/gardener/gardener/pkg/gardenlet/bootstrap/certificate"
+	"github.com/gardener/gardener/pkg/gardenlet/bootstrappers"
+	"github.com/gardener/gardener/pkg/gardenlet/controller"
+	gardenerhealthz "github.com/gardener/gardener/pkg/healthz"
+	"github.com/gardener/gardener/pkg/utils"
+	"github.com/gardener/gardener/pkg/utils/flow"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
+	"github.com/gardener/gardener/pkg/utils/retry"
+)
+
+// Name is a const for the name of this component.
+const Name = "gardenlet"
+
+// NewCommand creates a new cobra.Command for running gardenlet.
+func NewCommand() *cobra.Command {
+	opts := &options{}
+
+	cmd := &cobra.Command{
+		Use:   Name,
+		Short: "Launch the " + Name,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			log, err := initrun.InitRun(cmd, opts, Name)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithCancel(cmd.Context())
+			return run(ctx, cancel, log, opts.config)
+		},
+	}
+
+	flags := cmd.Flags()
+	verflag.AddFlags(flags)
+	opts.addFlags(flags)
+
+	return cmd
+}
+
+func run(ctx context.Context, cancel context.CancelFunc, log logr.Logger, cfg *gardenletconfigv1alpha1.GardenletConfiguration) error {
+	log.Info("Feature Gates", "featureGates", features.DefaultFeatureGate)
+
+	if kubeconfig := os.Getenv("GARDEN_KUBECONFIG"); kubeconfig != "" {
+		cfg.GardenClientConnection.Kubeconfig = kubeconfig
+	}
+	if kubeconfig := os.Getenv("KUBECONFIG"); kubeconfig != "" {
+		cfg.SeedClientConnection.Kubeconfig = kubeconfig
+	}
+
+	log.Info("Getting rest config for runtime cluster")
+	runtimeRESTConfig, err := kubernetes.RESTConfigFromClientConnectionConfiguration(&cfg.SeedClientConnection.ClientConnectionConfiguration, nil)
+	if err != nil {
+		return err
+	}
+
+	var extraHandlers map[string]http.Handler
+	if cfg.Debugging != nil && ptr.Deref(cfg.Debugging.EnableProfiling, false) {
+		extraHandlers = routes.ProfilingHandlers
+		if ptr.Deref(cfg.Debugging.EnableContentionProfiling, false) {
+			goruntime.SetBlockProfileRate(1)
+		}
+	}
+
+	log.Info("Setting up manager")
+	mgr, err := manager.New(runtimeRESTConfig, manager.Options{
+		Logger:                  log,
+		Scheme:                  kubernetes.SeedScheme,
+		GracefulShutdownTimeout: new(5 * time.Second),
+		Controller: controllerconfig.Controller{
+			CacheSyncTimeout: cfg.Controllers.CacheSyncTimeout.Duration,
+		},
+		HealthProbeBindAddress: net.JoinHostPort(cfg.Server.HealthProbes.BindAddress, strconv.Itoa(int(cfg.Server.HealthProbes.Port))),
+		Metrics: metricsserver.Options{
+			BindAddress:   net.JoinHostPort(cfg.Server.Metrics.BindAddress, strconv.Itoa(int(cfg.Server.Metrics.Port))),
+			ExtraHandlers: extraHandlers,
+		},
+
+		LeaderElection:                *cfg.LeaderElection.LeaderElect,
+		LeaderElectionResourceLock:    cfg.LeaderElection.ResourceLock,
+		LeaderElectionID:              cfg.LeaderElection.ResourceName,
+		LeaderElectionNamespace:       cfg.LeaderElection.ResourceNamespace,
+		LeaderElectionReleaseOnCancel: true,
+		LeaseDuration:                 &cfg.LeaderElection.LeaseDuration.Duration,
+		RenewDeadline:                 &cfg.LeaderElection.RenewDeadline.Duration,
+		RetryPeriod:                   &cfg.LeaderElection.RetryPeriod.Duration,
+
+		MapperProvider: apiutil.NewDynamicRESTMapper,
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{
+					&corev1.Event{},
+					&eventsv1.Event{},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	log.Info("Setting up periodic health manager")
+	healthGracePeriod := time.Duration((*cfg.Controllers.Seed.LeaseResyncSeconds)*(*cfg.Controllers.Seed.LeaseResyncMissThreshold)) * time.Second
+	healthManager := gardenerhealthz.NewPeriodicHealthz(clock.RealClock{}, healthGracePeriod)
+	healthManager.Set(true)
+
+	log.Info("Setting up health check endpoints")
+	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
+		return err
+	}
+	if err := mgr.AddHealthzCheck("runtime-informer-sync", gardenerhealthz.NewCacheSyncHealthzWithDeadline(mgr.GetLogger(), clock.RealClock{}, mgr.GetCache(), gardenerhealthz.DefaultCacheSyncDeadline)); err != nil {
+		return err
+	}
+	if err := mgr.AddReadyzCheck("runtime-informer-sync", gardenerhealthz.NewCacheSyncHealthz(mgr.GetCache())); err != nil {
+		return err
+	}
+	if err := mgr.AddHealthzCheck("periodic-health", gardenerhealthz.CheckerFunc(healthManager)); err != nil {
+		return err
+	}
+
+	var selfHostedShootInfo *gardenlet.SelfHostedShootInfo
+	if gardenlet.IsResponsibleForSelfHostedShoot() {
+		configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.ConfigMapNameShootInfo, Namespace: metav1.NamespaceSystem}}
+		if err := mgr.GetAPIReader().Get(ctx, client.ObjectKeyFromObject(configMap), configMap); err != nil {
+			return fmt.Errorf("failed reading ConfigMap %s: %w", client.ObjectKeyFromObject(configMap), err)
+		}
+		selfHostedShootInfo = &gardenlet.SelfHostedShootInfo{
+			Meta:      types.NamespacedName{Namespace: configMap.Data["shootNamespace"], Name: configMap.Data["shootName"]},
+			UID:       types.UID(configMap.Data["uid"]),
+			StatusUID: types.UID(configMap.Data["statusUID"]),
+		}
+		log.Info("Fetched information about self-hosted shoot", "shootMeta", selfHostedShootInfo.Meta)
+	}
+
+	log.Info("Adding runnables to manager for bootstrapping")
+	var (
+		kubeconfigBootstrapResult = &bootstrappers.KubeconfigBootstrapResult{}
+		runner                    = &controllerutils.ControlledRunner{
+			Manager: mgr,
+			BootstrapRunnables: []manager.Runnable{
+				&bootstrappers.GardenKubeconfig{
+					RuntimeClient:       mgr.GetClient(),
+					Log:                 mgr.GetLogger().WithName("bootstrap"),
+					Config:              cfg,
+					SelfHostedShootInfo: selfHostedShootInfo,
+					Result:              kubeconfigBootstrapResult,
+				},
+			},
+			ActualRunnables: []manager.Runnable{
+				&garden{
+					cancel:                    cancel,
+					mgr:                       mgr,
+					config:                    cfg,
+					selfHostedShootInfo:       selfHostedShootInfo,
+					healthManager:             healthManager,
+					kubeconfigBootstrapResult: kubeconfigBootstrapResult,
+				},
+			},
+		}
+	)
+
+	if !gardenlet.IsResponsibleForSelfHostedShoot() {
+		runner.BootstrapRunnables = append([]manager.Runnable{
+			&bootstrappers.SeedConfigChecker{
+				SeedClient: mgr.GetClient(),
+				SeedConfig: cfg.SeedConfig,
+			},
+		}, runner.BootstrapRunnables...)
+	}
+
+	if err := mgr.Add(runner); err != nil {
+		return fmt.Errorf("failed adding runnables to manager: %w", err)
+	}
+
+	log.Info("Starting manager")
+	return mgr.Start(ctx)
+}
+
+type garden struct {
+	cancel                    context.CancelFunc
+	mgr                       manager.Manager
+	config                    *gardenletconfigv1alpha1.GardenletConfiguration
+	selfHostedShootInfo       *gardenlet.SelfHostedShootInfo
+	healthManager             gardenerhealthz.Manager
+	kubeconfigBootstrapResult *bootstrappers.KubeconfigBootstrapResult
+}
+
+func (g *garden) Start(ctx context.Context) error {
+	log := g.mgr.GetLogger()
+
+	log.Info("Getting rest config for garden")
+	gardenRESTConfig, err := kubernetes.RESTConfigFromClientConnectionConfiguration(&g.config.GardenClientConnection.ClientConnectionConfiguration, g.kubeconfigBootstrapResult.Kubeconfig)
+	if err != nil {
+		return err
+	}
+
+	if err := g.overwriteGardenHostWhenDeployedInRuntimeCluster(ctx, log, gardenRESTConfig); err != nil {
+		return err
+	}
+
+	log.Info("Setting up cluster object for garden")
+	gardenCluster, err := cluster.New(gardenRESTConfig, func(opts *cluster.Options) {
+		opts.Scheme = kubernetes.GardenScheme
+		opts.Logger = log
+
+		opts.Client.Cache = &client.CacheOptions{
+			DisableFor: []client.Object{
+				&corev1.Event{},
+				&eventsv1.Event{},
+			},
+		}
+
+		if !gardenlet.IsResponsibleForSelfHostedShoot() {
+			seedNamespace := gardenerutils.ComputeGardenNamespace(g.config.SeedConfig.Name)
+
+			opts.NewCache = func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
+				// gardenlet should watch only objects which are related to the seed it is responsible for.
+				opts.ByObject = map[client.Object]cache.ByObject{
+					&gardencorev1beta1.ControllerInstallation{}: {
+						Field: fields.SelectorFromSet(fields.Set{gardencore.SeedRefName: g.config.SeedConfig.Name}),
+					},
+					&gardencorev1beta1.Seed{}: {
+						Label: labels.SelectorFromSet(labels.Set{v1beta1constants.LabelPrefixSeedName + g.config.SeedConfig.Name: "true"}),
+					},
+					&gardencorev1beta1.Shoot{}: {
+						Label: labels.SelectorFromSet(labels.Set{v1beta1constants.LabelPrefixSeedName + g.config.SeedConfig.Name: "true"}),
+					},
+					&operationsv1alpha1.Bastion{}: {
+						Field: fields.SelectorFromSet(fields.Set{operations.BastionSeedName: g.config.SeedConfig.Name}),
+					},
+					// Gardenlet should watch secrets/serviceAccounts only in the seed namespace of the seed it is responsible for.
+					&corev1.Secret{}: {
+						Namespaces: map[string]cache.Config{seedNamespace: {}},
+					},
+					&corev1.ServiceAccount{}: {
+						Namespaces: map[string]cache.Config{seedNamespace: {}},
+					},
+					&seedmanagementv1alpha1.ManagedSeed{}: {
+						Label: labels.SelectorFromSet(labels.Set{v1beta1constants.LabelPrefixSeedName + g.config.SeedConfig.Name: "true"}),
+					},
+					&seedmanagementv1alpha1.Gardenlet{}: {
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: g.config.SeedConfig.Name}),
+						Namespaces: map[string]cache.Config{v1beta1constants.GardenNamespace: {}},
+					},
+				}
+
+				return kubernetes.AggregatorCacheFunc(
+					kubernetes.NewRuntimeCache,
+					map[client.Object]cache.NewCacheFunc{
+						// Gardenlet does not have the required RBAC permissions for listing/watching the following
+						// resources on cluster level. Hence, we need to watch them individually with the help of a
+						// SingleObject cache.
+						&corev1.ConfigMap{}:                         kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.ConfigMap{}),
+						&corev1.Namespace{}:                         kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.Namespace{}),
+						&coordinationv1.Lease{}:                     kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &coordinationv1.Lease{}),
+						&certificatesv1.CertificateSigningRequest{}: kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &certificatesv1.CertificateSigningRequest{}),
+						&gardencorev1.ControllerDeployment{}:        kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1.ControllerDeployment{}),
+						&gardencorev1beta1.CloudProfile{}:           kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.CloudProfile{}),
+						&gardencorev1beta1.NamespacedCloudProfile{}: kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.NamespacedCloudProfile{}),
+						&gardencorev1beta1.ExposureClass{}:          kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.ExposureClass{}),
+						&gardencorev1beta1.InternalSecret{}:         kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.InternalSecret{}),
+						&gardencorev1beta1.Project{}:                kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.Project{}),
+						&gardencorev1beta1.SecretBinding{}:          kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.SecretBinding{}),
+						&gardencorev1beta1.ShootState{}:             kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.ShootState{}),
+						&securityv1alpha1.CredentialsBinding{}:      kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &securityv1alpha1.CredentialsBinding{}),
+						&securityv1alpha1.WorkloadIdentity{}:        kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &securityv1alpha1.WorkloadIdentity{}),
+					},
+					kubernetes.GardenScheme,
+				)(config, opts)
+			}
+
+			// The created multi-namespace cache does not fall back to an uncached reader in case the gardenlet tries to
+			// read a secret from another namespace. There might be secrets in namespace other than the seed-specific
+			// namespace (e.g., backup secret in the SeedSpec). Hence, let's use a fallback client which falls back to an
+			// uncached reader in case it fails to read objects from the cache.
+			opts.NewClient = func(config *rest.Config, options client.Options) (client.Client, error) {
+				uncachedOptions := options
+				uncachedOptions.Cache = nil
+				uncachedClient, err := client.New(config, uncachedOptions)
+				if err != nil {
+					return nil, err
+				}
+
+				cachedClient, err := client.New(config, options)
+				if err != nil {
+					return nil, err
+				}
+
+				return &kubernetes.FallbackClient{
+					Client: cachedClient,
+					Reader: uncachedClient,
+					KindToNamespaces: map[string]sets.Set[string]{
+						"Secret":         sets.New(seedNamespace),
+						"ServiceAccount": sets.New(seedNamespace),
+					},
+				}, nil
+			}
+		} else {
+			opts.NewCache = func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
+				// gardenlet should watch only objects which are related to the shoot it is responsible for.
+				opts.ByObject = map[client.Object]cache.ByObject{
+					&gardencorev1beta1.BackupBucket{}: {
+						Field: fields.SelectorFromSet(fields.Set{
+							gardencore.BackupBucketShootRefName:      g.selfHostedShootInfo.Meta.Name,
+							gardencore.BackupBucketShootRefNamespace: g.selfHostedShootInfo.Meta.Namespace,
+						}),
+					},
+					&gardencorev1beta1.BackupEntry{}: {
+						Field: fields.SelectorFromSet(fields.Set{
+							gardencore.BackupEntryShootRefName:      g.selfHostedShootInfo.Meta.Name,
+							gardencore.BackupEntryShootRefNamespace: g.selfHostedShootInfo.Meta.Namespace,
+						}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&operationsv1alpha1.Bastion{}: {
+						Field:      fields.SelectorFromSet(fields.Set{operations.BastionShootName: g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&gardencorev1beta1.ControllerInstallation{}: {
+						Field: fields.SelectorFromSet(fields.Set{
+							gardencore.ShootRefName:      g.selfHostedShootInfo.Meta.Name,
+							gardencore.ShootRefNamespace: g.selfHostedShootInfo.Meta.Namespace,
+						}),
+					},
+					&gardencorev1beta1.Shoot{}: {
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&gardencorev1beta1.ShootState{}: {
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&seedmanagementv1alpha1.Gardenlet{}: {
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: gardenlet.ResourcePrefixSelfHostedShoot + g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&coordinationv1.Lease{}: {
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: gardenlet.ResourcePrefixSelfHostedShoot + g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&seedmanagementv1alpha1.ManagedSeed{}: {
+						Field: fields.SelectorFromSet(fields.Set{
+							seedmanagement.ManagedSeedShootName: g.selfHostedShootInfo.Meta.Name,
+						}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&gardencorev1beta1.Seed{}: {
+						Field: fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: g.selfHostedShootInfo.Meta.Name}),
+					},
+				}
+
+				return kubernetes.AggregatorCacheFunc(
+					kubernetes.NewRuntimeCache,
+					map[client.Object]cache.NewCacheFunc{
+						// Gardenlet does not have the required RBAC permissions for listing/watching the following
+						// resources on cluster level. Hence, we need to watch them individually with the help of a
+						// SingleObject cache.
+						&corev1.ConfigMap{}:                    kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.ConfigMap{}),
+						&corev1.Namespace{}:                    kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.Namespace{}),
+						&corev1.Secret{}:                       kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.Secret{}),
+						&corev1.ServiceAccount{}:               kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.ServiceAccount{}),
+						&gardencorev1.ControllerDeployment{}:   kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1.ControllerDeployment{}),
+						&gardencorev1beta1.InternalSecret{}:    kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.InternalSecret{}),
+						&gardencorev1beta1.Project{}:           kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.Project{}),
+						&securityv1alpha1.CredentialsBinding{}: kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &securityv1alpha1.CredentialsBinding{}),
+					},
+					kubernetes.GardenScheme,
+				)(config, opts)
+			}
+		}
+
+		opts.MapperProvider = apiutil.NewDynamicRESTMapper
+	})
+	if err != nil {
+		return fmt.Errorf("failed creating garden cluster object: %w", err)
+	}
+
+	log.Info("Cleaning bootstrap authentication data used to request a certificate if needed")
+	if len(g.kubeconfigBootstrapResult.CSRName) > 0 {
+		if err := bootstrap.DeleteBootstrapAuth(ctx, gardenCluster.GetAPIReader(), gardenCluster.GetClient(), g.kubeconfigBootstrapResult.CSRName); err != nil {
+			return fmt.Errorf("failed cleaning bootstrap auth data: %w", err)
+		}
+	}
+
+	log.Info("Perform Gardener version verification")
+	if err := bootstrappers.VerifyGardenerVersion(ctx, g.mgr.GetLogger(), gardenCluster.GetAPIReader()); err != nil {
+		return fmt.Errorf("failed verifying Gardener version: %w", err)
+	}
+
+	log.Info("Adding field indexes to informers")
+	if err := addAllFieldIndexesToGardenClient(ctx, gardenCluster.GetFieldIndexer()); err != nil {
+		return fmt.Errorf("failed adding indexes to garden client: %w", err)
+	}
+
+	if err := addAllFieldIndexesToSeedClient(ctx, g.mgr.GetFieldIndexer()); err != nil {
+		return fmt.Errorf("failed adding indexes to seed client: %w", err)
+	}
+
+	log.Info("Adding garden cluster to manager")
+	if err := g.mgr.Add(gardenCluster); err != nil {
+		return fmt.Errorf("failed adding garden cluster to manager: %w", err)
+	}
+
+	waitForSyncCtx, waitForSyncCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer waitForSyncCancel()
+
+	log.V(1).Info("Waiting for cache to be synced")
+	if !gardenCluster.GetCache().WaitForCacheSync(waitForSyncCtx) {
+		return fmt.Errorf("failed waiting for cache to be synced")
+	}
+
+	if !gardenlet.IsResponsibleForSelfHostedShoot() {
+		isSelfHostedShoot, err := gardenerutils.ClusterIsSelfHostedShoot(ctx, g.mgr.GetClient())
+		if err != nil {
+			return fmt.Errorf("failed checking if seed cluster is a self-hosted shoot: %w", err)
+		}
+
+		if isSelfHostedShoot {
+			// Abort startup if the corresponding Shoot does not yet exist in the garden cluster. This prevents
+			// GCM from creating `ControllerInstallation`s with `.spec.seedRef`. However, if the seed is a self-hosted
+			// shoot, we want all `ControllerInstallation`s to use `.spec.shootRef`. Self-hosted shoots must be in the
+			// garden namespace (for now), so the name is sufficient to identify the Shoot.
+			// Use the API reader here because the cache only sees Shoots with the seed's label selector, but this
+			// self-hosted Shoot will never get this label.
+			shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{Name: g.config.SeedConfig.Name, Namespace: v1beta1constants.GardenNamespace}}
+			if err := gardenCluster.GetAPIReader().Get(ctx, client.ObjectKeyFromObject(shoot), shoot); err != nil {
+				if apierrors.IsNotFound(err) {
+					return fmt.Errorf("seed cluster is a self-hosted shoot but the corresponding Shoot %q does not yet exist in namespace %q; run `gardenadm connect` first", g.config.SeedConfig.Name, v1beta1constants.GardenNamespace)
+				}
+				return fmt.Errorf("failed getting Shoot for self-hosted seed: %w", err)
+			}
+
+			responsibleForManagedSeed, err := gardenerutils.ClusterIsManagedByManagedSeed(ctx, gardenCluster.GetAPIReader(), g.config.SeedConfig.Name)
+			if err != nil {
+				return fmt.Errorf("failed checking whether gardenlet is responsible for a managed seed: %w", err)
+			}
+			if !responsibleForManagedSeed {
+				return fmt.Errorf("seed cluster is a self-hosted shoot but no ManagedSeed object exists for seed %q; the seed gardenlet on self-hosted shoots must be deployed via ManagedSeed", g.config.SeedConfig.Name)
+			}
+
+			if err := bootstrappers.VerifyShootGardenletVersion(log, shoot); err != nil {
+				return fmt.Errorf("failed verifying shoot gardenlet version skew: %w", err)
+			}
+		}
+
+		log.Info("Registering Seed object in garden cluster")
+		if err := g.registerSeed(ctx, gardenCluster.GetClient(), isSelfHostedShoot); err != nil {
+			return err
+		}
+	}
+
+	log.Info("Updating last operation status of processing Shoots to 'Aborted'")
+	if err := g.updateProcessingShootStatusToAborted(ctx, gardenCluster.GetClient()); err != nil {
+		return err
+	}
+
+	log.Info("Attempt to create seedmanagement.gardener.cloud/v1alpha1.Gardenlet object in garden cluster for self-upgrades if necessary")
+	if err := g.createSelfUpgradeConfig(ctx, log, gardenCluster.GetClient()); err != nil {
+		return err
+	}
+
+	if err := g.runMigrations(ctx, gardenCluster.GetClient()); err != nil {
+		return err
+	}
+
+	seedClientSet, err := kubernetes.NewWithConfig(
+		kubernetes.WithRESTConfig(g.mgr.GetConfig()),
+		kubernetes.WithRuntimeAPIReader(g.mgr.GetAPIReader()),
+		kubernetes.WithRuntimeClient(g.mgr.GetClient()),
+		kubernetes.WithRuntimeCache(g.mgr.GetCache()),
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating seed clientset: %w", err)
+	}
+
+	log.Info("Setting up shoot client map")
+	var shootClientMap clientmap.ClientMap
+	if g.selfHostedShootInfo != nil {
+		shootClientMap = clientmap.NewSelfHostedShootClientMap(seedClientSet)
+	} else {
+		var err error
+		shootClientMap, err = clientmapbuilder.
+			NewShootClientMapBuilder().
+			WithGardenClient(gardenCluster.GetClient()).
+			WithSeedClient(g.mgr.GetClient()).
+			WithClientConnectionConfig(&g.config.ShootClientConnection.ClientConnectionConfiguration).
+			Build(log)
+		if err != nil {
+			return fmt.Errorf("failed to build shoot ClientMap: %w", err)
+		}
+	}
+
+	log.Info("Adding runnables now that bootstrapping is finished")
+	runnables := []manager.Runnable{
+		g.healthManager,
+		shootClientMap,
+	}
+
+	if g.config.GardenClientConnection.KubeconfigSecret != nil {
+		certificateManager, err := certificate.NewCertificateManager(log, gardenCluster, g.mgr.GetClient(), g.config, g.selfHostedShootInfo)
+		if err != nil {
+			return fmt.Errorf("failed to create a new certificate manager: %w", err)
+		}
+
+		runnables = append(runnables, manager.RunnableFunc(func(ctx context.Context) error {
+			return certificateManager.ScheduleCertificateRotation(ctx, g.cancel, g.mgr.GetEventRecorder("certificate-manager"))
+		}))
+	}
+
+	if err := controllerutils.AddAllRunnables(g.mgr, runnables...); err != nil {
+		return err
+	}
+
+	var shoot *gardencorev1beta1.Shoot
+	if gardenlet.IsResponsibleForSelfHostedShoot() {
+		shoot = &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{Name: g.selfHostedShootInfo.Meta.Name, Namespace: g.selfHostedShootInfo.Meta.Namespace}}
+		if err := retry.Until(ctx, 5*time.Second, func(ctx context.Context) (done bool, err error) {
+			if err := gardenCluster.GetClient().Get(ctx, client.ObjectKeyFromObject(shoot), shoot); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return retry.SevereError(err)
+				}
+				log.Info("Shoot resource for self-hosted shoot not found yet, waiting for it to be created in the Gardener API (usually, the 'gardenadm connect' command invocation creates it)", "shoot", g.selfHostedShootInfo)
+				return retry.MinorError(fmt.Errorf("the Shoot resource %s for self-hosted shoot was not found yet", g.selfHostedShootInfo))
+			}
+			return retry.Ok()
+		}); err != nil {
+			return fmt.Errorf("failed waiting for Shoot %s: %w", g.selfHostedShootInfo, err)
+		}
+		log.Info("Successfully fetched Shoot resource for self-hosted shoot", "shoot", g.selfHostedShootInfo)
+	}
+
+	log.Info("Adding controllers to manager")
+	if err := controller.AddToManager(
+		ctx,
+		g.mgr,
+		g.cancel,
+		gardenCluster,
+		g.mgr,
+		seedClientSet,
+		shootClientMap,
+		g.config,
+		g.healthManager,
+		shoot,
+	); err != nil {
+		return fmt.Errorf("failed adding controllers to manager: %w", err)
+	}
+
+	return nil
+}
+
+func (g *garden) registerSeed(ctx context.Context, gardenClient client.Client, isSelfHostedShoot bool) error {
+	seed := &gardencorev1beta1.Seed{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: g.config.SeedConfig.Name,
+		},
+	}
+
+	if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, gardenClient, seed, func() error {
+		seed.Annotations = utils.MergeStringMaps(seed.Annotations, g.config.SeedConfig.Annotations)
+		seed.Labels = utils.MergeStringMaps(map[string]string{
+			v1beta1constants.GardenRole: v1beta1constants.GardenRoleSeed,
+		}, g.config.SeedConfig.Labels)
+
+		if isSelfHostedShoot {
+			metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelSelfHostedShootCluster, "true")
+		}
+
+		seed.Spec = g.config.SeedConfig.Spec
+
+		return nil
+	}); err != nil {
+		return fmt.Errorf("could not register seed %q: %w", seed.Name, err)
+	}
+
+	// Verify that the gardener-controller-manager has created the seed-specific namespace. Here we also accept
+	// 'forbidden' errors since the SeedAuthorizer (if enabled) forbid the gardenlet to read the namespace in case the
+	// gardener-controller-manager has not yet created it.
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if err := wait.PollUntilContextCancel(timeoutCtx, 500*time.Millisecond, false, func(context.Context) (done bool, err error) {
+		if err := gardenClient.Get(ctx, client.ObjectKey{Name: gardenerutils.ComputeGardenNamespace(g.config.SeedConfig.Name)}, &corev1.Namespace{}); err != nil {
+			if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	}); err != nil {
+		return err
+	}
+
+	// If the Seed config does not have spec.dns.defaults set,
+	// set it automatically based on the global default domain secrets.
+	return nil
+}
+
+var seedManagementDecoder runtime.Decoder
+
+func init() {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(seedmanagementv1alpha1.AddToScheme(scheme))
+	seedManagementDecoder = serializer.NewCodecFactory(scheme).UniversalDeserializer()
+}
+
+func (g *garden) createSelfUpgradeConfig(ctx context.Context, log logr.Logger, gardenClient client.Client) error {
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gardenlet-selfupgrade-config", Namespace: os.Getenv("NAMESPACE")}}
+	if err := g.mgr.GetClient().Get(ctx, client.ObjectKeyFromObject(configMap), configMap); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed checking whether ConfigMap %q with seedmanagement.gardener.cloud/v1alpha1.Gardenlet object for self-upgrades exists: %w", client.ObjectKeyFromObject(configMap), err)
+		}
+
+		log.Info("ConfigMap does not exist, hence, no need to create seedmanagement.gardener.cloud/v1alpha1.Gardenlet object for self-upgrades", "configMap", client.ObjectKeyFromObject(configMap))
+		return nil
+	}
+
+	gardenlet := &seedmanagementv1alpha1.Gardenlet{}
+	if err := runtime.DecodeInto(seedManagementDecoder, []byte(configMap.Data["gardenlet.yaml"]), gardenlet); err != nil {
+		return fmt.Errorf("error decoding seedmanagement.gardener.cloud/v1alpha1.Gardenlet object from ConfigMap %s: %w", client.ObjectKeyFromObject(configMap), err)
+	}
+
+	if err := gardenClient.Create(ctx, gardenlet); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed creating seedmanagement.gardener.cloud/v1alpha1.Gardenlet object for self-upgrades: %w", err)
+		}
+		log.Info("The seedmanagement.gardener.cloud/v1alpha1.Gardenlet object for self-upgrades already exists, nothing to do")
+	} else {
+		log.Info("Successfully created seedmanagement.gardener.cloud/v1alpha1.Gardenlet object for self-upgrades")
+	}
+
+	return client.IgnoreNotFound(g.mgr.GetClient().Delete(ctx, configMap))
+}
+
+func (g *garden) updateProcessingShootStatusToAborted(ctx context.Context, gardenClient client.Client) error {
+	shootList := &gardencorev1beta1.ShootList{}
+	if err := gardenClient.List(ctx, shootList); err != nil {
+		return err
+	}
+
+	var taskFns []flow.TaskFn
+
+	for _, shoot := range shootList.Items {
+		// Check if the status indicates that an operation is processing and mark it as "aborted".
+		if shoot.Status.LastOperation == nil || shoot.Status.LastOperation.State != gardencorev1beta1.LastOperationStateProcessing {
+			continue
+		}
+
+		taskFns = append(taskFns, func(ctx context.Context) error {
+			patch := client.MergeFrom(shoot.DeepCopy())
+			shoot.Status.LastOperation.State = gardencorev1beta1.LastOperationStateAborted
+			if err := gardenClient.Status().Patch(ctx, &shoot, patch); err != nil {
+				return fmt.Errorf("failed to set status to 'Aborted' for shoot %q: %w", client.ObjectKeyFromObject(&shoot), err)
+			}
+
+			return nil
+		})
+	}
+
+	return flow.Parallel(taskFns...)(ctx)
+}
+
+const virtualGardenService = operatorv1alpha1.DeploymentNameVirtualGardenKubeAPIServer
+
+// overwriteGardenHostWhenDeployedInRuntimeCluster overwrites the garden REST config host to the internal service host
+// if the gardenlet is deployed in the runtime cluster of the garden and L7 load balancing is not active.
+func (g *garden) overwriteGardenHostWhenDeployedInRuntimeCluster(ctx context.Context, log logr.Logger, gardenRESTConfig *rest.Config) error {
+	seedIsGarden, err := gardenlet.ClusterIsGarden(ctx, g.mgr.GetClient())
+	if err != nil {
+		return fmt.Errorf("failed to check whether seed is garden: %w", err)
+	}
+
+	if !seedIsGarden {
+		return nil
+	}
+
+	// Verify that virtual-garden-kube-apiserver service exists before we consider overwriting the garden REST config host.
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: v1beta1constants.GardenNamespace,
+			Name:      virtualGardenService,
+		},
+	}
+	if err := g.mgr.GetClient().Get(ctx, client.ObjectKeyFromObject(service), &corev1.Service{}); apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("failed to check whether %q service exists: %w", client.ObjectKeyFromObject(service), err)
+	}
+
+	// Only overwrite the garden REST config host if the mutual TLS service does not exist, which means that L7 load
+	// balancing is not active. If it is active, we keep the original host that the gardenlet requests are load balanced.
+	mtlsService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: v1beta1constants.GardenNamespace,
+			Name:      virtualGardenService + kubeapiserverexposure.MutualTLSServiceNameSuffix,
+		},
+	}
+	if err := g.mgr.GetClient().Get(ctx, client.ObjectKeyFromObject(mtlsService), &corev1.Service{}); apierrors.IsNotFound(err) {
+		gardenRESTConfig.Host = fmt.Sprintf("https://%s.%s.svc.cluster.local", virtualGardenService, v1beta1constants.GardenNamespace)
+		log.Info("Seed is deployed in garden runtime cluster and L7 is not active. Overwriting host in garden rest config", "host", gardenRESTConfig.Host)
+	} else if err != nil {
+		return fmt.Errorf("failed to check whether %q service exists: %w", client.ObjectKeyFromObject(mtlsService), err)
+	}
+
+	return nil
+}
+
+func addAllFieldIndexesToGardenClient(ctx context.Context, i client.FieldIndexer) error {
+	fns := []func(context.Context, client.FieldIndexer) error{
+		// core API group
+		indexer.AddBackupEntryBucketName,
+		indexer.AddControllerInstallationRegistrationRefName,
+		// operations API group
+		indexer.AddBastionShootName,
+		// seedmanagement API group
+		indexer.AddManagedSeedShootName,
+	}
+
+	if gardenlet.IsResponsibleForSelfHostedShoot() {
+		fns = append(fns,
+			// core API group
+			indexer.AddControllerInstallationShootRefName,
+			indexer.AddControllerInstallationShootRefNamespace,
+		)
+	} else {
+		fns = append(fns,
+			// core API group
+			indexer.AddShootSeedName,
+			indexer.AddShootStatusSeedName,
+			indexer.AddBackupBucketSeedName,
+			indexer.AddBackupEntrySeedName,
+			indexer.AddControllerInstallationSeedRefName,
+		)
+	}
+
+	for _, fn := range fns {
+		if err := fn(ctx, i); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func addAllFieldIndexesToSeedClient(ctx context.Context, i client.FieldIndexer) error {
+	var fns []func(context.Context, client.FieldIndexer) error
+	if gardenlet.IsResponsibleForSelfHostedShoot() {
+		fns = append(fns, indexer.AddPodNodeName)
+	}
+
+	for _, fn := range fns {
+		if err := fn(ctx, i); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

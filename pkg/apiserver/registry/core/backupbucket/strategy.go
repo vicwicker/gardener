@@ -1,0 +1,195 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package backupbucket
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/registry/generic"
+	"k8s.io/apiserver/pkg/storage"
+	"k8s.io/apiserver/pkg/storage/names"
+	"k8s.io/utils/ptr"
+
+	"github.com/gardener/gardener/pkg/api"
+	"github.com/gardener/gardener/pkg/api/core/validation"
+	"github.com/gardener/gardener/pkg/apis/core"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+)
+
+type backupBucketStrategy struct {
+	runtime.ObjectTyper
+	names.NameGenerator
+}
+
+// Strategy defines the storage strategy for BackupBuckets.
+var Strategy = backupBucketStrategy{api.Scheme, names.SimpleNameGenerator}
+
+func (backupBucketStrategy) NamespaceScoped() bool {
+	return false
+}
+
+func (backupBucketStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
+	backupBucket := obj.(*core.BackupBucket)
+
+	backupBucket.Generation = 1
+	backupBucket.Status = core.BackupBucketStatus{}
+}
+
+func (backupBucketStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
+	newBackupBucket := obj.(*core.BackupBucket)
+	oldBackupBucket := old.(*core.BackupBucket)
+	newBackupBucket.Status = oldBackupBucket.Status
+
+	if mustIncreaseGeneration(oldBackupBucket, newBackupBucket) {
+		newBackupBucket.Generation = oldBackupBucket.Generation + 1
+	}
+}
+
+func mustIncreaseGeneration(oldBackupBucket, newBackupBucket *core.BackupBucket) bool {
+	// The BackupBucket specification changes.
+	if !apiequality.Semantic.DeepEqual(oldBackupBucket.Spec, newBackupBucket.Spec) {
+		return true
+	}
+
+	// The deletion timestamp was set.
+	if oldBackupBucket.DeletionTimestamp == nil && newBackupBucket.DeletionTimestamp != nil {
+		return true
+	}
+
+	if kubernetesutils.HasMetaDataAnnotation(&newBackupBucket.ObjectMeta, v1beta1constants.GardenerOperation, v1beta1constants.GardenerOperationReconcile) {
+		delete(newBackupBucket.Annotations, v1beta1constants.GardenerOperation)
+		return true
+	}
+
+	return false
+}
+
+func (backupBucketStrategy) Validate(_ context.Context, obj runtime.Object) field.ErrorList {
+	backupBucket := obj.(*core.BackupBucket)
+	return validation.ValidateBackupBucket(backupBucket)
+}
+
+func (backupBucketStrategy) Canonicalize(_ runtime.Object) {
+}
+
+func (backupBucketStrategy) AllowCreateOnUpdate(_ context.Context) bool {
+	return false
+}
+
+func (backupBucketStrategy) ValidateUpdate(_ context.Context, newObj, oldObj runtime.Object) field.ErrorList {
+	oldBackupBucket, newBackupBucket := oldObj.(*core.BackupBucket), newObj.(*core.BackupBucket)
+	return validation.ValidateBackupBucketUpdate(newBackupBucket, oldBackupBucket)
+}
+
+func (backupBucketStrategy) AllowUnconditionalUpdate(_ context.Context) bool {
+	return false
+}
+
+// WarningsOnCreate returns warnings to the client performing a create.
+func (backupBucketStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string {
+	return nil
+}
+
+// WarningsOnUpdate returns warnings to the client performing the update.
+func (backupBucketStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string {
+	return nil
+}
+
+type backupBucketStatusStrategy struct {
+	backupBucketStrategy
+}
+
+// StatusStrategy defines the storage strategy for the status subresource of BackupBuckets.
+var StatusStrategy = backupBucketStatusStrategy{Strategy}
+
+func (backupBucketStatusStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
+	newBackupBucket := obj.(*core.BackupBucket)
+	oldBackupBucket := old.(*core.BackupBucket)
+	newBackupBucket.Spec = oldBackupBucket.Spec
+}
+
+func (backupBucketStatusStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
+	return validation.ValidateBackupBucketStatusUpdate(obj.(*core.BackupBucket), old.(*core.BackupBucket))
+}
+
+// ToSelectableFields returns a field set that represents the object
+func ToSelectableFields(backupBucket *core.BackupBucket) fields.Set {
+	// The purpose of allocation with a given number of elements is to reduce
+	// amount of allocations needed to create the fields.Set. If you add any
+	// field here or the number of object-meta related fields changes, this should
+	// be adjusted.
+	backupBucketSpecificFieldsSet := make(fields.Set, 5)
+	backupBucketSpecificFieldsSet[core.BackupBucketSeedName] = ptr.Deref(backupBucket.Spec.SeedName, "")
+	if backupBucket.Spec.ShootRef != nil {
+		backupBucketSpecificFieldsSet[core.BackupBucketShootRefName] = backupBucket.Spec.ShootRef.Name
+		backupBucketSpecificFieldsSet[core.BackupBucketShootRefNamespace] = backupBucket.Spec.ShootRef.Namespace
+	}
+	return generic.AddObjectMetaFieldsSet(backupBucketSpecificFieldsSet, &backupBucket.ObjectMeta, true)
+}
+
+// GetAttrs returns labels and fields of a given object for filtering purposes.
+func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
+	backupBucket, ok := obj.(*core.BackupBucket)
+	if !ok {
+		return nil, nil, errors.New("not a backupBucket")
+	}
+	return labels.Set(backupBucket.Labels), ToSelectableFields(backupBucket), nil
+}
+
+// MatchBackupBucket returns a generic matcher for a given label and field selector.
+func MatchBackupBucket(label labels.Selector, field fields.Selector) storage.SelectionPredicate {
+	return storage.SelectionPredicate{
+		Label:       label,
+		Field:       field,
+		GetAttrs:    GetAttrs,
+		IndexFields: []string{core.BackupBucketSeedName, core.BackupBucketShootRefName, core.BackupBucketShootRefNamespace},
+	}
+}
+
+// SeedNameIndexFunc returns spec.seedName of given BackupBucket.
+func SeedNameIndexFunc(obj any) ([]string, error) {
+	backupBucket, ok := obj.(*core.BackupBucket)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupBucket but got %T", obj)
+	}
+
+	return []string{ptr.Deref(backupBucket.Spec.SeedName, "")}, nil
+}
+
+// ShootRefNameIndexFunc returns spec.shootRef.name of given BackupBucket.
+func ShootRefNameIndexFunc(obj any) ([]string, error) {
+	backupBucket, ok := obj.(*core.BackupBucket)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupBucket but got %T", obj)
+	}
+
+	if backupBucket.Spec.ShootRef == nil {
+		return []string{""}, nil
+	}
+
+	return []string{backupBucket.Spec.ShootRef.Name}, nil
+}
+
+// ShootRefNamespaceIndexFunc returns spec.shootRef.namespace of given BackupBucket.
+func ShootRefNamespaceIndexFunc(obj any) ([]string, error) {
+	backupBucket, ok := obj.(*core.BackupBucket)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupBucket but got %T", obj)
+	}
+
+	if backupBucket.Spec.ShootRef == nil {
+		return []string{""}, nil
+	}
+
+	return []string{backupBucket.Spec.ShootRef.Namespace}, nil
+}

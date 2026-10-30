@@ -1,0 +1,148 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package seed_test
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/seed"
+)
+
+var _ = Describe("PodMonitors", func() {
+	Describe("#CentralPodMonitors", func() {
+		It("should return the expected objects", func() {
+			Expect(seed.CentralPodMonitors()).To(HaveExactElements(
+				&monitoringv1.PodMonitor{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "extensions",
+					},
+					Spec: monitoringv1.PodMonitorSpec{
+						NamespaceSelector: monitoringv1.NamespaceSelector{Any: true},
+						PodMetricsEndpoints: []monitoringv1.PodMetricsEndpoint{{
+							RelabelConfigs: []monitoringv1.RelabelConfig{
+								{
+									SourceLabels: []monitoringv1.LabelName{
+										"__meta_kubernetes_namespace",
+										"__meta_kubernetes_pod_annotation_prometheus_io_scrape",
+										"__meta_kubernetes_pod_annotation_prometheus_io_port",
+									},
+									Regex:  `extension-(.+);true;(.+)`,
+									Action: "keep",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_annotation_prometheus_io_name"},
+									Regex:        `(.+)`,
+									Action:       "replace",
+									TargetLabel:  "job",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_ip"},
+									Regex:        `([^:]+)`,
+									Action:       "replace",
+									Replacement:  new(`$1`),
+									TargetLabel:  "__tmp_kubernetes_pod_ip_ipv4",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_ip"},
+									Regex:        `(.+:.+)`,
+									Action:       "replace",
+									Replacement:  new(`[$1]`),
+									TargetLabel:  "__tmp_kubernetes_pod_ip_ipv6_with_brackets",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{
+										"__tmp_kubernetes_pod_ip_ipv4",
+										"__tmp_kubernetes_pod_ip_ipv6_with_brackets",
+									},
+									Regex:       `(.*);(.*)`,
+									Action:      "replace",
+									Replacement: new(`$1$2`),
+									TargetLabel: "__tmp_kubernetes_pod_ip",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{
+										"__tmp_kubernetes_pod_ip",
+										"__meta_kubernetes_pod_annotation_prometheus_io_port",
+									},
+									Regex:       `(.+);(.+)`,
+									Action:      "replace",
+									Replacement: new(`$1:$2`),
+									TargetLabel: "__address__",
+								},
+								{
+									Action: "labelmap",
+									Regex:  `__meta_kubernetes_pod_label_(.+)`,
+								},
+							},
+						}},
+					},
+				},
+				&monitoringv1.PodMonitor{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "garden",
+					},
+					Spec: monitoringv1.PodMonitorSpec{
+						PodMetricsEndpoints: []monitoringv1.PodMetricsEndpoint{{
+							Scheme: new(monitoringv1.SchemeHTTPS),
+							HTTPConfigWithProxy: monitoringv1.HTTPConfigWithProxy{
+								HTTPConfig: monitoringv1.HTTPConfig{TLSConfig: &monitoringv1.SafeTLSConfig{InsecureSkipVerify: new(true)}},
+							},
+							RelabelConfigs: []monitoringv1.RelabelConfig{
+								{
+									SourceLabels: []monitoringv1.LabelName{
+										"__meta_kubernetes_pod_annotation_prometheus_io_scrape",
+										"__meta_kubernetes_pod_annotation_prometheus_io_port",
+									},
+									Regex:  `true;(.+)`,
+									Action: "keep",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_annotation_prometheus_io_name"},
+									Regex:        `(.+)`,
+									Action:       "replace",
+									TargetLabel:  "job",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_annotation_prometheus_io_scheme"},
+									Regex:        `(https?)`,
+									Action:       "replace",
+									TargetLabel:  "__scheme__",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_ip"},
+									Regex:        `(.+:.+:.+)`,
+									Action:       "replace",
+									Replacement:  new(`[$1]`),
+									TargetLabel:  "__tmp_kubernetes_pod_ip",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_ip"},
+									Regex:        `([^:]+)`,
+									Action:       "replace",
+									Replacement:  new(`$1`),
+									TargetLabel:  "__tmp_kubernetes_pod_ip",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__tmp_kubernetes_pod_ip", "__meta_kubernetes_pod_annotation_prometheus_io_port"},
+									Regex:        `(.+);(.+)`,
+									Action:       "replace",
+									Replacement:  new(`$1:$2`),
+									TargetLabel:  "__address__",
+								},
+								{
+									Action: "labelmap",
+									Regex:  `__meta_kubernetes_pod_label_(.+)`,
+								},
+							},
+						}},
+					},
+				},
+			))
+		})
+	})
+})

@@ -1,0 +1,35 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package features
+
+import (
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/component-base/featuregate"
+
+	"github.com/gardener/gardener/pkg/features"
+)
+
+// RegisterFeatureGates registers the feature gates of gardenlet.
+func RegisterFeatureGates() {
+	utilruntime.Must(features.DefaultFeatureGate.Add(features.GetFeatures(GetFeatures()...)))
+}
+
+// GetFeatures returns all gardenlet features.
+func GetFeatures() []featuregate.Feature {
+	return []featuregate.Feature{
+		features.DefaultSeccompProfile,
+		features.IstioTLSTermination,
+		features.DoNotCopyBackupCredentials,
+		features.OpenTelemetryCollector,
+		features.VictoriaLogsBackend,
+		features.CustomDNSServerInNodeLocalDNS,
+		features.VPNBondingModeRoundRobin,
+		features.PrometheusHealthChecks,
+		features.RemoveVali,
+		features.DisableNginxIngressInSeed,
+		features.RemoveHTTPProxyLegacyPort,
+		features.LiveControlPlaneMigration,
+	}
+}

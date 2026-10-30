@@ -1,0 +1,67 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package shared
+
+import (
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/gardener/gardener/imagevector"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/observability/plutono"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+)
+
+// NewPlutono returns a deployer for the plutono.
+func NewPlutono(
+	c client.Client,
+	namespace string,
+	secretsManager secretsmanager.Interface,
+	clusterType component.ClusterType,
+	replicas int32,
+	authSecretName, ingressHost, priorityClassName string,
+	includeIstioDashboards, isWorkerless bool,
+	isGardenCluster, vpnHighAvailabilityEnabled, vpaEnabled bool,
+	wildcardCertName *string,
+	onlyDeployDataSourcesAndDashboards bool,
+	istioIngressGatewayLabels map[string]string,
+	istioIngressGatewayNamespace string,
+) (
+	plutono.Interface,
+	error,
+) {
+	plutonoImage, err := imagevector.Containers().FindImage(imagevector.ContainerImageNamePlutono)
+	if err != nil {
+		return nil, err
+	}
+
+	dataRefresher, err := imagevector.Containers().FindImage(imagevector.ContainerImageNamePlutonoDataRefresher)
+	if err != nil {
+		return nil, err
+	}
+
+	return plutono.New(
+		c,
+		namespace,
+		secretsManager,
+		plutono.Values{
+			AuthSecretName:                     authSecretName,
+			ClusterType:                        clusterType,
+			Image:                              plutonoImage.String(),
+			ImageDataRefresher:                 dataRefresher.String(),
+			IngressHost:                        ingressHost,
+			IncludeIstioDashboards:             includeIstioDashboards,
+			IsGardenCluster:                    isGardenCluster,
+			IstioIngressGatewayLabels:          istioIngressGatewayLabels,
+			IstioIngressGatewayNamespace:       istioIngressGatewayNamespace,
+			IsWorkerless:                       isWorkerless,
+			OnlyDeployDataSourcesAndDashboards: onlyDeployDataSourcesAndDashboards,
+			PriorityClassName:                  priorityClassName,
+			Replicas:                           replicas,
+			VPNHighAvailabilityEnabled:         vpnHighAvailabilityEnabled,
+			VPAEnabled:                         vpaEnabled,
+			WildcardCertName:                   wildcardCertName,
+		},
+	), nil
+}

@@ -1,0 +1,1461 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package nodelocaldns_test
+
+import (
+	"context"
+	"net"
+	"strconv"
+	"strings"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/networking/coredns"
+	. "github.com/gardener/gardener/pkg/component/networking/nodelocaldns"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
+	"github.com/gardener/gardener/pkg/utils"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+	"github.com/gardener/gardener/pkg/utils/retry"
+	retryfake "github.com/gardener/gardener/pkg/utils/retry/fake"
+	"github.com/gardener/gardener/pkg/utils/test"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+)
+
+var _ = Describe("NodeLocalDNS", func() {
+	var (
+		ctx                 = context.Background()
+		managedResourceName = "shoot-core-node-local-dns"
+		namespace           = "some-namespace"
+		image               = "some-image:some-tag"
+		alpineImage         = "some-alpine-image:some-tag"
+
+		c         client.Client
+		values    Values
+		component component.DeployWaiter
+
+		manifests             []string
+		expectedManifests     []string
+		managedResource       *resourcesv1alpha1.ManagedResource
+		managedResourceSecret *corev1.Secret
+		cluster               *extensionsv1alpha1.Cluster
+
+		ipvsAddress           = "169.254.20.10"
+		labelKey              = "k8s-app"
+		labelValue            = "node-local-dns"
+		labelKeyPool          = "pool"
+		prometheusPort        = 9253
+		prometheusErrorPort   = 9353
+		prometheusScrape      = true
+		livenessProbePort     = 8099
+		configMapHash         string
+		upstreamDNSAddress    = []string{"__PILLAR__UPSTREAM__SERVERS__"}
+		forceTcpToClusterDNS  = "force_tcp"
+		forceTcpToUpstreamDNS = "force_tcp"
+
+		scrapeConfig = &monitoringv1alpha1.ScrapeConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "shoot-node-local-dns",
+				Namespace:       namespace,
+				Labels:          map[string]string{"prometheus": "shoot"},
+				ResourceVersion: "1",
+			},
+			Spec: monitoringv1alpha1.ScrapeConfigSpec{
+				HonorLabels: new(false),
+				Scheme:      new(monitoringv1.SchemeHTTPS),
+				TLSConfig:   &monitoringv1.SafeTLSConfig{InsecureSkipVerify: new(true)},
+				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
+					Key:                  "token",
+				}},
+				KubernetesSDConfigs: []monitoringv1alpha1.KubernetesSDConfig{{
+					APIServer:  new("https://kube-apiserver"),
+					Role:       "Pod",
+					Namespaces: &monitoringv1alpha1.NamespaceDiscovery{Names: []string{metav1.NamespaceSystem}},
+					Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
+						Key:                  "token",
+					}},
+					TLSConfig: &monitoringv1.SafeTLSConfig{InsecureSkipVerify: new(true)},
+				}},
+				RelabelConfigs: []monitoringv1.RelabelConfig{
+					{
+						Action:      "replace",
+						Replacement: new("node-local-dns"),
+						TargetLabel: "job",
+					},
+					{
+						TargetLabel: "type",
+						Replacement: new("shoot"),
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_name"},
+						Action:       "keep",
+						Regex:        "node-local.*",
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_container_name", "__meta_kubernetes_pod_container_port_name"},
+						Action:       "keep",
+						Regex:        "node-cache;metrics",
+					},
+					{
+						Action: "labelmap",
+						Regex:  `__meta_kubernetes_service_label_(.+)`,
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_name"},
+						TargetLabel:  "pod",
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_node_name"},
+						TargetLabel:  "node",
+					},
+					{
+						TargetLabel: "__address__",
+						Replacement: new("kube-apiserver:443"),
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_name", "__meta_kubernetes_pod_container_port_number"},
+						Regex:        `(.+);(.+)`,
+						TargetLabel:  "__metrics_path__",
+						Replacement:  new("/api/v1/namespaces/kube-system/pods/${1}:${2}/proxy/metrics"),
+					},
+				},
+				MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
+					SourceLabels: []monitoringv1.LabelName{"__name__"},
+					Action:       "keep",
+					Regex:        `^(coredns_build_info|coredns_cache_entries|coredns_cache_hits_total|coredns_cache_misses_total|coredns_dns_request_duration_seconds_count|coredns_dns_request_duration_seconds_bucket|coredns_dns_requests_total|coredns_dns_responses_total|coredns_forward_requests_total|coredns_forward_responses_total|coredns_kubernetes_dns_programming_duration_seconds_bucket|coredns_kubernetes_dns_programming_duration_seconds_count|coredns_kubernetes_dns_programming_duration_seconds_sum|process_max_fds|process_open_fds)$`,
+				}},
+			},
+		}
+		scrapeConfigErrors = &monitoringv1alpha1.ScrapeConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "shoot-node-local-dns-errors",
+				Namespace:       namespace,
+				Labels:          map[string]string{"prometheus": "shoot"},
+				ResourceVersion: "1",
+			},
+			Spec: monitoringv1alpha1.ScrapeConfigSpec{
+				HonorLabels: new(false),
+				Scheme:      new(monitoringv1.SchemeHTTPS),
+				TLSConfig:   &monitoringv1.SafeTLSConfig{InsecureSkipVerify: new(true)},
+				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
+					Key:                  "token",
+				}},
+				KubernetesSDConfigs: []monitoringv1alpha1.KubernetesSDConfig{{
+					APIServer:  new("https://kube-apiserver"),
+					Role:       "Pod",
+					Namespaces: &monitoringv1alpha1.NamespaceDiscovery{Names: []string{metav1.NamespaceSystem}},
+					Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
+						Key:                  "token",
+					}},
+					TLSConfig: &monitoringv1.SafeTLSConfig{InsecureSkipVerify: new(true)},
+				}},
+				RelabelConfigs: []monitoringv1.RelabelConfig{
+					{
+						Action:      "replace",
+						Replacement: new("node-local-dns-errors"),
+						TargetLabel: "job",
+					},
+					{
+						TargetLabel: "type",
+						Replacement: new("shoot"),
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_name"},
+						Action:       "keep",
+						Regex:        "node-local.*",
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_container_name", "__meta_kubernetes_pod_container_port_name"},
+						Action:       "keep",
+						Regex:        "node-cache;errormetrics",
+					},
+					{
+						Action: "labelmap",
+						Regex:  `__meta_kubernetes_service_label_(.+)`,
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_name"},
+						TargetLabel:  "pod",
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_node_name"},
+						TargetLabel:  "node",
+					},
+					{
+						TargetLabel: "__address__",
+						Replacement: new("kube-apiserver:443"),
+					},
+					{
+						SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_name", "__meta_kubernetes_pod_container_port_number"},
+						Regex:        `(.+);(.+)`,
+						TargetLabel:  "__metrics_path__",
+						Replacement:  new("/api/v1/namespaces/kube-system/pods/${1}:${2}/proxy/metrics"),
+					},
+				},
+				MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
+					SourceLabels: []monitoringv1.LabelName{"__name__"},
+					Action:       "keep",
+					Regex:        `^(coredns_nodecache_setup_errors_total)$`,
+				}},
+			},
+		}
+	)
+
+	BeforeEach(func() {
+		expectedManifests = nil
+		ipvsAddress = "169.254.20.10"
+		c = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+		values = Values{
+			Image:       image,
+			AlpineImage: alpineImage,
+			IPFamilies:  []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4},
+			Workers: []gardencorev1beta1.Worker{
+				{
+					Name: "worker-aaaa",
+				},
+			},
+			WorkerPoolNames: []string{"worker-aaaa"},
+		}
+
+		managedResource = &resourcesv1alpha1.ManagedResource{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      managedResourceName,
+				Namespace: namespace,
+			},
+		}
+		managedResourceSecret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "managedresource-" + managedResource.Name,
+				Namespace: namespace,
+			},
+		}
+		shoot := &gardencorev1beta1.Shoot{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "core.gardener.cloud/v1beta1",
+				Kind:       "Shoot",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "foo",
+				Namespace: "bar",
+			},
+			Spec: gardencorev1beta1.ShootSpec{
+				Provider: gardencorev1beta1.Provider{
+					Workers: []gardencorev1beta1.Worker{
+						{
+							Name: "worker-aaaa",
+						},
+					},
+				},
+			},
+		}
+		cluster = &extensionsv1alpha1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: namespace,
+			},
+			Spec: extensionsv1alpha1.ClusterSpec{
+				Shoot: runtime.RawExtension{
+					Object: shoot,
+				},
+				Seed: &runtime.RawExtension{
+					Object: &gardencorev1beta1.Seed{},
+				},
+				CloudProfile: runtime.RawExtension{
+					Object: &gardencorev1beta1.CloudProfile{},
+				},
+			},
+		}
+	})
+
+	Describe("#Deploy", func() {
+		var (
+			serviceAccountYAML = `apiVersion: v1
+automountServiceAccountToken: false
+kind: ServiceAccount
+metadata:
+  name: node-local-dns
+  namespace: kube-system
+`
+			configMapYAMLFor = func() string {
+				out := `apiVersion: v1
+data:
+  Corefile: |
+    cluster.local:53 {
+        loop
+        bind ` + bindIP(values) + `
+        forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+                ` + forceTcpToClusterDNS + `
+        }
+        prometheus :` + strconv.Itoa(prometheusPort) + `
+        health ` + healthAddress(values) + `:` + strconv.Itoa(livenessProbePort) + `
+        import custom/*.override
+        errors
+        cache {
+                success 9984 30
+                denial 9984 5
+        }
+        reload
+        }
+    in-addr.arpa:53 {
+        errors
+        cache 30
+        reload
+        loop
+        bind ` + bindIP(values) + `
+        forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+                ` + forceTcpToClusterDNS + `
+        }
+        prometheus :` + strconv.Itoa(prometheusPort) + `
+        }
+    ip6.arpa:53 {
+        errors
+        cache 30
+        reload
+        loop
+        bind ` + bindIP(values) + `
+        forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+                ` + forceTcpToClusterDNS + `
+        }
+        prometheus :` + strconv.Itoa(prometheusPort) + `
+        }
+    .:53 {
+        loop
+        bind ` + bindIP(values) + `
+        forward . ` + strings.Join(upstreamDNSAddress, " ") + ` {
+                ` + forceTcpToUpstreamDNS + `
+        }
+        prometheus :` + strconv.Itoa(prometheusPort) + `
+        import custom/*.override
+        errors
+        cache 30
+        reload
+        }
+    import generated-config/custom-server-block.server
+immutable: true
+kind: ConfigMap
+metadata:
+  labels:
+    k8s-app: node-local-dns
+    resources.gardener.cloud/garbage-collectable-reference: "true"
+  name: node-local-dns-` + configMapHash + `
+  namespace: kube-system
+`
+
+				return out
+
+			}
+			serviceYAML = `apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    k8s-app: kube-dns-upstream
+  name: kube-dns-upstream
+  namespace: kube-system
+spec:
+  ports:
+  - name: dns
+    port: 53
+    protocol: UDP
+    targetPort: 8053
+  - name: dns-tcp
+    port: 53
+    protocol: TCP
+    targetPort: 8053
+  selector:
+    k8s-app: kube-dns
+status:
+  loadBalancer: {}
+`
+			maxUnavailable       = intstr.FromString("10%")
+			hostPathFileOrCreate = corev1.HostPathFileOrCreate
+			daemonSetFor         = func() *appsv1.DaemonSet {
+				daemonSet := &appsv1.DaemonSet{
+					TypeMeta: metav1.TypeMeta{
+						APIVersion: appsv1.SchemeGroupVersion.String(),
+						Kind:       "DaemonSet",
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "node-local-dns-worker-aaaa",
+						Namespace: metav1.NamespaceSystem,
+						Labels: map[string]string{
+							labelKey:                                    labelValue,
+							v1beta1constants.GardenRole:                 v1beta1constants.GardenRoleSystemComponent,
+							managedresources.LabelKeyOrigin:             managedresources.LabelValueGardener,
+							v1beta1constants.LabelNodeCriticalComponent: "true",
+						},
+					},
+					Spec: appsv1.DaemonSetSpec{
+						UpdateStrategy: appsv1.DaemonSetUpdateStrategy{
+							RollingUpdate: &appsv1.RollingUpdateDaemonSet{
+								MaxUnavailable: &maxUnavailable,
+							},
+						},
+						RevisionHistoryLimit: new(int32(2)),
+						Selector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								labelKey:     labelValue,
+								labelKeyPool: "worker-aaaa",
+							},
+						},
+						Template: corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Labels: map[string]string{
+									labelKey:                                 labelValue,
+									labelKeyPool:                             "worker-aaaa",
+									v1beta1constants.LabelNetworkPolicyToDNS: "allowed",
+									v1beta1constants.LabelNodeCriticalComponent: "true",
+								},
+								Annotations: map[string]string{
+									"prometheus.io/port":   strconv.Itoa(prometheusPort),
+									"prometheus.io/scrape": strconv.FormatBool(prometheusScrape),
+								},
+							},
+							Spec: corev1.PodSpec{
+								PriorityClassName:  "system-node-critical",
+								ServiceAccountName: "node-local-dns",
+								HostNetwork:        true,
+								DNSPolicy:          corev1.DNSDefault,
+								Tolerations: []corev1.Toleration{
+									{
+										Operator: corev1.TolerationOpExists,
+										Effect:   corev1.TaintEffectNoExecute,
+									},
+									{
+										Operator: corev1.TolerationOpExists,
+										Effect:   corev1.TaintEffectNoSchedule,
+									},
+								},
+								NodeSelector: map[string]string{
+									v1beta1constants.LabelNodeLocalDNS: "true",
+									"worker.gardener.cloud/pool":       "worker-aaaa",
+								},
+								SecurityContext: &corev1.PodSecurityContext{
+									SeccompProfile: &corev1.SeccompProfile{
+										Type: corev1.SeccompProfileTypeRuntimeDefault,
+									},
+								},
+								InitContainers: []corev1.Container{
+									{
+										Name:  "coredns-config-adapter",
+										Image: values.CorednsConfigAdapterImage,
+										Resources: corev1.ResourceRequirements{
+											Requests: corev1.ResourceList{
+												corev1.ResourceCPU:    resource.MustParse("5m"),
+												corev1.ResourceMemory: resource.MustParse("10Mi"),
+											},
+										},
+										SecurityContext: &corev1.SecurityContext{
+											AllowPrivilegeEscalation: new(false),
+											RunAsNonRoot:             new(true),
+											RunAsUser:                new(int64(65532)),
+											RunAsGroup:               new(int64(65532)),
+										},
+										Args: []string{
+											"-inputDir=/etc/custom",
+											"-outputDir=/etc/generated-config",
+											"-bind=bind " + bindIP(values),
+										},
+										VolumeMounts: []corev1.VolumeMount{
+											{
+												Name:      "custom-config-volume",
+												MountPath: "/etc/custom",
+												ReadOnly:  true,
+											},
+											{
+												MountPath: "/etc/generated-config",
+												Name:      "generated-config",
+											},
+										},
+										RestartPolicy: new(corev1.ContainerRestartPolicyAlways),
+									},
+								},
+								Containers: []corev1.Container{
+									{
+										Name:  "node-cache",
+										Image: values.Image,
+										Resources: corev1.ResourceRequirements{
+											Requests: corev1.ResourceList{
+												corev1.ResourceCPU:    resource.MustParse("25m"),
+												corev1.ResourceMemory: resource.MustParse("25Mi"),
+											},
+										},
+										SecurityContext: &corev1.SecurityContext{
+											AllowPrivilegeEscalation: new(false),
+											Capabilities: &corev1.Capabilities{
+												Add: []corev1.Capability{"NET_ADMIN"},
+											},
+										},
+										Args: []string{
+											"-localip",
+											containerArg(values),
+											"-conf",
+											"/etc/Corefile",
+											"-upstreamsvc",
+											"kube-dns-upstream",
+											"-health-port",
+											"8099",
+										},
+										Ports: []corev1.ContainerPort{
+											{
+												ContainerPort: int32(53),
+												Name:          "dns",
+												Protocol:      corev1.ProtocolUDP,
+											},
+											{
+												ContainerPort: int32(53),
+												Name:          "dns-tcp",
+												Protocol:      corev1.ProtocolTCP,
+											},
+											{
+												ContainerPort: int32(prometheusPort),
+												Name:          "metrics",
+												Protocol:      corev1.ProtocolTCP,
+											},
+											{
+												ContainerPort: int32(prometheusErrorPort),
+												Name:          "errormetrics",
+												Protocol:      corev1.ProtocolTCP,
+											},
+										},
+										LivenessProbe: &corev1.Probe{
+											ProbeHandler: corev1.ProbeHandler{
+												HTTPGet: &corev1.HTTPGetAction{
+													Host: ipvsAddress,
+													Path: "/health",
+													Port: intstr.FromInt32(int32(livenessProbePort)),
+												},
+											},
+											InitialDelaySeconds: int32(60),
+											TimeoutSeconds:      int32(5),
+										},
+										VolumeMounts: []corev1.VolumeMount{
+											{
+												MountPath: "/run/xtables.lock",
+												Name:      "xtables-lock",
+												ReadOnly:  false,
+											},
+											{
+												MountPath: "/etc/coredns",
+												Name:      "config-volume",
+											},
+											{
+												MountPath: "/etc/kube-dns",
+												Name:      "kube-dns-config",
+											},
+											{
+												Name:      "custom-config-volume",
+												MountPath: "/etc/custom",
+												ReadOnly:  true,
+											},
+											{
+												MountPath: "/etc/generated-config",
+												Name:      "generated-config",
+											},
+										},
+									},
+								},
+								Volumes: []corev1.Volume{
+									{
+										Name: "xtables-lock",
+										VolumeSource: corev1.VolumeSource{
+											HostPath: &corev1.HostPathVolumeSource{
+												Path: "/run/xtables.lock",
+												Type: &hostPathFileOrCreate,
+											},
+										},
+									},
+									{
+										Name: "kube-dns-config",
+										VolumeSource: corev1.VolumeSource{
+											ConfigMap: &corev1.ConfigMapVolumeSource{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "kube-dns",
+												},
+												Optional: new(true),
+											},
+										},
+									},
+									{
+										Name: "config-volume",
+										VolumeSource: corev1.VolumeSource{
+											ConfigMap: &corev1.ConfigMapVolumeSource{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "node-local-dns-" + configMapHash,
+												},
+												Items: []corev1.KeyToPath{
+													{
+														Key:  "Corefile",
+														Path: "Corefile.base",
+													},
+												},
+											},
+										},
+									},
+									{
+										Name: "custom-config-volume",
+										VolumeSource: corev1.VolumeSource{
+											ConfigMap: &corev1.ConfigMapVolumeSource{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: coredns.CustomConfigMapName,
+												},
+												DefaultMode: new(int32(420)),
+												Optional:    new(true),
+											},
+										},
+									},
+									{
+										Name: "generated-config",
+										VolumeSource: corev1.VolumeSource{
+											EmptyDir: &corev1.EmptyDirVolumeSource{},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+				return daemonSet
+			}
+			vpaYAML = `apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: node-local-dns-worker-aaaa
+  namespace: kube-system
+spec:
+  resourcePolicy:
+    containerPolicies:
+    - containerName: node-cache
+      controlledValues: RequestsOnly
+    - containerName: '*'
+      mode: "Off"
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: node-local-dns-worker-aaaa
+  updatePolicy:
+    updateMode: InPlaceOrRecreate
+status: {}
+`
+		)
+
+		JustBeforeEach(func() {
+			component = New(c, namespace, values)
+			Expect(c.Create(ctx, cluster)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(BeNotFoundError())
+
+			Expect(component.Deploy(ctx)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+			expectedMr := &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            managedResource.Name,
+					Namespace:       managedResource.Namespace,
+					ResourceVersion: "1",
+					Labels:          map[string]string{"origin": "gardener"},
+				},
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					InjectLabels: map[string]string{"shoot.gardener.cloud/no-cleanup": "true"},
+					SecretRefs: []corev1.LocalObjectReference{{
+						Name: managedResource.Spec.SecretRefs[0].Name,
+					}},
+					KeepObjects: new(false),
+				},
+			}
+			utilruntime.Must(references.InjectAnnotations(expectedMr))
+			Expect(managedResource).To(DeepEqual(expectedMr))
+
+			managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+			Expect(managedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
+			Expect(managedResourceSecret.Immutable).To(Equal(new(true)))
+			Expect(managedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+
+			actualScrapeConfig := &monitoringv1alpha1.ScrapeConfig{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(scrapeConfig), actualScrapeConfig)).To(Succeed())
+			Expect(actualScrapeConfig).To(DeepEqual(scrapeConfig))
+
+			actualScrapeConfigErrors := &monitoringv1alpha1.ScrapeConfig{}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(scrapeConfigErrors), actualScrapeConfigErrors)).To(Succeed())
+			Expect(actualScrapeConfigErrors).To(DeepEqual(scrapeConfigErrors))
+
+			var err error
+			manifests, err = test.ExtractManifestsFromManagedResourceData(managedResourceSecret.Data)
+			Expect(err).NotTo(HaveOccurred())
+
+			expectedManifests = append(expectedManifests, serviceAccountYAML, serviceYAML)
+
+			DeferCleanup(func() {
+				expectedManifests = nil
+			})
+		})
+
+		Context("NodeLocalDNS with ipvsEnabled=false", func() {
+			BeforeEach(func() {
+				values.ClusterDNS = []string{"__PILLAR__CLUSTER__DNS__"}
+				values.DNSServers = []string{"1.2.3.4", "2001:db8::1"}
+				upstreamDNSAddress = []string{"__PILLAR__UPSTREAM__SERVERS__"}
+				vpaYAML = `apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: node-local-dns-worker-aaaa
+  namespace: kube-system
+spec:
+  resourcePolicy:
+    containerPolicies:
+    - containerName: node-cache
+      controlledValues: RequestsOnly
+    - containerName: '*'
+      mode: "Off"
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: node-local-dns-worker-aaaa
+  updatePolicy:
+    updateMode: InPlaceOrRecreate
+status: {}
+`
+			})
+
+			Context("ConfigMap", func() {
+				DescribeTable("should successfully deploy all resources with different TCP settings",
+					func(forceTcpCluster, forceTcpUpstream bool, vpaEnabled bool, expectedForceTcpCluster, expectedForceTcpUpstream string) {
+						values.Config = &gardencorev1beta1.NodeLocalDNS{
+							Enabled:                     true,
+							ForceTCPToClusterDNS:        new(forceTcpCluster),
+							ForceTCPToUpstreamDNS:       new(forceTcpUpstream),
+							DisableForwardToUpstreamDNS: new(false),
+						}
+						values.VPAEnabled = vpaEnabled
+						forceTcpToClusterDNS = expectedForceTcpCluster
+						forceTcpToUpstreamDNS = expectedForceTcpUpstream
+
+						configMapData := map[string]string{
+							"Corefile": `cluster.local:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    health ` + healthAddress(values) + `:` + strconv.Itoa(livenessProbePort) + `
+    import custom/*.override
+    errors
+    cache {
+            success 9984 30
+            denial 9984 5
+    }
+    reload
+    }
+in-addr.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+ip6.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+.:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(upstreamDNSAddress, " ") + ` {
+            ` + forceTcpToUpstreamDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    import custom/*.override
+    errors
+    cache 30
+    reload
+    }
+import generated-config/custom-server-block.server
+`,
+						}
+						configMapHash = utils.ComputeConfigMapChecksum(configMapData)[:8]
+
+						component = New(c, namespace, values)
+						Expect(component.Deploy(ctx)).To(Succeed())
+
+						Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+						managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+						Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+
+						var err error
+						manifests, err = test.ExtractManifestsFromManagedResourceData(managedResourceSecret.Data)
+						Expect(err).NotTo(HaveOccurred())
+
+						expectedManifests = append(expectedManifests, configMapYAMLFor())
+						if vpaEnabled {
+							expectedManifests = append(expectedManifests, vpaYAML)
+						}
+						Expect(manifests).To(ContainElements(expectedManifests))
+
+						managedResourceDaemonset, err := extractDaemonSet(manifests, kubernetes.ShootCodec.UniversalDeserializer())
+						Expect(err).ToNot(HaveOccurred())
+						daemonset := daemonSetFor()
+						utilruntime.Must(references.InjectAnnotations(daemonset))
+						Expect(daemonset).To(DeepEqual(managedResourceDaemonset))
+					},
+					Entry("ForceTcpToClusterDNS=true, ForceTcpToUpstreamDNS=true, w/o VPA", true, true, false, "force_tcp", "force_tcp"),
+					Entry("ForceTcpToClusterDNS=true, ForceTcpToUpstreamDNS=true, w/ VPA", true, true, true, "force_tcp", "force_tcp"),
+					Entry("ForceTcpToClusterDNS=true, ForceTcpToUpstreamDNS=false, w/o VPA", true, false, false, "force_tcp", "prefer_udp"),
+					Entry("ForceTcpToClusterDNS=true, ForceTcpToUpstreamDNS=false, w/ VPA", true, false, true, "force_tcp", "prefer_udp"),
+					Entry("ForceTcpToClusterDNS=false, ForceTcpToUpstreamDNS=true, w/o VPA", false, true, false, "prefer_udp", "force_tcp"),
+					Entry("ForceTcpToClusterDNS=false, ForceTcpToUpstreamDNS=true, w/ VPA", false, true, true, "prefer_udp", "force_tcp"),
+					Entry("ForceTcpToClusterDNS=false, ForceTcpToUpstreamDNS=false, w/o VPA", false, false, false, "prefer_udp", "prefer_udp"),
+					Entry("ForceTcpToClusterDNS=false, ForceTcpToUpstreamDNS=false, w/ VPA", false, false, true, "prefer_udp", "prefer_udp"),
+				)
+
+				It("should successfully deploy all resources when DisableForwardToUpstreamDNS is true", func() {
+					values.Config = &gardencorev1beta1.NodeLocalDNS{
+						Enabled:                     true,
+						ForceTCPToClusterDNS:        new(true),
+						ForceTCPToUpstreamDNS:       new(true),
+						DisableForwardToUpstreamDNS: new(true),
+					}
+					values.VPAEnabled = true
+					upstreamDNSAddress = values.ClusterDNS
+					forceTcpToClusterDNS = "force_tcp"
+					forceTcpToUpstreamDNS = "force_tcp"
+
+					configMapData := map[string]string{
+						"Corefile": `cluster.local:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    health ` + healthAddress(values) + `:` + strconv.Itoa(livenessProbePort) + `
+    import custom/*.override
+    errors
+    cache {
+            success 9984 30
+            denial 9984 5
+    }
+    reload
+    }
+in-addr.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+ip6.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+.:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(upstreamDNSAddress, " ") + ` {
+            ` + forceTcpToUpstreamDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    import custom/*.override
+    errors
+    cache 30
+    reload
+    }
+import generated-config/custom-server-block.server
+`,
+					}
+					configMapHash = utils.ComputeConfigMapChecksum(configMapData)[:8]
+
+					component = New(c, namespace, values)
+					Expect(component.Deploy(ctx)).To(Succeed())
+
+					Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+					managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+					Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+
+					var err error
+					manifests, err = test.ExtractManifestsFromManagedResourceData(managedResourceSecret.Data)
+					Expect(err).NotTo(HaveOccurred())
+
+					expectedManifests = append(expectedManifests, configMapYAMLFor())
+					Expect(manifests).To(ContainElements(expectedManifests))
+
+					managedResourceDaemonset, err := extractDaemonSet(manifests, kubernetes.ShootCodec.UniversalDeserializer())
+					Expect(err).ToNot(HaveOccurred())
+					daemonset := daemonSetFor()
+					utilruntime.Must(references.InjectAnnotations(daemonset))
+					Expect(daemonset).To(DeepEqual(managedResourceDaemonset))
+				})
+			})
+
+			Context("With IPv6", func() {
+				BeforeEach(func() {
+					values.IPFamilies = []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6}
+					ipvsAddress = "fd30:1319:f1e:230b::1"
+				})
+
+				DescribeTable("should successfully deploy all resources with different VPA settings",
+					func(vpaEnabled bool) {
+						values.Config = &gardencorev1beta1.NodeLocalDNS{
+							Enabled:                     true,
+							ForceTCPToClusterDNS:        new(false),
+							ForceTCPToUpstreamDNS:       new(false),
+							DisableForwardToUpstreamDNS: new(false),
+						}
+						values.VPAEnabled = vpaEnabled
+						forceTcpToClusterDNS = "prefer_udp"
+						forceTcpToUpstreamDNS = "prefer_udp"
+
+						configMapData := map[string]string{
+							"Corefile": `cluster.local:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    health ` + healthAddress(values) + `:` + strconv.Itoa(livenessProbePort) + `
+    import custom/*.override
+    errors
+    cache {
+            success 9984 30
+            denial 9984 5
+    }
+    reload
+    }
+in-addr.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+ip6.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+.:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(upstreamDNSAddress, " ") + ` {
+            ` + forceTcpToUpstreamDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    import custom/*.override
+    errors
+    cache 30
+    reload
+    }
+import generated-config/custom-server-block.server
+`,
+						}
+						configMapHash = utils.ComputeConfigMapChecksum(configMapData)[:8]
+
+						component = New(c, namespace, values)
+						Expect(component.Deploy(ctx)).To(Succeed())
+
+						Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+						managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+						Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+
+						var err error
+						manifests, err = test.ExtractManifestsFromManagedResourceData(managedResourceSecret.Data)
+						Expect(err).NotTo(HaveOccurred())
+
+						expectedManifests = nil
+						expectedManifests = append(expectedManifests, configMapYAMLFor())
+						if vpaEnabled {
+							expectedManifests = append(expectedManifests, vpaYAML)
+						}
+						Expect(manifests).To(ContainElements(expectedManifests))
+
+						managedResourceDaemonset, err := extractDaemonSet(manifests, kubernetes.ShootCodec.UniversalDeserializer())
+						Expect(err).ToNot(HaveOccurred())
+						daemonset := daemonSetFor()
+						utilruntime.Must(references.InjectAnnotations(daemonset))
+						Expect(daemonset).To(DeepEqual(managedResourceDaemonset))
+					},
+					Entry("w/o VPA", false),
+					Entry("w/ VPA", true),
+				)
+			})
+		})
+
+		Context("NodeLocalDNS with ipvsEnabled=true", func() {
+			BeforeEach(func() {
+				values.ClusterDNS = []string{"1.2.3.4", "2001:db8::1"}
+				values.DNSServers = nil
+				upstreamDNSAddress = []string{"__PILLAR__UPSTREAM__SERVERS__"}
+				vpaYAML = `apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: node-local-dns-worker-aaaa
+  namespace: kube-system
+spec:
+  resourcePolicy:
+    containerPolicies:
+    - containerName: node-cache
+      controlledValues: RequestsOnly
+    - containerName: '*'
+      mode: "Off"
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: node-local-dns-worker-aaaa
+  updatePolicy:
+    updateMode: InPlaceOrRecreate
+status: {}
+`
+			})
+
+			Context("ConfigMap", func() {
+				DescribeTable("should successfully deploy all resources with different TCP settings",
+					func(forceTcpCluster, forceTcpUpstream bool, vpaEnabled bool, expectedForceTcpCluster, expectedForceTcpUpstream string) {
+						values.Config = &gardencorev1beta1.NodeLocalDNS{
+							Enabled:                     true,
+							ForceTCPToClusterDNS:        new(forceTcpCluster),
+							ForceTCPToUpstreamDNS:       new(forceTcpUpstream),
+							DisableForwardToUpstreamDNS: new(false),
+						}
+						values.VPAEnabled = vpaEnabled
+						forceTcpToClusterDNS = expectedForceTcpCluster
+						forceTcpToUpstreamDNS = expectedForceTcpUpstream
+
+						configMapData := map[string]string{
+							"Corefile": `cluster.local:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    health ` + healthAddress(values) + `:` + strconv.Itoa(livenessProbePort) + `
+    import custom/*.override
+    errors
+    cache {
+            success 9984 30
+            denial 9984 5
+    }
+    reload
+    }
+in-addr.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+ip6.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+.:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(upstreamDNSAddress, " ") + ` {
+            ` + forceTcpToUpstreamDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    import custom/*.override
+    errors
+    cache 30
+    reload
+    }
+import generated-config/custom-server-block.server
+`,
+						}
+						configMapHash = utils.ComputeConfigMapChecksum(configMapData)[:8]
+
+						component = New(c, namespace, values)
+						Expect(component.Deploy(ctx)).To(Succeed())
+
+						Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+						managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+						Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+
+						var err error
+						manifests, err = test.ExtractManifestsFromManagedResourceData(managedResourceSecret.Data)
+						Expect(err).NotTo(HaveOccurred())
+
+						expectedManifests = append(expectedManifests, configMapYAMLFor())
+						if vpaEnabled {
+							expectedManifests = append(expectedManifests, vpaYAML)
+						}
+						Expect(manifests).To(ContainElements(expectedManifests))
+
+						managedResourceDaemonset, err := extractDaemonSet(manifests, kubernetes.ShootCodec.UniversalDeserializer())
+						Expect(err).ToNot(HaveOccurred())
+						daemonset := daemonSetFor()
+						utilruntime.Must(references.InjectAnnotations(daemonset))
+						Expect(daemonset).To(DeepEqual(managedResourceDaemonset))
+					},
+					Entry("ForceTcpToClusterDNS=true, ForceTcpToUpstreamDNS=true, w/o VPA", true, true, false, "force_tcp", "force_tcp"),
+					Entry("ForceTcpToClusterDNS=true, ForceTcpToUpstreamDNS=true, w/ VPA", true, true, true, "force_tcp", "force_tcp"),
+					Entry("ForceTcpToClusterDNS=true, ForceTcpToUpstreamDNS=false, w/o VPA", true, false, false, "force_tcp", "prefer_udp"),
+					Entry("ForceTcpToClusterDNS=true, ForceTcpToUpstreamDNS=false, w/ VPA", true, false, true, "force_tcp", "prefer_udp"),
+					Entry("ForceTcpToClusterDNS=false, ForceTcpToUpstreamDNS=true, w/o VPA", false, true, false, "prefer_udp", "force_tcp"),
+					Entry("ForceTcpToClusterDNS=false, ForceTcpToUpstreamDNS=true, w/ VPA", false, true, true, "prefer_udp", "force_tcp"),
+					Entry("ForceTcpToClusterDNS=false, ForceTcpToUpstreamDNS=false, w/o VPA", false, false, false, "prefer_udp", "prefer_udp"),
+					Entry("ForceTcpToClusterDNS=false, ForceTcpToUpstreamDNS=false, w/ VPA", false, false, true, "prefer_udp", "prefer_udp"),
+				)
+
+				Context("With IPv6", func() {
+					BeforeEach(func() {
+						values.IPFamilies = []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6}
+						ipvsAddress = "fd30:1319:f1e:230b::1"
+					})
+
+					DescribeTable("should successfully deploy all resources with different VPA settings",
+						func(vpaEnabled bool) {
+							values.Config = &gardencorev1beta1.NodeLocalDNS{
+								Enabled:                     true,
+								ForceTCPToClusterDNS:        new(false),
+								ForceTCPToUpstreamDNS:       new(false),
+								DisableForwardToUpstreamDNS: new(false),
+							}
+							values.VPAEnabled = vpaEnabled
+							forceTcpToClusterDNS = "prefer_udp"
+							forceTcpToUpstreamDNS = "prefer_udp"
+
+							configMapData := map[string]string{
+								"Corefile": `cluster.local:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    health ` + healthAddress(values) + `:` + strconv.Itoa(livenessProbePort) + `
+    import custom/*.override
+    errors
+    cache {
+            success 9984 30
+            denial 9984 5
+    }
+    reload
+    }
+in-addr.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+ip6.arpa:53 {
+    errors
+    cache 30
+    reload
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(values.ClusterDNS, " ") + ` {
+            ` + forceTcpToClusterDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    }
+.:53 {
+    loop
+    bind ` + bindIP(values) + `
+    forward . ` + strings.Join(upstreamDNSAddress, " ") + ` {
+            ` + forceTcpToUpstreamDNS + `
+    }
+    prometheus :` + strconv.Itoa(prometheusPort) + `
+    import custom/*.override
+    errors
+    cache 30
+    reload
+    }
+import generated-config/custom-server-block.server
+`,
+							}
+							configMapHash = utils.ComputeConfigMapChecksum(configMapData)[:8]
+
+							component = New(c, namespace, values)
+							Expect(component.Deploy(ctx)).To(Succeed())
+
+							Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
+							managedResourceSecret.Name = managedResource.Spec.SecretRefs[0].Name
+							Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(Succeed())
+
+							var err error
+							manifests, err = test.ExtractManifestsFromManagedResourceData(managedResourceSecret.Data)
+							Expect(err).NotTo(HaveOccurred())
+
+							expectedManifests = nil
+							expectedManifests = append(expectedManifests, configMapYAMLFor())
+							if vpaEnabled {
+								expectedManifests = append(expectedManifests, vpaYAML)
+							}
+							Expect(manifests).To(ContainElements(expectedManifests))
+
+							managedResourceDaemonset, err := extractDaemonSet(manifests, kubernetes.ShootCodec.UniversalDeserializer())
+							Expect(err).ToNot(HaveOccurred())
+							daemonset := daemonSetFor()
+							utilruntime.Must(references.InjectAnnotations(daemonset))
+							Expect(daemonset).To(DeepEqual(managedResourceDaemonset))
+						},
+						Entry("w/o VPA", false),
+						Entry("w/ VPA", true),
+					)
+				})
+			})
+
+		})
+	})
+
+	Describe("#Destroy", func() {
+		It("should successfully destroy all resources", func() {
+			values.ShootClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.ShootScheme).Build()
+			scrapeConfig.ResourceVersion = ""
+			scrapeConfigErrors.ResourceVersion = ""
+			component = New(c, namespace, values)
+			Expect(c.Create(ctx, managedResource)).To(Succeed())
+			Expect(c.Create(ctx, managedResourceSecret)).To(Succeed())
+			Expect(c.Create(ctx, scrapeConfig)).To(Succeed())
+			Expect(c.Create(ctx, scrapeConfigErrors)).To(Succeed())
+			Expect(c.Create(ctx, cluster)).To(Succeed())
+
+			Expect(component.Destroy(ctx)).To(Succeed())
+
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(scrapeConfig), scrapeConfig)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(scrapeConfigErrors), scrapeConfigErrors)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(BeNotFoundError())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), managedResourceSecret)).To(BeNotFoundError())
+		})
+	})
+
+	Context("waiting functions", func() {
+		var (
+			fakeOps   *retryfake.Ops
+			resetVars func()
+		)
+
+		BeforeEach(func() {
+			component = New(c, namespace, values)
+
+			fakeOps = &retryfake.Ops{MaxAttempts: 1}
+			resetVars = test.WithVars(
+				&retry.Until, fakeOps.Until,
+				&retry.UntilTimeout, fakeOps.UntilTimeout,
+			)
+		})
+
+		AfterEach(func() {
+			resetVars()
+		})
+
+		Describe("#Wait", func() {
+			It("should fail because reading the ManagedResource fails", func() {
+				Expect(component.Wait(ctx)).To(MatchError(ContainSubstring("not found")))
+			})
+
+			It("should fail because the ManagedResource doesn't become healthy", func() {
+				fakeOps.MaxAttempts = 2
+
+				Expect(c.Create(ctx, &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       managedResourceName,
+						Namespace:  namespace,
+						Generation: 1,
+					},
+					Status: resourcesv1alpha1.ManagedResourceStatus{
+						ObservedGeneration: 1,
+						Conditions: []gardencorev1beta1.Condition{
+							{
+								Type:   resourcesv1alpha1.ResourcesApplied,
+								Status: gardencorev1beta1.ConditionFalse,
+							},
+							{
+								Type:   resourcesv1alpha1.ResourcesHealthy,
+								Status: gardencorev1beta1.ConditionFalse,
+							},
+						},
+					},
+				})).To(Succeed())
+
+				Expect(component.Wait(ctx)).To(MatchError(ContainSubstring("is not healthy")))
+			})
+
+			It("should successfully wait for the managed resource to become healthy", func() {
+				fakeOps.MaxAttempts = 2
+
+				Expect(c.Create(ctx, &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       managedResourceName,
+						Namespace:  namespace,
+						Generation: 1,
+					},
+					Status: resourcesv1alpha1.ManagedResourceStatus{
+						ObservedGeneration: 1,
+						Conditions: []gardencorev1beta1.Condition{
+							{
+								Type:   resourcesv1alpha1.ResourcesApplied,
+								Status: gardencorev1beta1.ConditionTrue,
+							},
+							{
+								Type:   resourcesv1alpha1.ResourcesHealthy,
+								Status: gardencorev1beta1.ConditionTrue,
+							},
+						},
+					},
+				})).To(Succeed())
+
+				Expect(component.Wait(ctx)).To(Succeed())
+			})
+		})
+
+		Describe("#WaitCleanup", func() {
+			It("should fail when the wait for the managed resource deletion times out", func() {
+				fakeOps.MaxAttempts = 2
+
+				Expect(c.Create(ctx, managedResource)).To(Succeed())
+
+				Expect(component.WaitCleanup(ctx)).To(MatchError(ContainSubstring("still exists")))
+			})
+
+			It("should not return an error when it's already removed", func() {
+				Expect(component.WaitCleanup(ctx)).To(Succeed())
+			})
+		})
+	})
+})
+
+func healthAddress(values Values) string {
+	if values.IPFamilies[0] == gardencorev1beta1.IPFamilyIPv4 {
+		return "169.254.20.10"
+	}
+	return "[fd30:1319:f1e:230b::1]"
+}
+
+func selectIPAddress(addresses []string, preferIPv6 bool) string {
+	if len(addresses) == 1 {
+		return addresses[0]
+	}
+	var ipv4, ipv6 string
+	for _, addr := range addresses {
+		ip := net.ParseIP(addr)
+		if ip.To4() != nil {
+			ipv4 = addr
+		} else {
+			ipv6 = addr
+		}
+	}
+	if preferIPv6 {
+		return ipv6
+	}
+	return ipv4
+}
+
+func bindIP(values Values) string {
+	if values.IPFamilies[0] == gardencorev1beta1.IPFamilyIPv4 {
+		if len(values.DNSServers) > 0 {
+			dnsAddress := selectIPAddress(values.DNSServers, false)
+			return "169.254.20.10" + " " + dnsAddress
+		}
+		return "169.254.20.10"
+	} else {
+		if len(values.DNSServers) > 0 {
+			dnsAddress := selectIPAddress(values.DNSServers, true)
+			return "fd30:1319:f1e:230b::1" + " " + dnsAddress
+		}
+		return "fd30:1319:f1e:230b::1"
+	}
+}
+
+func containerArg(values Values) string {
+	if values.IPFamilies[0] == gardencorev1beta1.IPFamilyIPv4 {
+		if len(values.DNSServers) > 0 {
+			dnsAddress := selectIPAddress(values.DNSServers, false)
+			return "169.254.20.10" + "," + dnsAddress
+		} else {
+			return "169.254.20.10"
+		}
+	} else {
+		if len(values.DNSServers) > 0 {
+			dnsAddress := selectIPAddress(values.DNSServers, true)
+			return "fd30:1319:f1e:230b::1" + "," + dnsAddress
+		} else {
+			return "fd30:1319:f1e:230b::1"
+		}
+	}
+}
+
+func extractDaemonSet(manifests []string, decoder runtime.Decoder) (*appsv1.DaemonSet, error) {
+	ds := &appsv1.DaemonSet{}
+	for _, manifest := range manifests {
+		if strings.Contains(manifest, "kind: DaemonSet") {
+			_, _, err := decoder.Decode([]byte(manifest), nil, ds)
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+	}
+	return ds, nil
+}

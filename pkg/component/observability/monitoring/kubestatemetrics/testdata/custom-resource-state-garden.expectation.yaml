@@ -1,0 +1,89 @@
+spec:
+  resources:
+    - metricNamePrefix: garden
+      groupVersionKind:
+        group: operator.gardener.cloud
+        version: v1alpha1
+        kind: Garden
+      commonLabels: {}
+      labelsFromPath:
+        name:
+          - metadata
+          - name
+      metrics:
+        - name: garden_condition
+          help: represents a condition of a Garden object
+          each:
+            type: stateset
+            gauge: null
+            stateSet:
+              labelsFromPath:
+                condition:
+                  - type
+              path:
+                - status
+                - conditions
+              list:
+                - Progressing
+                - "True"
+                - "False"
+                - Unknown
+              labelName: status
+              valueFrom:
+                - status
+            info: null
+          commonLabels: {}
+          labelsFromPath: {}
+          errorLogV: 0
+        - name: garden_last_operation
+          help: state of the last operation performed on a Garden object
+          each:
+            type: stateset
+            gauge: null
+            stateSet:
+              labelsFromPath:
+                type:
+                  - type
+              path:
+                - status
+                - lastOperation
+              list:
+                - Processing
+                - Succeeded
+                - Error
+                - Failed
+                - Pending
+                - Aborted
+              labelName: state
+              valueFrom:
+                - state
+            info: null
+          commonLabels: {}
+          labelsFromPath: {}
+          errorLogV: 0
+        - name: garden_constraint
+          help: represents a constraint on a Garden object
+          each:
+            type: stateset
+            gauge: null
+            stateSet:
+              labelsFromPath:
+                constraint:
+                  - type
+              path:
+                - status
+                - constraints
+              list:
+                - Progressing
+                - "True"
+                - "False"
+                - Unknown
+              labelName: status
+              valueFrom:
+                - status
+            info: null
+          commonLabels: {}
+          labelsFromPath: {}
+          errorLogV: 0
+      errorLogV: 0
+      resourcePlural: ""

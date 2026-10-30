@@ -1,0 +1,50 @@
+apiVersion: testmachinery.sapcloud.io
+kind: TestDefinition
+metadata:
+  name: create-shoot
+spec:
+  owner: gardener-oq@listserv.sap.com
+  description: Tests the creation of a shoot.
+
+  activeDeadlineSeconds: 7200
+
+  command: [bash, -c]
+  args:
+  - >-
+    go test -timeout=0 ./test/testmachinery/system/shoot_creation
+    --v -ginkgo.v -ginkgo.show-node-events -ginkgo.no-color
+    -verbose=debug
+    -kubecfg=$TM_KUBECONFIG_PATH/gardener.config
+    -shoot-kubecfg-path=$TM_KUBECONFIG_PATH/shoot.config
+    -shoot-name=$SHOOT_NAME
+    -cloud-profile-name=$CLOUDPROFILE
+    -seed=$SEED
+    -secret-binding=$SECRET_BINDING
+    -credentials-binding=$CREDENTIALS_BINDING
+    -provider-type=$PROVIDER_TYPE
+    -k8s-version=$K8S_VERSION
+    -region=$REGION
+    -project-namespace=$PROJECT_NAMESPACE
+    -infrastructure-provider-config-filepath=$INFRASTRUCTURE_PROVIDER_CONFIG_FILEPATH
+    -controlplane-provider-config-filepath=$CONTROLPLANE_PROVIDER_CONFIG_FILEPATH
+    -networking-provider-config-filepath=$NETWORKING_PROVIDER_CONFIG_FILEPATH
+    -workers-config-filepath=$WORKERS_CONFIG_FILEPATH
+    -worker-zone=$ZONE
+    -ip-families=$IP_FAMILIES
+    -networking-type=$NETWORKING_TYPE
+    -networking-pods=$NETWORKING_PODS
+    -networking-services=$NETWORKING_SERVICES
+    -networking-nodes=$NETWORKING_NODES
+    -start-hibernated=$START_HIBERNATED
+    -annotations=$SHOOT_ANNOTATIONS
+    -control-plane-failure-tolerance=$CONTROL_PLANE_FAILURE_TOLERANCE
+    -kube-apiserver-min-allowed-cpu=$KUBE_APISERVER_MIN_ALLOWED_CPU
+    -kube-apiserver-min-allowed-memory=$KUBE_APISERVER_MIN_ALLOWED_MEMORY
+    -etcd-min-allowed-cpu=$ETCD_MIN_ALLOWED_CPU
+    -etcd-min-allowed-memory=$ETCD_MIN_ALLOWED_MEMORY
+    -machine-image-name=$MACHINE_IMAGE
+    -machine-image-version=$MACHINE_IMAGE_VERSION
+#    -machine-type=$MACHINE_TYPE
+#    -external-domain=
+
+  image: golang:1.26.10

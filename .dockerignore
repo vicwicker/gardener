@@ -1,0 +1,23 @@
+# Ignore everything
+**
+
+# Exclude folders relevant for build
+!.git
+!.dockerignore
+!charts/
+!cmd/
+!extensions/
+!hack/
+!imagevector/
+!pkg/
+!plugin/
+!test/
+!third_party/
+!vendor/
+!.golangci.yaml.in
+!go.mod
+!go.sum
+!go.work
+!go.work.sum
+!Makefile
+!VERSION

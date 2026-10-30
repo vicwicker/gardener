@@ -1,0 +1,242 @@
+replicaCount: 2
+revisionHistoryLimit: 2
+isolateClusterResources: false
+serviceAccountName: gardenlet
+invalidateServiceAccountToken: true
+enableHealthProbes: true
+image:
+# ref: europe-docker.pkg.dev/gardener-project/releases/gardener/gardenlet:latest
+  repository: europe-docker.pkg.dev/gardener-project/releases/gardener/gardenlet
+  tag: latest
+  pullPolicy: IfNotPresent
+resources:
+  requests:
+    cpu: 100m
+    memory: 100Mi
+# podAnnotations: # YAML formatted annotations used for pod template
+# podLabels: # YAML formatted labels used for pod template
+additionalVolumes: []
+additionalVolumeMounts: []
+env: []
+# imageVectorOverwrite: |
+#  Please find documentation in /docs/deployment/image_vector.md#overwriting-image-vector
+# componentImageVectorOverwrites: |
+#  Please find documentation in /docs/deployment/image_vector.md#image-vectors-for-dependent-components
+# chartsImageVectorOverwrite: |
+#  Please find documentation in /docs/deployment/image_vector.md#helm-chart-image-vector
+config:
+  gardenClientConnection:
+  # acceptContentTypes: application/json
+  # contentType: application/json
+    qps: 100
+    burst: 130
+  # gardenClusterAddress: https://some-external-ip-address-to-garden-cluster
+  # bootstrapKubeconfig: # bootstrapKubeconfig contains the kubeconfig that is used to initiate the bootstrap process, i.e.,
+                         # that is used to request a client certificate for the garden cluster.
+                         # If the kubeconfig is provided inline, the name and namespace fields
+                         # are a reference to a secret that will store this bootstrap kubeconfig. If `kubeconfig` is given
+                         # then only this kubeconfig will be considered.
+                         # If you already have a bootstrap kubeconfig you can reference it with
+                         # secretRef.name and secretRef.namespace.
+  #   name: gardenlet-kubeconfig-bootstrap
+  #   namespace: garden
+  #   secretRef:
+  #     name: secretName
+  #     namespace: secretNamespace
+  #   kubeconfig: |
+  #     some-kubeconfig-for-bootstrapping
+  # kubeconfigSecret: # kubeconfigSecret is the reference to a secret object that stores the gardenlet's kubeconfig that
+                      # is used to communicate with the garden cluster. This kubeconfig is derived out of the bootstrap
+                      # process. If `kubeconfig` is given then only this kubeconfig will be considered.
+  #   name: gardenlet-kubeconfig
+  #   namespace: garden
+  # kubeconfigValidity:
+  #   validity: 24h
+  #   autoRotationJitterPercentageMin: 70
+  #   autoRotationJitterPercentageMax: 90
+  # kubeconfig: |
+  #   Specify a kubeconfig here if you don't want the Gardenlet to use TLS bootstrapping (if you provide
+  #   `bootstrapKubeconfig` and `kubeconfigSecret` then it will try to create a CertificateSigningRequest
+  #   and to procure a client certificate.
+  seedClientConnection:
+  # acceptContentTypes: application/json
+  # contentType: application/json
+    qps: 100
+    burst: 130
+  # kubeconfig: |
+  #   Specify a kubeconfig for the seed cluster here if you don't want to use the Gardenlet's service account.
+  shootClientConnection:
+  # acceptContentTypes: application/json
+  # contentType: application/json
+    qps: 25
+    burst: 50
+  controllers:
+    backupBucket:
+      concurrentSyncs: 20
+      syncJitterPeriod: 5m
+      jitterUpdates: false
+    backupEntry:
+      concurrentSyncs: 20
+    # deletionGracePeriodHours: 24
+    # deletionGracePeriodShootPurposes:
+    # - production
+      syncJitterPeriod: 5m
+      jitterUpdates: false
+    bastion:
+      concurrentSyncs: 20
+    gardenlet:
+      syncPeriod: 1h
+    seed:
+      syncPeriod: 1h
+    # leaseResyncSeconds: 2
+    # leaseResyncMissThreshold: 10
+    seedCare:
+      syncPeriod: 30s
+      conditionThresholds:
+      - type: SeedSystemComponentsHealthy
+        duration: 1m
+    shoot:
+      concurrentSyncs: 20
+      syncPeriod: 1h
+      retryDuration: 12h
+      respectSyncPeriodOverwrite: false
+      reconcileInMaintenanceOnly: false
+    # progressReportPeriod: 5s
+    # dnsEntryTTLSeconds: 120
+    shootCare:
+      concurrentSyncs: 5
+      syncPeriod: 30s
+      staleExtensionHealthChecks:
+        enabled: true
+        threshold: 5m
+      managedResourceProgressingThreshold: 1h
+      conditionThresholds:
+      - type: APIServerAvailable
+        duration: 1m
+      - type: ControlPlaneHealthy
+        duration: 1m
+      - type: ObservabilityComponentsHealthy
+        duration: 1m
+      - type: SystemComponentsHealthy
+        duration: 1m
+      - type: EveryNodeReady
+        duration: 5m
+      webhookRemediatorEnabled: false
+    shootState:
+      concurrentSyncs: 5
+      syncPeriod: 6h
+    shootStatus:
+      concurrentSyncs: 5
+    managedSeed:
+      concurrentSyncs: 5
+      syncPeriod: 1h
+      waitSyncPeriod: 15s
+      syncJitterPeriod: 5m
+      jitterUpdates: false
+    networkPolicy:
+      concurrentSyncs: 5
+    # additionalNamespaceSelectors:
+    # - matchLabels:
+    #     foo: bar
+    tokenRequestor:
+      concurrentSyncs: 5
+    tokenRequestorWorkloadIdentity:
+      concurrentSyncs: 5
+    # tokenExpirationDuration: 6h  
+    vpaEvictionRequirements:
+      concurrentSyncs: 5
+  resources:
+    capacity:
+      shoots: 250
+  leaderElection:
+    leaderElect: true
+    leaseDuration: 15s
+    renewDeadline: 10s
+    retryPeriod: 2s
+    resourceLock: leases
+    resourceName: gardenlet-leader-election
+    resourceNamespace: garden
+  logLevel: info
+  logFormat: json
+  server:
+    healthProbes:
+      # health probes should be disabled for debugging purposes only
+      enable: true
+      port: 2728
+    metrics:
+      port: 2729
+  debugging:
+    enableProfiling: false
+    enableContentionProfiling: false
+  featureGates: {}
+  seedConfig: {}
+  # sni:
+  #   ingress:
+  #     serviceName: istio-ingress
+  #     namespace: istio-ingress
+  #     labels:
+  #       istio: ingressgateway
+  # exposureClassHandlers:
+  # - name: handler-1
+  #   loadBalancerService:
+  #     annotations:
+  #       test: handler-1
+  # - name: handler-2
+  #   loadBalancerService:
+  #     annotations:
+  #       test: handler-2
+  #   sni:
+  #     ingress:
+  #       serviceName: istio-ingress
+  #       namespace: istio-ingress-handler-2
+  #       labels:
+  #         istio: ingressgateway-handler-2
+# etcdConfig:
+#   etcdController:
+#     workers: 3
+#   custodianController:
+#     workers: 3
+#   backupCompactionController:
+#     workers: 3
+#     enableBackupCompaction: false
+#     eventsThreshold: 1000000
+#     activeDeadlineDuration: "3h"
+#     metricsScrapeWaitDuration: "60s"
+#   backupLeaderElection:
+#     reelectionPeriod: 5s
+#     etcdConnectionTimeout: 5s
+# logging:
+#   enabled: false
+#   vali:
+#     enabled: true
+#     garden:
+#       storage: "100Gi"
+#   victoriaLogs:
+#     enabled: true
+#     garden:
+#       storage: "100Gi"
+# monitoring:
+#   shoot:
+#     remoteWrite:
+#       url: https://remoteWriteUrl # remote write URL
+#       keep: # metrics that should be forwarded to the external write endpoint. If empty all metrics get forwarded
+#       - kube_pod_container_info
+#       queueConfig: | # queue_config of prometheus remote write as multiline string
+#         max_shards: 100
+#         batch_send_deadline: 20s
+#         min_backoff: 500ms
+#         max_backoff: 60s
+#     externalLabels: # add additional labels to metrics to identify it on the central instance
+#       additional: label
+nodeToleration:
+  defaultNotReadyTolerationSeconds: 60
+  defaultUnreachableTolerationSeconds: 60
+tolerations: []
+
+#selfUpgrade:
+#  deployment:
+#    helm:
+#      ociRepository:
+#        ref: <url-to-oci-repository-containing-gardenlet-helm-chart>
+#  name: name-of-self-hosted-shoot
+#  namespace: namespace-of-self-hosted-shoot

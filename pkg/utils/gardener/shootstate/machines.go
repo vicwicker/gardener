@@ -1,0 +1,245 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package shootstate
+
+import (
+	"bytes"
+	"cmp"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+)
+
+// MachineDeploymentState stores the last versions of the machine sets and machines to which the machine deployment
+// corresponds.
+type MachineDeploymentState struct {
+	Replicas    int32                        `json:"replicas,omitempty"`
+	MachineSets []machinev1alpha1.MachineSet `json:"machineSets,omitempty"`
+	Machines    []machinev1alpha1.Machine    `json:"machines,omitempty"`
+}
+
+// MachineState represent the last known state of the machines.
+type MachineState struct {
+	MachineDeployments map[string]*MachineDeploymentState `json:"machineDeployments,omitempty"`
+}
+
+func computeMachineState(ctx context.Context, seedClient client.Client, namespace string) (*MachineState, error) {
+	state := &MachineState{MachineDeployments: make(map[string]*MachineDeploymentState)}
+
+	machineDeployments := &machinev1alpha1.MachineDeploymentList{}
+	if err := seedClient.List(ctx, machineDeployments, client.InNamespace(namespace)); err != nil {
+		// In case of self-hosted shoot clusters with unmanaged infrastructure, the MCM resources are not present.
+		if meta.IsNoMatchError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	machineDeploymentToMachineSets, err := getMachineDeploymentToMachineSetsMap(ctx, seedClient, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	machineSetOrDeploymentToMachines, err := getMachineSetOrDeploymentToMachinesMap(ctx, seedClient, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, machineDeployment := range machineDeployments.Items {
+		machineSets, ok := machineDeploymentToMachineSets[machineDeployment.Name]
+		if !ok {
+			continue
+		}
+
+		// get machines that have a machine deployment as owner
+		machinesForMachineDeployment := slices.Clone(machineSetOrDeploymentToMachines[machineDeployment.Name])
+
+		for i, machineSet := range machineSets {
+			removeIrrelevantDataFromObject(&machineSets[i])
+			// get machines that have a machine set as owner
+			machinesForMachineSet := machineSetOrDeploymentToMachines[machineSet.Name]
+			machinesForMachineDeployment = append(machinesForMachineDeployment, machinesForMachineSet...)
+		}
+
+		for i := range machinesForMachineDeployment {
+			removeIrrelevantDataFromObject(&machinesForMachineDeployment[i])
+		}
+
+		state.MachineDeployments[machineDeployment.Name] = &MachineDeploymentState{
+			Replicas:    machineDeployment.Spec.Replicas,
+			MachineSets: machineSets,
+			Machines:    machinesForMachineDeployment,
+		}
+	}
+
+	return state, nil
+}
+
+func removeIrrelevantDataFromObject(obj client.Object) {
+	switch o := obj.(type) {
+	case *machinev1alpha1.Machine:
+		resetObjectMeta(&o.ObjectMeta)
+		o.Status = machinev1alpha1.MachineStatus{}
+	case *machinev1alpha1.MachineSet:
+		resetObjectMeta(&o.ObjectMeta)
+		o.Status = machinev1alpha1.MachineSetStatus{}
+	}
+}
+
+func resetObjectMeta(meta *metav1.ObjectMeta) {
+	*meta = metav1.ObjectMeta{
+		Name:        meta.Name,
+		Namespace:   meta.Namespace,
+		Annotations: meta.Annotations,
+		Labels:      meta.Labels,
+	}
+}
+
+func getMachineDeploymentToMachineSetsMap(ctx context.Context, c client.Client, namespace string) (map[string][]machinev1alpha1.MachineSet, error) {
+	existingMachineSets := &machinev1alpha1.MachineSetList{}
+	if err := c.List(ctx, existingMachineSets, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+
+	// When we read from the cache we get unsorted results, hence, we sort to prevent unnecessary state updates from
+	// happening.
+	slices.SortFunc(existingMachineSets.Items, func(a, b machinev1alpha1.MachineSet) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+
+	return gardenerutils.BuildOwnerToMachineSetsMap(existingMachineSets.Items), nil
+}
+
+func getMachineSetOrDeploymentToMachinesMap(ctx context.Context, seedClient client.Client, namespace string) (map[string][]machinev1alpha1.Machine, error) {
+	existingMachines := &machinev1alpha1.MachineList{}
+	if err := seedClient.List(ctx, existingMachines, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+
+	// We temporarily filter out machines without provider ID or node label (VMs which got created but not yet joined
+	// the cluster) to prevent unnecessarily persisting them in the Worker state.
+	// TODO: Remove this again once machine-controller-manager supports backing off creation/deletion of failed
+	//  machines, see https://github.com/gardener/machine-controller-manager/issues/483.
+	var filteredMachines []machinev1alpha1.Machine
+	for _, machine := range existingMachines.Items {
+		if _, ok := machine.Labels["node"]; ok || machine.Spec.ProviderID != "" {
+			filteredMachines = append(filteredMachines, machine)
+		}
+	}
+
+	// When we read from the cache we get unsorted results, hence, we sort to prevent unnecessary state updates from
+	// happening.
+	slices.SortFunc(filteredMachines, func(a, b machinev1alpha1.Machine) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+
+	return gardenerutils.BuildOwnerToMachinesMap(filteredMachines), nil
+}
+
+type compressedMachineState struct {
+	State []byte `json:"state"`
+}
+
+// MarshalMachineState encodes and compresses the machine state data.
+func MarshalMachineState(machineState *MachineState) ([]byte, error) {
+	machineStateJSON, err := json.Marshal(machineState)
+	if err != nil {
+		return nil, fmt.Errorf("failed marshalling machine state to JSON: %w", err)
+	}
+
+	machineStateJSONCompressed, err := compressMachineState(machineStateJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed compressing machine state data: %w", err)
+	}
+
+	return machineStateJSONCompressed, nil
+}
+
+func compressMachineState(state []byte) ([]byte, error) {
+	if len(state) == 0 || string(state) == "{}" {
+		return nil, nil
+	}
+
+	var stateCompressed bytes.Buffer
+	gzipWriter, err := gzip.NewWriterLevel(&stateCompressed, gzip.BestCompression)
+	if err != nil {
+		return nil, fmt.Errorf("failed creating gzip writer for compressing machine state data: %w", err)
+	}
+
+	defer gzipWriter.Close()
+
+	if _, err := gzipWriter.Write(state); err != nil {
+		return nil, fmt.Errorf("failed writing machine state data for compression: %w", err)
+	}
+
+	// Close ensures any unwritten data is flushed and the gzip footer is written. Without this, the `stateCompressed`
+	// buffer would not contain any data. Hence, we have to call it explicitly here after writing, in addition to the
+	// 'defer' call above.
+	if err := gzipWriter.Close(); err != nil {
+		return nil, fmt.Errorf("failed closing the gzip writer after compressing the machine state data: %w", err)
+	}
+
+	return json.Marshal(&compressedMachineState{State: stateCompressed.Bytes()})
+}
+
+// UnmarshalMachineState decompresses and decodes the machine state data.
+func UnmarshalMachineState(stateCompressed []byte) (*MachineState, error) {
+	if len(stateCompressed) == 0 {
+		return &MachineState{}, nil
+	}
+
+	state, err := decompressMachineState(stateCompressed)
+	if err != nil {
+		return nil, fmt.Errorf("failed decompressing machine state: %w", err)
+	}
+	if len(state) == 0 {
+		return &MachineState{}, nil
+	}
+
+	// Parse the worker state to MachineDeploymentStates
+	machineState := &MachineState{MachineDeployments: make(map[string]*MachineDeploymentState)}
+	if err := json.Unmarshal(state, &machineState); err != nil {
+		return nil, fmt.Errorf("failed decoding machine state: %w", err)
+	}
+
+	return machineState, nil
+}
+
+func decompressMachineState(stateCompressed []byte) ([]byte, error) {
+	if len(stateCompressed) == 0 {
+		return nil, nil
+	}
+
+	var machineState compressedMachineState
+	if err := json.Unmarshal(stateCompressed, &machineState); err != nil {
+		return nil, fmt.Errorf("failed unmarshalling JSON to compressed machine state structure: %w", err)
+	}
+
+	if len(machineState.State) == 0 {
+		return nil, nil
+	}
+
+	gzipReader, err := gzip.NewReader(bytes.NewReader(machineState.State))
+	if err != nil {
+		return nil, fmt.Errorf("failed creating gzip reader for decompressing machine state data: %w", err)
+	}
+	defer gzipReader.Close()
+
+	var state bytes.Buffer
+	if _, err := state.ReadFrom(gzipReader); err != nil {
+		return nil, fmt.Errorf("failed reading machine state data for decompression: %w", err)
+	}
+
+	return state.Bytes(), nil
+}

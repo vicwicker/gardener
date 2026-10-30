@@ -1,0 +1,216 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package controllerregistration
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	chartutils "github.com/gardener/gardener/pkg/utils/chart"
+	"github.com/gardener/gardener/pkg/utils/gardener/operator"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+)
+
+// Interface contains functions to handle the registration of extensions for shoot clusters.
+type Interface interface {
+	// Reconcile creates or updates the ControllerRegistration and ControllerDeployment for the given extension.
+	Reconcile(context.Context, logr.Logger, *operatorv1alpha1.Extension) error
+	// Delete deletes the ControllerRegistration and ControllerDeployment for the given extension.
+	Delete(context.Context, logr.Logger, *operatorv1alpha1.Extension) error
+}
+
+type registration struct {
+	runtimeClient client.Client
+	recorder      events.EventRecorder
+
+	gardenNamespace string
+}
+
+// Reconcile creates or updates the ControllerRegistration and ControllerDeployment for the given extension.
+// If the extension doesn't define an extension deployment, the registration is deleted.
+func (r *registration) Reconcile(ctx context.Context, log logr.Logger, extension *operatorv1alpha1.Extension) error {
+	if extension.Spec.Deployment == nil ||
+		extension.Spec.Deployment.ExtensionDeployment == nil ||
+		extension.Spec.Deployment.ExtensionDeployment.Helm == nil {
+		if err := r.Delete(ctx, log, extension); err != nil {
+			return err
+		}
+		r.recorder.Eventf(extension, nil, corev1.EventTypeNormal, gardencorev1beta1.EventDeleted, gardencorev1beta1.EventActionReconcile, "ControllerRegistration and ControllerDeployment deleted successfully")
+
+		return nil
+	}
+
+	log.Info("Deploying ControllerRegistration and ControllerDeployment")
+	if err := r.createOrUpdateControllerRegistration(ctx, extension); err != nil {
+		return fmt.Errorf("failed to reconcile ControllerRegistration: %w", err)
+	}
+	r.recorder.Eventf(extension, nil, corev1.EventTypeNormal, gardencorev1beta1.EventReconciled, gardencorev1beta1.EventActionReconcile, "ControllerRegistration and ControllerDeployment applied successfully")
+
+	return nil
+}
+
+func (r *registration) createOrUpdateControllerRegistration(ctx context.Context, extension *operatorv1alpha1.Extension) error {
+	var (
+		registry = managedresources.NewRegistry(kubernetes.GardenScheme, kubernetes.GardenCodec, kubernetes.GardenSerializer)
+
+		controllerRegistration, controllerDeployment = operator.ControllerRegistrationForExtension(extension)
+	)
+
+	objs := []client.Object{controllerRegistration}
+	if pullSecretRef := GetExtensionPullSecretRef(extension); pullSecretRef != nil {
+		secret, err := r.createSecretCopy(ctx, extension.Name, pullSecretRef)
+		if err != nil {
+			return fmt.Errorf("failed to get pull secret: %w", err)
+		}
+		objs = append(objs, secret)
+		controllerDeployment.Helm.OCIRepository.PullSecretRef.Name = secret.Name
+	}
+	if caBundleSecretRef := GetExtensionCABundleSecretRef(extension); caBundleSecretRef != nil {
+		secret, err := r.createSecretCopy(ctx, extension.Name, caBundleSecretRef)
+		if err != nil {
+			return fmt.Errorf("failed to get CA bundle secret: %w", err)
+		}
+		objs = append(objs, secret)
+		controllerDeployment.Helm.OCIRepository.CABundleSecretRef.Name = secret.Name
+	}
+
+	referencedResources, err := chartutils.ResourceNamesFromValues(extension.Spec.Deployment.ExtensionDeployment.Values)
+	if err != nil {
+		return fmt.Errorf("failed to extract referenced resources from extension values: %w", err)
+	}
+	for _, resource := range extension.Spec.Deployment.Resources {
+		if referencedResources.Has(resource.Name) {
+			switch resource.ResourceRef.Kind {
+			case "Secret":
+				secret, err := r.createSecretCopy(ctx, extension.Name, &corev1.LocalObjectReference{Name: resource.ResourceRef.Name})
+				if err != nil {
+					return fmt.Errorf("failed to get create deployment secret: %w", err)
+				}
+				resource.ResourceRef.Name = secret.Name
+				objs = append(objs, secret)
+			case "ConfigMap":
+				configMap, err := r.createConfigMapCopy(ctx, extension.Name, &corev1.LocalObjectReference{Name: resource.ResourceRef.Name})
+				if err != nil {
+					return fmt.Errorf("failed to get create deployment config map: %w", err)
+				}
+				resource.ResourceRef.Name = configMap.Name
+				objs = append(objs, configMap)
+			default:
+				return fmt.Errorf("unsupported resource reference kind %q for resource reference %q", resource.ResourceRef.Kind, resource.Name)
+			}
+
+			controllerDeployment.Resources = append(controllerDeployment.Resources, resource)
+		}
+	}
+
+	objs = append(objs, controllerDeployment)
+
+	data, err := registry.AddAllAndSerialize(objs...)
+	if err != nil {
+		return err
+	}
+
+	return managedresources.CreateForShoot(ctx, r.runtimeClient, r.gardenNamespace, managedResourceName(extension), managedresources.LabelValueOperator, false, data)
+}
+
+// Delete deletes the ControllerRegistration and ControllerDeployment for the given extension.
+func (r *registration) Delete(ctx context.Context, log logr.Logger, extension *operatorv1alpha1.Extension) error {
+	mrName := managedResourceName(extension)
+
+	log.Info("Deleting extension registration ManagedResource", "managedResource", client.ObjectKey{Name: mrName, Namespace: r.gardenNamespace})
+	if err := managedresources.DeleteForShoot(ctx, r.runtimeClient, r.gardenNamespace, mrName); err != nil {
+		return fmt.Errorf("failed deleting ManagedResource: %w", err)
+	}
+
+	return managedresources.WaitUntilDeleted(ctx, r.runtimeClient, r.gardenNamespace, mrName)
+}
+
+func (r *registration) createConfigMapCopy(ctx context.Context, extensionName string, configMapRef *corev1.LocalObjectReference) (*corev1.ConfigMap, error) {
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapRef.Name,
+			Namespace: r.gardenNamespace,
+		},
+	}
+	if err := r.runtimeClient.Get(ctx, client.ObjectKeyFromObject(configMap), configMap); err != nil {
+		return nil, fmt.Errorf("failed to get referenced config map: %w", err)
+	}
+
+	configMapCopy := configMap.DeepCopy()
+	configMapCopy.ObjectMeta = metav1.ObjectMeta{
+		Name:      fmt.Sprintf("%s-%s", extensionName, configMapRef.Name),
+		Namespace: v1beta1constants.GardenNamespace,
+		Labels:    configMapCopy.Labels,
+	}
+
+	return configMapCopy, nil
+}
+
+func (r *registration) createSecretCopy(ctx context.Context, extensionName string, secretRef *corev1.LocalObjectReference) (*corev1.Secret, error) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretRef.Name,
+			Namespace: r.gardenNamespace,
+		},
+	}
+	if err := r.runtimeClient.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
+		return nil, fmt.Errorf("failed to get referenced secret: %w", err)
+	}
+
+	secretCopy := secret.DeepCopy()
+	secretCopy.ObjectMeta = metav1.ObjectMeta{
+		Name:      fmt.Sprintf("%s-%s", extensionName, secretRef.Name),
+		Namespace: v1beta1constants.GardenNamespace,
+		Labels:    secretCopy.Labels,
+	}
+
+	return secretCopy, nil
+}
+
+func managedResourceName(extension *operatorv1alpha1.Extension) string {
+	return fmt.Sprintf("extension-registration-%s", extension.Name)
+}
+
+// New creates a new handler for ControllerRegistrations.
+func New(runtimeClient client.Client, recorder events.EventRecorder, gardenNamespace string) Interface {
+	return &registration{
+		runtimeClient: runtimeClient,
+		recorder:      recorder,
+
+		gardenNamespace: gardenNamespace,
+	}
+}
+
+// GetExtensionPullSecretRef returns the pull secret reference for the extension's Helm chart.
+func GetExtensionPullSecretRef(extension *operatorv1alpha1.Extension) *corev1.LocalObjectReference {
+	if extension.Spec.Deployment == nil ||
+		extension.Spec.Deployment.ExtensionDeployment == nil ||
+		extension.Spec.Deployment.ExtensionDeployment.Helm == nil ||
+		extension.Spec.Deployment.ExtensionDeployment.Helm.OCIRepository == nil {
+		return nil
+	}
+	return extension.Spec.Deployment.ExtensionDeployment.Helm.OCIRepository.PullSecretRef
+}
+
+// GetExtensionCABundleSecretRef returns the CA bundle secret reference for the extension's Helm chart.
+func GetExtensionCABundleSecretRef(extension *operatorv1alpha1.Extension) *corev1.LocalObjectReference {
+	if extension.Spec.Deployment == nil ||
+		extension.Spec.Deployment.ExtensionDeployment == nil ||
+		extension.Spec.Deployment.ExtensionDeployment.Helm == nil ||
+		extension.Spec.Deployment.ExtensionDeployment.Helm.OCIRepository == nil {
+		return nil
+	}
+	return extension.Spec.Deployment.ExtensionDeployment.Helm.OCIRepository.CABundleSecretRef
+}

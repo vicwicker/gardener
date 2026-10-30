@@ -1,0 +1,28 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package controllermanager
+
+import (
+	policyv1 "k8s.io/api/policy/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+)
+
+func (g *gardenerControllerManager) podDisruptionBudget() *policyv1.PodDisruptionBudget {
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      DeploymentName,
+			Namespace: g.namespace,
+			Labels:    GetLabels(),
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable:             new(intstr.FromInt32(1)),
+			Selector:                   &metav1.LabelSelector{MatchLabels: GetLabels()},
+			UnhealthyPodEvictionPolicy: new(policyv1.AlwaysAllow),
+		},
+	}
+
+	return pdb
+}

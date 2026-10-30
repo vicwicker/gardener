@@ -1,0 +1,104 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package nodeinit_test
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	. "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/nodeinit"
+	"github.com/gardener/gardener/pkg/utils"
+)
+
+var _ = Describe("Init", func() {
+	const sshPublicKey = "ssh-rsa foobar"
+
+	Describe("#GardenadmConfig", func() {
+		downloadScriptMatcher := extensionsv1alpha1.File{
+			Path:        "/var/lib/gardenadm/download.sh",
+			Permissions: new(int32(0755)),
+			Content: extensionsv1alpha1.FileContent{
+				Inline: &extensionsv1alpha1.FileContentInline{
+					Encoding: "b64",
+					Data: utils.EncodeBase64([]byte(`#!/usr/bin/env bash
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+if [ -z "$1" ]; then
+  echo "Usage: $0 <image-ref>"
+  exit 1
+fi
+image="$1"
+
+echo "> Prepare temporary directory for image pull and mount"
+tmp_dir="$(mktemp -d)"
+unmount() {
+  ctr images unmount "$tmp_dir" && rm -rf "$tmp_dir"
+}
+trap unmount EXIT
+
+echo "> Pull gardenadm image and mount it to the temporary directory"
+CTR_MAJOR=$(ctr version | grep Version | tail -n1 | awk '{print $2}' | cut -d '.' -f 1 | sed 's/[a-zA-Z]//g')
+CTR_EXTRA_ARGS=""
+if [ "$CTR_MAJOR" -gt 1 ]; then
+    CTR_EXTRA_ARGS="--skip-metadata"
+fi
+ctr images pull $CTR_EXTRA_ARGS --hosts-dir "/etc/containerd/certs.d" "$image"
+ctr images mount "$image" "$tmp_dir"
+
+echo "> Copy gardenadm binary to host (/opt/bin) and make it executable"
+mkdir -p "/opt/bin"
+cp -f "$tmp_dir/gardenadm" "/opt/bin" || cp -f "$tmp_dir/ko-app/gardenadm" "/opt/bin"
+chmod +x "/opt/bin/gardenadm"
+`)),
+				},
+			},
+		}
+
+		machineNameFileMatcher := And(
+			HaveField("Path", "/var/lib/gardener-node-agent/machine-name"),
+			HaveField("Content.Inline.Data", "<<MACHINE_NAME>>"),
+			HaveField("Content.TransmitUnencoded", HaveValue(BeTrue())),
+		)
+
+		sshdEnsurerUnitMatcher := And(
+			HaveField("Name", "sshd-ensurer.service"),
+			HaveField("FilePaths", ConsistOf("/var/lib/sshd-ensurer/run.sh")),
+		)
+
+		sshdEnsurerFileMatcher := HaveField("Path", "/var/lib/sshd-ensurer/run.sh")
+
+		It("should return the correct units and files", func() {
+			units, files, err := GardenadmConfig(sshPublicKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(units).To(ConsistOf(
+				And(
+					HaveField("Name", "gardener-user.service"),
+					HaveField("Enable", HaveValue(BeTrue())),
+				),
+				And(
+					HaveField("Name", "gardener-user.path"),
+					HaveField("Enable", HaveValue(BeTrue())),
+				),
+				sshdEnsurerUnitMatcher,
+			))
+
+			Expect(files).To(ConsistOf(
+				HaveField("Path", "/var/lib/gardener-user/run.sh"),
+				And(
+					HaveField("Path", "/var/lib/gardener-user-authorized-keys"),
+					HaveField("Content.Inline.Data", utils.EncodeBase64([]byte(sshPublicKey))),
+				),
+				sshdEnsurerFileMatcher,
+				downloadScriptMatcher,
+				machineNameFileMatcher,
+			))
+		})
+	})
+})

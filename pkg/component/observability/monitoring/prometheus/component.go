@@ -1,0 +1,428 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package prometheus
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	"github.com/go-logr/logr"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/component"
+	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
+	"github.com/gardener/gardener/pkg/utils"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+)
+
+const (
+	dataKeyAdditionalScrapeConfigs       = "prometheus.yaml"
+	dataKeyAdditionalAlertmanagerConfigs = "configs.yaml"
+)
+
+var servicePorts = struct {
+	Web    corev1.ServicePort
+	Cortex corev1.ServicePort
+}{
+	Web: corev1.ServicePort{
+		Name:       "web",
+		Port:       80,
+		Protocol:   corev1.ProtocolTCP,
+		TargetPort: intstr.FromInt32(9090),
+	},
+	Cortex: corev1.ServicePort{
+		Name:       "cortex",
+		Port:       81,
+		Protocol:   corev1.ProtocolTCP,
+		TargetPort: intstr.FromInt32(9091),
+	},
+}
+
+// ServicePorts returns the service ports configuration for a Prometheus service.
+func ServicePorts() struct {
+	Web    corev1.ServicePort
+	Cortex corev1.ServicePort
+} {
+	return servicePorts
+}
+
+// Interface contains functions for a Prometheus deployer.
+type Interface interface {
+	component.DeployWaiter
+	// SetIngressAuthSecret sets the ingress authentication secret name and whether it is managed by the secrets manager.
+	SetIngressAuthSecret(name string, managed bool)
+	// SetIngressWildcardCertSecret sets the ingress wildcard certificate secret name.
+	SetIngressWildcardCertSecret(*corev1.Secret)
+	// SetCentralScrapeConfigs sets the central scrape configs.
+	SetCentralScrapeConfigs([]*monitoringv1alpha1.ScrapeConfig)
+	// SetCentralPrometheusRules sets the central Prometheus rules.
+	SetCentralPrometheusRules([]*monitoringv1.PrometheusRule)
+	// SetNamespaceUID sets the namespace UID.
+	SetNamespaceUID(name types.UID)
+	// SetAdditionalAlertRelabelConfigs sets the additional alert relabel configs.
+	SetAdditionalAlertRelabelConfigs([]monitoringv1.RelabelConfig)
+}
+
+// Values contains configuration values for the prometheus resources.
+type Values struct {
+	// Name is the name of the prometheus. It will be used for the resource names of Prometheus and ManagedResource.
+	Name string
+	// Image defines the container image of prometheus.
+	Image string
+	// Version is the version of prometheus.
+	Version string
+	// ClusterType is the type of the cluster.
+	ClusterType component.ClusterType
+	// PriorityClassName is the name of the priority class for the deployment.
+	PriorityClassName string
+	// StorageCapacity is the storage capacity of Prometheus.
+	StorageCapacity resource.Quantity
+	// Replicas is the number of replicas.
+	Replicas int32
+	// Retention is the duration for the data retention.
+	Retention *monitoringv1.Duration
+	// RetentionSize is the size for the data retention.
+	RetentionSize monitoringv1.ByteSize
+	// RuntimeVersion is the Kubernetes version of the runtime cluster.
+	RuntimeVersion *semver.Version
+	// ScrapeTimeout is the timeout duration when scraping targets.
+	ScrapeTimeout monitoringv1.Duration
+	// VPAMinAllowed defines the resource list for the minAllowed field for the prometheus container resource policy.
+	VPAMinAllowed *corev1.ResourceList
+	// ExternalLabels is the set of external labels for the Prometheus configuration.
+	ExternalLabels map[string]string
+	// AdditionalPodLabels is a map containing additional labels for the created pods.
+	AdditionalPodLabels map[string]string
+	// NamespaceUID is the UID of the namespace.
+	NamespaceUID *types.UID
+	// CentralConfigs contains configuration for this Prometheus instance that is created together with it. This should
+	// only contain configuration that cannot be directly assigned to another component package.
+	CentralConfigs CentralConfigs
+	// IngressValues contains configuration for exposing this Prometheus instance via a VirtualService resource.
+	Ingress *IngressValues
+	// Alerting contains alerting configuration for this Prometheus instance.
+	Alerting *AlertingValues
+	// RemoteWrite contains remote write configuration for this Prometheus instance.
+	RemoteWrite *RemoteWriteValues
+	// AdditionalResources contains any additional resources which get added to the ManagedResource.
+	AdditionalResources []client.Object
+	// Cortex contains configuration for the cortex frontend sidecar container.
+	Cortex *CortexValues
+	// TargetCluster contains configuration in case Prometheus scrapes metrics from another kube-apiserver (e.g.,
+	// virtual garden, or shoot cluster) or other components running in this cluster.
+	TargetCluster *TargetClusterValues
+	// AdditionalAlertRelabelConfigs contains additional alert relabel configurations.
+	AdditionalAlertRelabelConfigs []monitoringv1.RelabelConfig
+	// RestrictToNamespace controls whether the Prometheus instance should only scrape its targets in its own namespace.
+	RestrictToNamespace bool
+	// ResourceRequests defines the initial resource requests
+	ResourceRequests *corev1.ResourceList
+	// HealthCheckBy is the value of the health-check-by label for the Prometheus resource.
+	HealthCheckBy string
+}
+
+// CentralConfigs contains configuration for this Prometheus instance that is created together with it. This should
+// only contain configuration that cannot be directly assigned to another component package.
+type CentralConfigs struct {
+	// AdditionalScrapeConfigs are additional scrape configs which cannot be modelled with the CRDs of the Prometheus
+	// operator.
+	AdditionalScrapeConfigs []string
+	// PrometheusRules is a list of central PrometheusRule objects for this prometheus instance.
+	PrometheusRules []*monitoringv1.PrometheusRule
+	// ScrapeConfigs is a list of central ScrapeConfig objects for this prometheus instance.
+	ScrapeConfigs []*monitoringv1alpha1.ScrapeConfig
+	// ServiceMonitors is a list of central ServiceMonitor objects for this prometheus instance.
+	ServiceMonitors []*monitoringv1.ServiceMonitor
+	// PodMonitors is a list of central PodMonitor objects for this prometheus instance.
+	PodMonitors []*monitoringv1.PodMonitor
+}
+
+// AlertingValues contains alerting configuration for this Prometheus instance.
+type AlertingValues struct {
+	// Alertmanagers is a slice containing the alertmanager names (and namespaces) to which alerts should be sent.
+	Alertmanagers []*Alertmanager
+	// AdditionalAlertmanager contains the data of the 'alerting' secret (url, credentials, etc.).
+	AdditionalAlertmanager map[string][]byte
+}
+
+// Alertmanager contains the name and namespace of an alertmanager to which alerts should be sent.
+type Alertmanager struct {
+	// Name is the name of the alertmanager to which alerts should be sent.
+	Name string
+	// Namespace is the namespace of the alertmanager to which alerts should be sent.
+	// If not set, the namespace of the Prometheus instance is used.
+	Namespace *string
+}
+
+// RemoteWriteValues contains remote write configuration for this Prometheus instance.
+type RemoteWriteValues struct {
+	// URL is the remote url.
+	URL string
+	// KeptMetrics is a list of metrics to keep.
+	KeptMetrics []string
+	// GlobalShootRemoteWriteSecret is a secret containing basic auth credentials for the remote write endpoint.
+	GlobalShootRemoteWriteSecret *corev1.Secret
+}
+
+// IngressValues contains configuration for exposing this Prometheus instance via a VirtualService resource.
+type IngressValues struct {
+	// AuthSecretName is the name of the auth secret.
+	AuthSecretName string
+	// AuthSecretManaged indicates whether the auth secret is managed by the secrets manager.
+	AuthSecretManaged bool
+	// Host is the hostname under which the Prometheus instance should be exposed.
+	Host string
+	// IsGardenCluster specifies whether the cluster is garden cluster.
+	IsGardenCluster bool
+	// IstioIngressGatewayLabels are the labels identifying the corresponding istio ingress gateway.
+	IstioIngressGatewayLabels map[string]string
+	// IstioIngressGatewayNamespace is the namespace of the istio ingress gateway.
+	IstioIngressGatewayNamespace string
+	// SecretsManager is the secrets manager used for generating the TLS certificate if no wildcard certificate is
+	// provided.
+	SecretsManager secretsmanager.Interface
+	// SigningCA is the name of the CA that should be used the sign a self-signed server certificate. Only needed when
+	// no wildcard certificate secret is provided.
+	SigningCA string
+	// WildcardCertSecretName is name of a secret containing the wildcard TLS certificate which is issued for the
+	// ingress domain. If not provided, a self-signed server certificate will be created.
+	WildcardCertSecretName *string
+	// BlockManagementAndTargetAPIAccess controls whether access to the management and target APIs is blocked when
+	// accessing Prometheus via ingress.
+	BlockManagementAndTargetAPIAccess bool
+}
+
+// TargetClusterValues contains configuration in case Prometheus scrapes metrics from another kube-apiserver (e.g.,
+// virtual garden, or shoot cluster) or other components running in this cluster.
+type TargetClusterValues struct {
+	// ServiceAccountName is the name of the ServiceAccount.
+	ServiceAccountName string
+	// ScrapesMetrics specifies whether this Prometheus has scrape configs for scraping metrics from components running
+	// in the target cluster.
+	ScrapesMetrics bool
+}
+
+// CortexValues contains configuration for the cortex frontend sidecar container.
+type CortexValues struct {
+	// Image defines the container image of cortex.
+	Image string
+	// CacheValidity defines the validity of the FIFO cache.
+	CacheValidity time.Duration
+}
+
+// New creates a new instance of DeployWaiter for the prometheus.
+func New(log logr.Logger, client client.Client, namespace string, values Values) Interface {
+	return &prometheus{
+		log:       log,
+		client:    client,
+		namespace: namespace,
+		values:    values,
+	}
+}
+
+type prometheus struct {
+	log       logr.Logger
+	client    client.Client
+	namespace string
+	values    Values
+}
+
+func (p *prometheus) Deploy(ctx context.Context) error {
+	registry := managedresources.NewRegistry(kubernetes.SeedScheme, kubernetes.SeedCodec, kubernetes.SeedSerializer)
+
+	if err := p.addCentralConfigsToRegistry(registry); err != nil {
+		return err
+	}
+
+	if err := registry.Add(p.values.AdditionalResources...); err != nil {
+		return err
+	}
+
+	istioResources, err := p.istioResources(ctx)
+	if err != nil {
+		return err
+	}
+
+	var cortexConfigMap *corev1.ConfigMap
+	if p.values.Cortex != nil {
+		cortexConfigMap = p.cortexConfigMap()
+	}
+
+	var (
+		role               *rbacv1.Role
+		roleBinding        *rbacv1.RoleBinding
+		gardenRoleBinding  *rbacv1.RoleBinding
+		clusterRoleBinding *rbacv1.ClusterRoleBinding
+	)
+
+	if p.values.ClusterType == component.ClusterTypeShoot {
+		role = p.role()
+		roleBinding = p.roleBinding()
+		gardenRoleBinding = p.gardenRoleBinding()
+	} else {
+		clusterRoleBinding = p.clusterRoleBinding()
+	}
+
+	objects := append([]client.Object{
+		p.serviceAccount(),
+		p.service(),
+		clusterRoleBinding,
+		role,
+		roleBinding,
+		gardenRoleBinding,
+		p.secretAdditionalScrapeConfigs(),
+		p.secretAdditionalAlertmanagerConfigs(),
+		p.secretRemoteWriteBasicAuth(),
+		cortexConfigMap,
+		p.prometheus(cortexConfigMap),
+		p.vpa(),
+		p.podDisruptionBudget(),
+	}, istioResources...)
+
+	resources, err := registry.AddAllAndSerialize(objects...)
+	if err != nil {
+		return err
+	}
+
+	if err := managedresources.CreateForSeedWithLabels(ctx, p.client, p.namespace, p.name(), false, map[string]string{v1beta1constants.LabelCareConditionType: v1beta1constants.ObservabilityComponentsHealthy}, resources); err != nil {
+		return err
+	}
+
+	if p.values.TargetCluster != nil {
+		registryTarget := managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
+
+		resourcesTarget, err := registryTarget.AddAllAndSerialize(
+			p.clusterRoleTarget(),
+			p.clusterRoleBindingTarget(),
+		)
+		if err != nil {
+			return err
+		}
+
+		if err := managedresources.CreateForShootWithLabels(ctx, p.client, p.namespace, p.name()+"-target", managedresources.LabelValueGardener, false, map[string]string{v1beta1constants.LabelCareConditionType: v1beta1constants.ObservabilityComponentsHealthy}, resourcesTarget); err != nil {
+			return err
+		}
+	} else {
+		if err := managedresources.DeleteForShoot(ctx, p.client, p.namespace, p.name()+"-target"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *prometheus) Destroy(ctx context.Context) error {
+	if err := managedresources.DeleteForShoot(ctx, p.client, p.namespace, p.name()+"-target"); err != nil {
+		return err
+	}
+	return managedresources.DeleteForSeed(ctx, p.client, p.namespace, p.name())
+}
+
+// TimeoutWaitForManagedResource is the timeout used while waiting for the ManagedResources to become healthy or
+// deleted.
+var TimeoutWaitForManagedResource = 5 * time.Minute
+
+func (p *prometheus) Wait(ctx context.Context) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, TimeoutWaitForManagedResource)
+	defer cancel()
+
+	return managedresources.WaitUntilHealthy(timeoutCtx, p.client, p.namespace, p.name())
+}
+
+func (p *prometheus) WaitCleanup(ctx context.Context) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, TimeoutWaitForManagedResource)
+	defer cancel()
+
+	return managedresources.WaitUntilDeleted(timeoutCtx, p.client, p.namespace, p.name())
+}
+
+func (p *prometheus) SetIngressAuthSecret(name string, managed bool) {
+	if p.values.Ingress != nil {
+		p.values.Ingress.AuthSecretName = name
+		p.values.Ingress.AuthSecretManaged = managed
+	}
+}
+
+func (p *prometheus) SetIngressWildcardCertSecret(secret *corev1.Secret) {
+	if p.values.Ingress != nil && secret != nil {
+		p.values.Ingress.WildcardCertSecretName = &secret.Name
+	}
+}
+
+func (p *prometheus) SetCentralScrapeConfigs(configs []*monitoringv1alpha1.ScrapeConfig) {
+	p.values.CentralConfigs.ScrapeConfigs = configs
+}
+
+func (p *prometheus) SetCentralPrometheusRules(rules []*monitoringv1.PrometheusRule) {
+	p.values.CentralConfigs.PrometheusRules = rules
+}
+
+func (p *prometheus) SetNamespaceUID(uid types.UID) {
+	p.values.NamespaceUID = &uid
+}
+
+func (p *prometheus) name() string {
+	return "prometheus-" + p.values.Name
+}
+
+func (p *prometheus) SetAdditionalAlertRelabelConfigs(configs []monitoringv1.RelabelConfig) {
+	p.values.AdditionalAlertRelabelConfigs = configs
+}
+
+func (p *prometheus) addCentralConfigsToRegistry(registry *managedresources.Registry) error {
+	var errs []error
+
+	add := func(obj client.Object) {
+		if !strings.HasPrefix(obj.GetName(), p.values.Name+"-") {
+			obj.SetName(p.values.Name + "-" + obj.GetName())
+		}
+
+		if obj.GetNamespace() == "" {
+			obj.SetNamespace(p.namespace)
+		}
+
+		obj.SetLabels(utils.MergeStringMaps(obj.GetLabels(), monitoringutils.Labels(p.values.Name)))
+
+		if err := registry.Add(obj); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	for _, obj := range p.values.CentralConfigs.PrometheusRules {
+		add(obj)
+	}
+	for _, obj := range p.values.CentralConfigs.ScrapeConfigs {
+		add(obj)
+	}
+	for _, obj := range p.values.CentralConfigs.ServiceMonitors {
+		add(obj)
+	}
+	for _, obj := range p.values.CentralConfigs.PodMonitors {
+		add(obj)
+	}
+
+	return utilerrors.NewAggregate(errs)
+}
+
+func (p *prometheus) getLabels() map[string]string {
+	return map[string]string{
+		v1beta1constants.LabelApp:  "prometheus",
+		v1beta1constants.LabelRole: v1beta1constants.LabelMonitoring,
+		"name":                     p.values.Name,
+	}
+}

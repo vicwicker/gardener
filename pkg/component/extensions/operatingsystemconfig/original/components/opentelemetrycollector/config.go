@@ -1,0 +1,161 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package opentelemetrycollector
+
+import (
+	"bytes"
+	_ "embed"
+	"errors"
+	"fmt"
+	"strconv"
+	"text/template"
+
+	"github.com/Masterminds/sprig/v3"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
+	"github.com/gardener/gardener/pkg/utils"
+)
+
+const (
+	// If an average log record is around 400 bytes,
+	// then 2000 MiB of memory allows to buffer around 5 million log records.
+	// This is provided as a sane default.
+	memoryLimitMiB = 2000
+)
+
+var (
+	tplNameOpenTelemetryCollector = "config"
+	//go:embed templates/opentelemetry-collector-config.yaml.tpl
+	tplContentOpenTelemetryCollector string
+	tplOpenTelemetryCollector        *template.Template
+
+	// As per the OpenTelemetry `memory_limiter` documentation,
+	// it's recommended to set the `GOMEMLIMIT` environment variable to 80%
+	// of the `limit_mib` value.
+	// Ref: https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/memorylimiterprocessor#best-practices
+	goMemLimit = fmt.Sprintf("%dMiB", int(0.8*memoryLimitMiB))
+)
+
+func init() {
+	tplOpenTelemetryCollector = template.Must(template.
+		New(tplNameOpenTelemetryCollector).
+		Funcs(sprig.TxtFuncMap()).
+		Parse(tplContentOpenTelemetryCollector))
+}
+
+func getOpentelemetryCollectorConfigurationFile(ctx components.Context) (extensionsv1alpha1.File, error) {
+	if ctx.OpenTelemetryCollectorIngressHostName == "" {
+		return extensionsv1alpha1.File{}, errors.New("opentelemetry-collector ingress url is missing")
+	}
+
+	var config bytes.Buffer
+	if err := tplOpenTelemetryCollector.Execute(&config, map[string]any{
+		"clientURL":      ctx.OpenTelemetryCollectorIngressHostName + ":443",
+		"pathCACert":     PathCACert,
+		"pathAuthToken":  PathAuthToken,
+		"metricsPort":    MetricsPort,
+		"memoryLimitMiB": memoryLimitMiB,
+	}); err != nil {
+		return extensionsv1alpha1.File{}, err
+	}
+
+	return extensionsv1alpha1.File{
+		Path:        PathConfig,
+		Permissions: new(int32(0400)),
+		Content: extensionsv1alpha1.FileContent{
+			Inline: &extensionsv1alpha1.FileContentInline{
+				Encoding: "b64",
+				Data:     utils.EncodeBase64(config.Bytes()),
+			},
+		},
+	}, nil
+}
+
+func getOpenTelemetryCollectorCAFile(ctx components.Context) extensionsv1alpha1.File {
+	var cABundle []byte
+	if ctx.CABundle != "" {
+		cABundle = []byte(ctx.CABundle)
+	}
+
+	return extensionsv1alpha1.File{
+		Path:        PathCACert,
+		Permissions: new(int32(0400)),
+		Content: extensionsv1alpha1.FileContent{
+			Inline: &extensionsv1alpha1.FileContentInline{
+				Encoding: "b64",
+				Data:     utils.EncodeBase64(cABundle),
+			},
+		},
+	}
+}
+
+func getOpenTelemetryCollectorUnit() extensionsv1alpha1.Unit {
+	return extensionsv1alpha1.Unit{
+		Name:    UnitName,
+		Command: new(extensionsv1alpha1.CommandStart),
+		Enable:  new(true),
+		Content: new(`[Unit]
+Description=opentelemetry-collector daemon
+Documentation=https://github.com/open-telemetry/opentelemetry-collector
+[Install]
+WantedBy=multi-user.target
+[Service]
+CPUAccounting=yes
+MemoryAccounting=yes
+CPUQuota=3%
+CPUQuotaPeriodSec=1000ms
+MemoryMin=29M
+MemoryHigh=400M
+MemoryMax=800M
+MemorySwapMax=0
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/environment
+Environment=KUBECONFIG=` + openTelemetryCollectorKubeconfigPath + `
+ExecStartPre=/bin/sh -c "systemctl set-environment HOSTNAME=$(hostname | tr [:upper:] [:lower:]) GOMEMLIMIT=` + goMemLimit + `"
+ExecStartPre=/bin/sh -c "test -s ` + PathAuthToken + `"
+ExecStart=` + v1beta1constants.OperatingSystemConfigFilePathBinaries + `/opentelemetry-collector --config=` + PathConfig),
+		FilePaths: []string{PathConfig, PathCACert, openTelemetryCollectorBinaryPath, openTelemetryCollectorKubeconfigPath},
+	}
+}
+
+func getOpenTelemetryCollectorHealthCheckUnit() extensionsv1alpha1.Unit {
+	return extensionsv1alpha1.Unit{
+		Name:    UnitNameHealthCheck,
+		Command: new(extensionsv1alpha1.CommandStart),
+		Enable:  new(false),
+		Content: new(`[Unit]
+Description=Health check for ` + UnitName + `
+After=` + UnitName + `
+Requisite=` + UnitName + `
+[Service]
+Type=oneshot
+ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = "success" ] || systemctl restart ` + UnitName + `'
+# Note: We intentionally curl the /metrics endpoint rather than /healthz.
+# We know that /metrics reliably times out when there are issues such as file descriptor leaks.
+# If we can verify that /healthz behaves the same, we should switch to using it instead,
+# since health checks are typically expected to target /healthz rather than /metrics.
+ExecStart=/usr/bin/curl -fsS --max-time 15 http://127.0.0.1:` + strconv.Itoa(MetricsPort) + `/metrics -o /dev/null -w "opentelemetry-collector-healthcheck.service ended with HTTP %{response_code} in %{time_total}s\n"`),
+	}
+}
+
+func getOpenTelemetryCollectorTimerUnit() extensionsv1alpha1.Unit {
+	return extensionsv1alpha1.Unit{
+		Name:    UnitNameHealthCheckTimer,
+		Command: new(extensionsv1alpha1.CommandStart),
+		Enable:  new(true),
+		Content: new(`[Unit]
+Description=Run ` + UnitNameHealthCheck + ` every 5 minutes to validate that ` + UnitName + ` is working as expected
+[Install]
+WantedBy=timers.target
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Unit=` + UnitNameHealthCheck),
+	}
+}

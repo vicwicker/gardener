@@ -1,0 +1,246 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package care
+
+import (
+	"context"
+	"fmt"
+
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	commonprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus"
+	"github.com/gardener/gardener/pkg/features"
+	kuberneteshealth "github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
+)
+
+// health contains information needed to execute health checks for a seed.
+type health struct {
+	seed          *gardencorev1beta1.Seed
+	seedClient    client.Client
+	clock         clock.Clock
+	namespace     *string
+	healthChecker *healthchecker.HealthChecker
+}
+
+// NewHealth creates a new Health instance with the given parameters.
+func NewHealth(
+	seed *gardencorev1beta1.Seed,
+	seedClient client.Client,
+	clock clock.Clock,
+	namespace *string,
+	healthChecker *healthchecker.HealthChecker,
+) HealthCheck {
+	return &health{
+		seedClient:    seedClient,
+		seed:          seed,
+		clock:         clock,
+		namespace:     namespace,
+		healthChecker: healthChecker,
+	}
+}
+
+// Check conducts the health checks on all the given conditions.
+func (h *health) Check(
+	ctx context.Context,
+	conditions SeedConditions,
+) []gardencorev1beta1.Condition {
+	managedResources, err := h.listManagedResources(ctx)
+	if err != nil {
+		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+		return conditions.ConvertToSlice()
+	}
+
+	prometheuses, err := h.listPrometheuses(ctx)
+	if err != nil {
+		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+		return conditions.ConvertToSlice()
+	}
+
+	var checkedConditions []gardencorev1beta1.Condition
+	checkedConditions = append(checkedConditions, v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, h.checkSystemComponents(ctx, conditions.systemComponentsHealthy, managedResources, prometheuses), nil))
+	if newEmergencyStopShootReconciliations := h.checkEmergencyStopShootReconciliations(conditions.emergencyStopShootReconciliations); newEmergencyStopShootReconciliations != nil {
+		checkedConditions = append(checkedConditions, v1beta1helper.NewConditionOrError(h.clock, conditions.emergencyStopShootReconciliations, newEmergencyStopShootReconciliations, nil))
+	}
+
+	return checkedConditions
+}
+
+func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.ManagedResource, error) {
+	managedResourceListGarden := &resourcesv1alpha1.ManagedResourceList{}
+	if err := h.seedClient.List(ctx, managedResourceListGarden, client.InNamespace(ptr.Deref(h.namespace, v1beta1constants.GardenNamespace))); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", ptr.Deref(h.namespace, v1beta1constants.GardenNamespace), err)
+	}
+
+	managedResourceListIstioSystem := &resourcesv1alpha1.ManagedResourceList{}
+	if err := h.seedClient.List(ctx, managedResourceListIstioSystem, client.InNamespace(ptr.Deref(h.namespace, v1beta1constants.IstioSystemNamespace))); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", ptr.Deref(h.namespace, v1beta1constants.IstioSystemNamespace), err)
+	}
+
+	return append(managedResourceListGarden.Items, managedResourceListIstioSystem.Items...), nil
+}
+
+func (h *health) listPrometheuses(ctx context.Context) (*monitoringv1.PrometheusList, error) {
+	prometheusList := &monitoringv1.PrometheusList{}
+	if err := h.seedClient.List(ctx, prometheusList, client.InNamespace(ptr.Deref(h.namespace, v1beta1constants.GardenNamespace))); err != nil {
+		return nil, fmt.Errorf("failed listing Prometheuses in namespace %s: %w", ptr.Deref(h.namespace, v1beta1constants.GardenNamespace), err)
+	}
+
+	return prometheusList, nil
+}
+
+func (h *health) checkSystemComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+		return managedResource.Spec.Class != nil
+	}, nil, nil); exitCondition != nil {
+		return exitCondition
+	}
+
+	filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
+		return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.Gardenlet
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
+			return exitCondition
+		}
+	}
+
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
+}
+
+func (h *health) checkEmergencyStopShootReconciliations(condition gardencorev1beta1.Condition) *gardencorev1beta1.Condition {
+	if !v1beta1helper.HasShootReconciliationsDisabledAnnotation(h.seed) {
+		return nil
+	}
+	return new(v1beta1helper.UpdatedConditionWithClock(
+		h.clock,
+		condition,
+		gardencorev1beta1.ConditionTrue,
+		string(gardencorev1beta1.SeedEmergencyStopShootReconciliations),
+		"Reconciliations of Shoots managed by this Seed cluster are currently disabled by annotation.",
+	))
+}
+
+// SeedConditions contains all seed related conditions of the seed status subresource.
+type SeedConditions struct {
+	systemComponentsHealthy           gardencorev1beta1.Condition
+	emergencyStopShootReconciliations gardencorev1beta1.Condition
+}
+
+// ConvertToSlice returns the seed conditions as a slice.
+func (s SeedConditions) ConvertToSlice() []gardencorev1beta1.Condition {
+	return []gardencorev1beta1.Condition{
+		s.systemComponentsHealthy,
+		s.emergencyStopShootReconciliations,
+	}
+}
+
+// ConditionTypes returns all seed condition types.
+func (s SeedConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
+	return []gardencorev1beta1.ConditionType{
+		s.systemComponentsHealthy.Type,
+		s.emergencyStopShootReconciliations.Type,
+	}
+}
+
+// NewSeedConditions returns a new instance of SeedConditions.
+// All conditions are retrieved from the given 'status' or newly initialized.
+func NewSeedConditions(clock clock.Clock, status gardencorev1beta1.SeedStatus) SeedConditions {
+	return SeedConditions{
+		systemComponentsHealthy:           v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedSystemComponentsHealthy),
+		emergencyStopShootReconciliations: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedEmergencyStopShootReconciliations),
+	}
+}
+
+// SeedConstraints contains all constraints of the seed status subresource.
+type SeedConstraints struct {
+	managedResourcesHonored gardencorev1beta1.Condition
+}
+
+// ConvertToSlice returns the seed constraints as a slice.
+func (s SeedConstraints) ConvertToSlice() []gardencorev1beta1.Condition {
+	return []gardencorev1beta1.Condition{
+		s.managedResourcesHonored,
+	}
+}
+
+// ConstraintTypes returns all seed constraint types.
+func (s SeedConstraints) ConstraintTypes() []gardencorev1beta1.ConditionType {
+	return []gardencorev1beta1.ConditionType{
+		s.managedResourcesHonored.Type,
+	}
+}
+
+// NewSeedConstraints returns a new instance of SeedConstraints.
+// All constraints are retrieved from the given 'status' or newly initialized.
+func NewSeedConstraints(clock clock.Clock, status gardencorev1beta1.SeedStatus) SeedConstraints {
+	return SeedConstraints{
+		managedResourcesHonored: v1beta1helper.GetOrInitConditionWithClock(clock, status.Constraints, gardencorev1beta1.SeedManagedResourcesHonored),
+	}
+}
+
+// constraint contains information needed to execute constraint checks for a seed.
+type constraint struct {
+	seedClient client.Client
+	clock      clock.Clock
+	namespace  *string
+}
+
+// NewConstraint returns a new constraint instance.
+func NewConstraint(seedClient client.Client, clock clock.Clock, namespace *string) ConstraintCheck {
+	return &constraint{
+		seedClient: seedClient,
+		clock:      clock,
+		namespace:  namespace,
+	}
+}
+
+// Check executes all constraint checks for the seed.
+func (c *constraint) Check(ctx context.Context, constraints SeedConstraints) []gardencorev1beta1.Condition {
+	managedResources, err := c.listManagedResources(ctx)
+	if err != nil {
+		constraints.managedResourcesHonored = v1beta1helper.UpdatedConditionUnknownErrorWithClock(c.clock, constraints.managedResourcesHonored,
+			fmt.Errorf("could not list ManagedResources to check for ignored resources: %w", err))
+		return filterOptionalSeedConstraints(constraints)
+	}
+
+	status, reason, message := kuberneteshealth.CheckManagedResourcesHonored(managedResources)
+	constraints.managedResourcesHonored = v1beta1helper.UpdatedConditionWithClock(c.clock, constraints.managedResourcesHonored, status, reason, message)
+
+	return filterOptionalSeedConstraints(constraints)
+}
+
+func (c *constraint) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.ManagedResource, error) {
+	managedResourceListGarden := &resourcesv1alpha1.ManagedResourceList{}
+	if err := c.seedClient.List(ctx, managedResourceListGarden, client.InNamespace(ptr.Deref(c.namespace, v1beta1constants.GardenNamespace))); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", ptr.Deref(c.namespace, v1beta1constants.GardenNamespace), err)
+	}
+
+	managedResourceListIstioSystem := &resourcesv1alpha1.ManagedResourceList{}
+	if err := c.seedClient.List(ctx, managedResourceListIstioSystem, client.InNamespace(ptr.Deref(c.namespace, v1beta1constants.IstioSystemNamespace))); err != nil {
+		return nil, fmt.Errorf("failed listing ManagedResources in namespace %s: %w", ptr.Deref(c.namespace, v1beta1constants.IstioSystemNamespace), err)
+	}
+
+	return append(managedResourceListGarden.Items, managedResourceListIstioSystem.Items...), nil
+}
+
+// filterOptionalSeedConstraints omits constraints that are True — they add no signal for operators.
+func filterOptionalSeedConstraints(constraints SeedConstraints) []gardencorev1beta1.Condition {
+	var out []gardencorev1beta1.Condition
+	for _, c := range constraints.ConvertToSlice() {
+		if c.Status != gardencorev1beta1.ConditionTrue {
+			out = append(out, c)
+		}
+	}
+	return out
+}

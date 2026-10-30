@@ -1,0 +1,1918 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package maintenance_test
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
+	"github.com/gardener/gardener/pkg/features"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/test"
+)
+
+var _ = DescribeTableSubtree("Shoot Maintenance controller tests", func(isCapabilitiesCloudProfile bool) {
+	var (
+		architectureArm64 = v1beta1constants.ArchitectureARM64
+
+		cloudProfile *gardencorev1beta1.CloudProfile
+		shoot        *gardencorev1beta1.Shoot
+		shoot130     *gardencorev1beta1.Shoot
+		shoot133     *gardencorev1beta1.Shoot
+		shoot134     *gardencorev1beta1.Shoot
+
+		// Test Machine Image
+		machineImageName             = "foo-image"
+		highestVersionNextMajorARM   = "2.1.1"
+		highestVersionNextMajorAMD64 = "2.1.3"
+
+		highestVersionForCurrentMajorARM   = "0.4.1"
+		highestVersionForCurrentMajorAMD64 = "0.3.0"
+
+		highestPatchNextMinorARM   = "0.2.4"
+		highestPatchNextMinorAMD64 = "0.2.3"
+
+		highestSupportedARMVersion = "2.0.0"
+
+		highestPatchSameMinorARM   = "0.0.4"
+		highestPatchSameMinorAMD64 = "0.0.3"
+		overallLatestVersionARM    = "3.0.0"
+		overallLatestVersionAMD64  = "3.0.1"
+
+		testMachineImageVersion = "0.0.1-beta"
+		testMachineImage        = gardencorev1beta1.ShootMachineImage{
+			Name:    machineImageName,
+			Version: &testMachineImageVersion,
+		}
+
+		// other
+		deprecatedClassification = gardencorev1beta1.ClassificationDeprecated
+		supportedClassification  = gardencorev1beta1.ClassificationSupported
+		expirationDateInThePast  = metav1.Date(2012, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		testKubernetesVersionLowPatchLowMinor             gardencorev1beta1.ExpirableVersion
+		testKubernetesVersionHighestPatchLowMinor         gardencorev1beta1.ExpirableVersion
+		testKubernetesVersionLowPatchConsecutiveMinor     gardencorev1beta1.ExpirableVersion
+		testKubernetesVersionHighestPatchConsecutiveMinor gardencorev1beta1.ExpirableVersion
+	)
+
+	BeforeEach(func() {
+		DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.CloudProfileCapabilities, true))
+		DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.InPlaceNodeUpdates, true))
+		testKubernetesVersionLowPatchLowMinor = gardencorev1beta1.ExpirableVersion{Version: "0.0.1", Classification: &deprecatedClassification}
+		testKubernetesVersionHighestPatchLowMinor = gardencorev1beta1.ExpirableVersion{Version: "0.0.5", Classification: &deprecatedClassification}
+		testKubernetesVersionLowPatchConsecutiveMinor = gardencorev1beta1.ExpirableVersion{Version: "0.1.1", Classification: &deprecatedClassification}
+		testKubernetesVersionHighestPatchConsecutiveMinor = gardencorev1beta1.ExpirableVersion{Version: "0.1.5", Classification: &deprecatedClassification}
+
+		fakeClock.SetTime(time.Now().Round(time.Second))
+
+		var capabilityDefinitions []gardencorev1beta1.CapabilityDefinition
+		var imageFlavors, imageFlavorsArm, imageFlavorsAmd []gardencorev1beta1.MachineImageFlavor
+		var capabilitiesAmd64, capabilitiesArm64 gardencorev1beta1.Capabilities
+		if isCapabilitiesCloudProfile {
+			capabilityDefinitions = []gardencorev1beta1.CapabilityDefinition{
+				{
+					Name:   "architecture",
+					Values: []string{v1beta1constants.ArchitectureAMD64, v1beta1constants.ArchitectureARM64},
+				},
+			}
+			capabilitiesAmd64 = gardencorev1beta1.Capabilities{
+				"architecture": []string{v1beta1constants.ArchitectureAMD64},
+			}
+			capabilitiesArm64 = gardencorev1beta1.Capabilities{
+				"architecture": []string{v1beta1constants.ArchitectureARM64},
+			}
+			imageFlavorsArm = []gardencorev1beta1.MachineImageFlavor{
+				{Capabilities: gardencorev1beta1.Capabilities{"architecture": []string{v1beta1constants.ArchitectureARM64}}},
+			}
+			imageFlavorsAmd = []gardencorev1beta1.MachineImageFlavor{
+				{Capabilities: gardencorev1beta1.Capabilities{"architecture": []string{v1beta1constants.ArchitectureAMD64}}},
+			}
+			imageFlavors = []gardencorev1beta1.MachineImageFlavor{
+				{Capabilities: gardencorev1beta1.Capabilities{"architecture": []string{v1beta1constants.ArchitectureAMD64}}},
+				{Capabilities: gardencorev1beta1.Capabilities{"architecture": []string{v1beta1constants.ArchitectureARM64}}},
+			}
+		}
+
+		cloudProfile = &gardencorev1beta1.CloudProfile{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: testID + "-",
+			},
+			Spec: gardencorev1beta1.CloudProfileSpec{
+				MachineCapabilities: capabilityDefinitions,
+				Kubernetes: gardencorev1beta1.KubernetesSettings{
+					Versions: []gardencorev1beta1.ExpirableVersion{
+						{
+							Version: "1.30.0",
+						},
+						{
+							Version: "1.31.0",
+						},
+						{
+							Version: "1.32.0",
+						},
+						{
+							Version: "1.33.0",
+						},
+						{
+							Version: "1.34.0",
+						},
+						{
+							Version: "1.35.0",
+						},
+						testKubernetesVersionLowPatchLowMinor,
+						testKubernetesVersionHighestPatchLowMinor,
+						testKubernetesVersionLowPatchConsecutiveMinor,
+						testKubernetesVersionHighestPatchConsecutiveMinor,
+					},
+				},
+				MachineImages: []gardencorev1beta1.MachineImage{
+					{
+						Name: machineImageName,
+						Versions: []gardencorev1beta1.MachineImageVersion{
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// ARM overall latest version: 3.0.0
+									Version:        overallLatestVersionARM,
+									Classification: &deprecatedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"arm64"},
+								CapabilityFlavors: imageFlavorsArm,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// AMD64 overall latest version: 3.0.1
+									Version:        overallLatestVersionAMD64,
+									Classification: &supportedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64"},
+								CapabilityFlavors: imageFlavorsAmd,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// latest ARM {patch, minor} of next major: 2.1.1
+									Version:        highestVersionNextMajorARM,
+									Classification: &deprecatedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"arm64"},
+								CapabilityFlavors: imageFlavorsArm,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// latest AMD64 {patch, minor} of next major: 2.1.3
+									Version:        highestVersionNextMajorAMD64,
+									Classification: &supportedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64"},
+								CapabilityFlavors: imageFlavorsAmd,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// patch update should never be forcefully updated to the next major version
+									Version:        highestSupportedARMVersion,
+									Classification: &supportedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64", "arm64"},
+								CapabilityFlavors: imageFlavors,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// latest patch for minor: 0.4.1
+									Version:        highestVersionForCurrentMajorARM,
+									Classification: &supportedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"arm64"},
+								CapabilityFlavors: imageFlavorsArm,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// latest patch for minor: 0.3.0
+									Version:        highestVersionForCurrentMajorAMD64,
+									Classification: &supportedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64"},
+								CapabilityFlavors: imageFlavorsAmd,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// ARM: highest patch version for next higher minor version
+									// should be force-updated to this version: 0.2.4
+									Version:        highestPatchNextMinorARM,
+									Classification: &deprecatedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"arm64"},
+								CapabilityFlavors: imageFlavorsArm,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// AMD64: highest patch version for next higher minor version
+									// should be force-updated to this version: 0.2.3
+									Version:        highestPatchNextMinorAMD64,
+									Classification: &deprecatedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64"},
+								CapabilityFlavors: imageFlavorsAmd,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									Version:        "0.2.0",
+									Classification: &deprecatedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64", "arm64"},
+								CapabilityFlavors: imageFlavors,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// ARM highest patch version for Shoot's minor: 0.0.4
+									Version:        highestPatchSameMinorARM,
+									Classification: &supportedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"arm64"},
+								CapabilityFlavors: imageFlavorsArm,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									// AMD64 highest patch version for Shoot's minor: 0.0.3
+									Version:        highestPatchSameMinorAMD64,
+									Classification: &deprecatedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64"},
+								CapabilityFlavors: imageFlavorsAmd,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									Version:        "0.0.2",
+									Classification: &deprecatedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64", "arm64"},
+								CapabilityFlavors: imageFlavors,
+							},
+							{
+								ExpirableVersion: gardencorev1beta1.ExpirableVersion{
+									Version:        testMachineImageVersion,
+									Classification: &deprecatedClassification,
+								},
+								CRI: []gardencorev1beta1.CRI{
+									{
+										Name: gardencorev1beta1.CRINameContainerD,
+									},
+								},
+								Architectures:     []string{"amd64", "arm64"},
+								CapabilityFlavors: imageFlavors,
+							},
+						},
+					},
+				},
+				MachineTypes: []gardencorev1beta1.MachineType{
+					{
+						Name:         "large",
+						Capabilities: capabilitiesAmd64,
+					},
+					{
+						Name:         "large-arm",
+						Architecture: &architectureArm64,
+						Capabilities: capabilitiesArm64,
+					},
+				},
+				Regions: []gardencorev1beta1.Region{
+					{
+						Name: "foo-region",
+					},
+				},
+				Type: "foo-type",
+			},
+		}
+
+		By("Create CloudProfile")
+		Expect(testClient.Create(ctx, cloudProfile)).To(Succeed())
+		log.Info("Created CloudProfile for test", "cloudProfile", client.ObjectKeyFromObject(cloudProfile))
+
+		DeferCleanup(func() {
+			By("Delete CloudProfile")
+			Expect(client.IgnoreNotFound(testClient.Delete(ctx, cloudProfile))).To(Succeed())
+		})
+
+		shoot = &gardencorev1beta1.Shoot{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "test-", Namespace: testNamespace.Name},
+			Spec: gardencorev1beta1.ShootSpec{
+				CredentialsBindingName: new("my-provider-account"),
+				CloudProfile:           &gardencorev1beta1.CloudProfileReference{Name: cloudProfile.Name},
+				Region:                 "foo-region",
+				Provider: gardencorev1beta1.Provider{
+					Type: "foo-provider",
+					Workers: []gardencorev1beta1.Worker{
+						{
+							Name:    "cpu-worker1",
+							Minimum: 2,
+							Maximum: 2,
+							Machine: gardencorev1beta1.Machine{
+								Image:        &testMachineImage,
+								Type:         "large",
+								Architecture: new(v1beta1constants.ArchitectureAMD64),
+							},
+						},
+						{
+							Name:    "cpu-worker2",
+							Minimum: 2,
+							Maximum: 2,
+							Machine: gardencorev1beta1.Machine{
+								Image:        &testMachineImage,
+								Type:         "large-arm",
+								Architecture: new(v1beta1constants.ArchitectureARM64),
+							},
+						},
+					},
+				},
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					Version: "1.31.1",
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Type: new("foo-networking"),
+				},
+				Maintenance: &gardencorev1beta1.Maintenance{
+					AutoUpdate: &gardencorev1beta1.MaintenanceAutoUpdate{
+						KubernetesVersion:   false,
+						MachineImageVersion: new(false),
+					},
+					TimeWindow: &gardencorev1beta1.MaintenanceTimeWindow{
+						Begin: timewindow.NewMaintenanceTime(time.Now().Add(2*time.Hour).Hour(), 0, 0).Formatted(),
+						End:   timewindow.NewMaintenanceTime(time.Now().Add(4*time.Hour).Hour(), 0, 0).Formatted(),
+					},
+				},
+			},
+		}
+
+		shoot130 = shoot.DeepCopy()
+		shoot133 = shoot.DeepCopy()
+		shoot134 = shoot.DeepCopy()
+		// set dummy kubernetes version to shoot
+		shoot.Spec.Kubernetes.Version = testKubernetesVersionLowPatchLowMinor.Version
+
+		By("Create Shoot")
+		Expect(testClient.Create(ctx, shoot)).To(Succeed())
+		log.Info("Created shoot for test", "shoot", client.ObjectKeyFromObject(shoot))
+
+		DeferCleanup(func() {
+			By("Delete Shoot")
+			Expect(client.IgnoreNotFound(testClient.Delete(ctx, shoot))).To(Succeed())
+		})
+	})
+
+	It("should add task annotations", func() {
+		By("Trigger maintenance")
+		Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+		waitForShootToBeMaintained(shoot)
+
+		By("Ensure task annotations are present")
+		Expect(shoot.Annotations).To(HaveKey("shoot.gardener.cloud/tasks"))
+		Expect(strings.Split(shoot.Annotations["shoot.gardener.cloud/tasks"], ",")).To(And(
+			ContainElement("deployInfrastructure"),
+			ContainElement("deployDNSRecordInternal"),
+			ContainElement("deployDNSRecordExternal"),
+			ContainElement("deployDNSRecordIngress"),
+		))
+	})
+
+	Context("operation annotations", func() {
+		var oldGeneration int64
+
+		BeforeEach(func() {
+			oldGeneration = shoot.Generation
+		})
+
+		Context("failed last operation state", func() {
+			BeforeEach(func() {
+				By("Prepare shoot")
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Status.LastOperation = &gardencorev1beta1.LastOperation{State: gardencorev1beta1.LastOperationStateFailed}
+				Expect(testClient.Status().Patch(ctx, shoot, patch)).To(Succeed())
+			})
+
+			It("should not set the retry operation annotation due to missing 'needs-retry-operation' annotation", func() {
+				By("Trigger maintenance")
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				waitForShootToBeMaintained(shoot)
+
+				By("Ensure proper operation annotation handling")
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				Expect(shoot.Generation).To(Equal(oldGeneration))
+				Expect(shoot.Annotations["gardener.cloud/operation"]).To(BeEmpty())
+			})
+
+			It("should set the retry operation annotation due to 'needs-retry-operation' annotation (implicitly increasing the generation)", func() {
+				By("Prepare shoot")
+				patch := client.MergeFrom(shoot.DeepCopy())
+				metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, "maintenance.shoot.gardener.cloud/needs-retry-operation", "true")
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				By("Trigger maintenance")
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				waitForShootToBeMaintained(shoot)
+
+				By("Ensure proper operation annotation handling")
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				Expect(shoot.Generation).To(Equal(oldGeneration + 1))
+				Expect(shoot.Annotations["gardener.cloud/operation"]).To(BeEmpty())
+				Expect(shoot.Annotations["maintenance.shoot.gardener.cloud/needs-retry-operation"]).To(BeEmpty())
+			})
+		})
+
+		Context("non-failed last operation states", func() {
+			BeforeEach(func() {
+				By("Prepare shoot")
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Status.LastOperation = &gardencorev1beta1.LastOperation{}
+				Expect(testClient.Status().Patch(ctx, shoot, patch)).To(Succeed())
+			})
+
+			It("should set the reconcile operation annotation (implicitly increasing the generation)", func() {
+				By("Trigger maintenance")
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				waitForShootToBeMaintained(shoot)
+
+				By("Ensure proper operation annotation handling")
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				Expect(shoot.Generation).To(Equal(oldGeneration + 1))
+				Expect(shoot.Annotations["gardener.cloud/operation"]).To(BeEmpty())
+			})
+
+			It("should set the maintenance operation annotation if it's valid", func() {
+				By("Prepare shoot")
+				patch := client.MergeFrom(shoot.DeepCopy())
+				metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, "maintenance.gardener.cloud/operation", "rotate-ssh-keypair")
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				By("Trigger maintenance")
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				waitForShootToBeMaintained(shoot)
+
+				By("Ensure proper operation annotation handling")
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				Expect(shoot.Generation).To(Equal(oldGeneration + 1))
+				Expect(shoot.Annotations["gardener.cloud/operation"]).To(Equal("rotate-ssh-keypair"))
+				Expect(shoot.Annotations["maintenance.gardener.cloud/operation"]).To(BeEmpty())
+			})
+
+			It("should not set the maintenance operation annotation if it's invalid and use the reconcile operation instead", func() {
+				By("Prepare shoot")
+				patch := client.MergeFrom(shoot.DeepCopy())
+				metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, "maintenance.gardener.cloud/operation", "foo-bar-does-not-exist")
+				err := testClient.Patch(ctx, shoot, patch)
+				Expect(apierrors.IsInvalid(err)).To(BeTrue())
+
+				By("Trigger maintenance")
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				waitForShootToBeMaintained(shoot)
+
+				By("Ensure proper operation annotation handling")
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				Expect(shoot.Generation).To(Equal(oldGeneration + 1))
+				Expect(shoot.Annotations["gardener.cloud/operation"]).To(BeEmpty())
+				Expect(shoot.Annotations["maintenance.gardener.cloud/operation"]).To(BeEmpty())
+			})
+		})
+	})
+
+	Context("failed last maintenance operation", func() {
+		BeforeEach(func() {
+			By("Prepare shoot")
+			patch := client.MergeFrom(shoot.DeepCopy())
+			shoot.Status.LastMaintenance = &gardencorev1beta1.LastMaintenance{State: gardencorev1beta1.LastOperationStateFailed}
+			Expect(testClient.Status().Patch(ctx, shoot, patch)).To(Succeed())
+		})
+
+		It("should remove the failed state of maintenance in case no changes were made during maintenance", func() {
+			By("Trigger maintenance")
+			Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+			waitForShootToBeMaintained(shoot)
+
+			Eventually(func(g Gomega) {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+				g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Maintenance succeeded"))
+				g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+			}).Should(Succeed())
+		})
+
+		It("should update the maintenance status according to the changes made during maintenance", func() {
+			// expire the Shoot's Kubernetes version because autoupdate is set to false
+			patch := client.MergeFrom(shoot.DeepCopy())
+			shoot.Spec.Provider.Workers[0].Kubernetes = &gardencorev1beta1.WorkerKubernetes{Version: new(testKubernetesVersionLowPatchLowMinor.Version)}
+			Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+			By("Expire Shoot's kubernetes version in the CloudProfile")
+			Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, testKubernetesVersionLowPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+			By("Wait until manager has observed the CloudProfile update")
+			waitKubernetesVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, testKubernetesVersionLowPatchLowMinor.Version, &expirationDateInThePast)
+
+			Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+			Eventually(func(g Gomega) string {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+				g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Control Plane: Updated Kubernetes version from \"0.0.1\" to \"0.0.5\". Reason: Kubernetes version expired - force update required, Worker pool \"cpu-worker1\": Updated Kubernetes version from \"0.0.1\" to \"0.0.5\". Reason: Kubernetes version expired - force update required"))
+				g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+				return *shoot.Spec.Provider.Workers[0].Kubernetes.Version
+			}).Should(Equal(testKubernetesVersionHighestPatchLowMinor.Version))
+		})
+	})
+
+	Describe("Machine image maintenance tests", func() {
+
+		It("Do not update Shoot machine image in maintenance time: AutoUpdate.MachineImageVersion == false && expirationDate does not apply", func() {
+			Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+			Consistently(func(g Gomega) {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: testMachineImage.Name, Version: testMachineImage.Version}))
+				g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: testMachineImage.Name, Version: testMachineImage.Version}))
+			}).Should(Succeed())
+		})
+
+		Describe("AutoUpdateStrategy: major (default)", func() {
+			BeforeEach(func() {
+				By("Set updateStrategy: major for Shoot's machine image in the CloudProfile")
+				patch := client.MergeFrom(cloudProfile.DeepCopy())
+				updateStrategyMajor := gardencorev1beta1.UpdateStrategyMajor
+				cloudProfile.Spec.MachineImages[0].UpdateStrategy = &updateStrategyMajor
+				Expect(testClient.Patch(ctx, cloudProfile, patch)).To(Succeed())
+			})
+
+			It("auto update to latest overall version (update strategy: major)", func() {
+				By("Set autoupdate=true and Shoot's machine version to be the latest in the minor in the CloudProfile")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &highestPatchSameMinorAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &highestPatchSameMinorARM
+				cloneShoot.Spec.Maintenance.AutoUpdate.MachineImageVersion = new(true)
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &overallLatestVersionAMD64}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &highestSupportedARMVersion}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Reason: Automatic update of the machine image version is configured (image update strategy: major)"))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+			It("force update to latest overall version because the machine image is expired (update strategy: major)", func() {
+				By("Set Shoot's machine version to be the latest in the minor in the CloudProfile")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &highestPatchSameMinorAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &highestPatchSameMinorARM
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				By("Expire Shoot worker 1's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Expire Shoot worker 2's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update for the first worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[0].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version, &expirationDateInThePast)
+
+				By("Wait until manager has observed the CloudProfile update for the second worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[1].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &overallLatestVersionAMD64}))
+					// updates for strategy major prefer upgrading to a supported version. Here, the latest ARM supported version is version "2.0.0" and the ARM latest overall version
+					// is a deprecated version "3.0.0"
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &highestSupportedARMVersion}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Reason: Machine image version expired - force update required (image update strategy: major)"))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+			It("updating one worker pool fails, while the other one succeeds (update strategy: major)", func() {
+				By("Set Shoot's machine version to be the latest in the minor in the CloudProfile")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &highestPatchSameMinorAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &overallLatestVersionARM
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				cpPatch := client.MergeFrom(cloudProfile.DeepCopy())
+				updateStrategyMajor := gardencorev1beta1.UpdateStrategyMajor
+				cloudProfile.Spec.MachineImages[0].UpdateStrategy = &updateStrategyMajor
+				Expect(testClient.Patch(ctx, cloudProfile, cpPatch)).To(Succeed())
+
+				By("Expire Shoot worker 1's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Expire Shoot worker 2's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update for the first worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[0].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version, &expirationDateInThePast)
+
+				By("Wait until manager has observed the CloudProfile update for the second worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[1].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &overallLatestVersionAMD64}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &overallLatestVersionARM}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("(1/2) maintenance operations successful"))
+					g.Expect(shoot.Status.LastMaintenance.FailureReason).ToNot(BeNil())
+					g.Expect(*shoot.Status.LastMaintenance.FailureReason).To(ContainSubstring("Worker pool \"cpu-worker2\": failed to update machine image"))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateFailed))
+				}).Should(Succeed())
+			})
+
+			It("force update to latest patch version in minor, as the current version is not the latest for the current minor (update strategy: major)", func() {
+				By("Expire Shoot's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, testMachineImage, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, testMachineImage.Name, *testMachineImage.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &highestPatchSameMinorAMD64}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &highestPatchSameMinorARM}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Reason: Machine image version expired - force update required (image update strategy: major)"))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+		})
+
+		Describe("AutoUpdateStrategy: patch", func() {
+			BeforeEach(func() {
+				By("Set updateStrategy: major for Shoot's machine image in the CloudProfile")
+				patch := client.MergeFrom(cloudProfile.DeepCopy())
+				updateStrategyPatch := gardencorev1beta1.UpdateStrategyPatch
+				cloudProfile.Spec.MachineImages[0].UpdateStrategy = &updateStrategyPatch
+				Expect(testClient.Patch(ctx, cloudProfile, patch)).To(Succeed())
+			})
+
+			It("auto update to latest patch version in minor (update strategy: patch)", func() {
+				// set test specific shoot settings
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Spec.Maintenance.AutoUpdate.MachineImageVersion = new(true)
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: machineImageName, Version: new(highestPatchSameMinorAMD64)}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: machineImageName, Version: new(highestPatchSameMinorARM)}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker1\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Automatic update of the machine image version is configured (image update strategy: patch)", testMachineImageVersion, highestPatchSameMinorAMD64)))
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker2\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Automatic update of the machine image version is configured (image update strategy: patch)", testMachineImageVersion, highestPatchSameMinorARM)))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+			It("force update to latest patch version in minor - not on latest patch version yet (update strategy: patch)", func() {
+				By("Expire Shoot's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, testMachineImage, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, testMachineImage.Name, *testMachineImage.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &highestPatchSameMinorAMD64}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker1\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Machine image version expired - force update required (image update strategy: patch)", testMachineImageVersion, highestPatchSameMinorAMD64)))
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker2\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Machine image version expired - force update required (image update strategy: patch)", testMachineImageVersion, highestPatchSameMinorARM)))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+			It("force update to latest version in next minor because the machine image is expired (update strategy: patch)", func() {
+				By("Set Shoot's machine version in the CloudProfile to be the latest in the minor")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &highestPatchSameMinorAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &highestPatchSameMinorARM
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				By("Expire Shoot worker 1's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Expire Shoot worker 2's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update for the first worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[0].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version, &expirationDateInThePast)
+
+				By("Wait until manager has observed the CloudProfile update for the second worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[1].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &highestPatchNextMinorAMD64}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &highestPatchNextMinorARM}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker1\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Machine image version expired - force update required (image update strategy: patch)", highestPatchSameMinorAMD64, highestPatchNextMinorAMD64)))
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker2\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Machine image version expired - force update required (image update strategy: patch)", highestPatchSameMinorARM, highestPatchNextMinorARM)))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+			It("fail to force update because already on latest patch in minor (update strategy: patch)", func() {
+				By("Set Shoot's machine version in the CloudProfile to be the latest in the current major")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &highestVersionForCurrentMajorAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &highestVersionForCurrentMajorARM
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				By("Expire Shoot worker 1's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Expire Shoot worker 2's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update for the first worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[0].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version, &expirationDateInThePast)
+
+				By("Wait until manager has observed the CloudProfile update for the second worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[1].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &highestVersionForCurrentMajorAMD64}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &highestVersionForCurrentMajorARM}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateFailed))
+				}).Should(Succeed())
+			})
+		})
+
+		Describe("AutoUpdateStrategy: minor", func() {
+			BeforeEach(func() {
+				By("Set updateStrategy: minor for Shoot's machine image in the CloudProfile")
+				patch := client.MergeFrom(cloudProfile.DeepCopy())
+				updateStrategyMinor := gardencorev1beta1.UpdateStrategyMinor
+				cloudProfile.Spec.MachineImages[0].UpdateStrategy = &updateStrategyMinor
+				Expect(testClient.Patch(ctx, cloudProfile, patch)).To(Succeed())
+			})
+
+			It("auto update to latest patch version in major (update strategy: minor)", func() {
+				By("Set Shoot's machine version in the CloudProfile to be the latest in the minor (so does not upgrade to latest in minor first)")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Maintenance.AutoUpdate.MachineImageVersion = new(true)
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &highestPatchNextMinorAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &highestPatchNextMinorARM
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: machineImageName, Version: new(highestVersionForCurrentMajorAMD64)}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: machineImageName, Version: new(highestVersionForCurrentMajorARM)}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker1\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Automatic update of the machine image version is configured (image update strategy: minor)", highestPatchNextMinorAMD64, highestVersionForCurrentMajorAMD64)))
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker2\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Automatic update of the machine image version is configured (image update strategy: minor)", highestPatchNextMinorARM, highestVersionForCurrentMajorARM)))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+			It("force update to latest version in current major - not on latest in current major yet (update strategy: minor)", func() {
+				By("Set Shoot's machine version in the CloudProfile to be the latest in the current major (so does not upgrade to latest in current major first)")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &highestPatchSameMinorAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &highestPatchSameMinorARM
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				By("Expire Shoot worker 1's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Expire Shoot worker 2's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update for the first worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[0].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version, &expirationDateInThePast)
+
+				By("Wait until manager has observed the CloudProfile update for the second worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[1].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &highestVersionForCurrentMajorAMD64}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &highestVersionForCurrentMajorARM}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker1\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Machine image version expired - force update required (image update strategy: minor)", highestPatchSameMinorAMD64, highestVersionForCurrentMajorAMD64)))
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker2\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Machine image version expired - force update required (image update strategy: minor)", highestPatchSameMinorARM, highestVersionForCurrentMajorARM)))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+			It("force update to latest version in the next major (update strategy: minor)", func() {
+				By("Set Shoot's machine version in the CloudProfile to be the latest in the current major (so does not upgrade to latest in current major first)")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &highestVersionForCurrentMajorAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &highestVersionForCurrentMajorARM
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				By("Expire Shoot worker 1's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Expire Shoot worker 2's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update for the first worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[0].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version, &expirationDateInThePast)
+
+				By("Wait until manager has observed the CloudProfile update for the second worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[1].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &highestVersionNextMajorAMD64}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &highestVersionNextMajorARM}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker1\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Machine image version expired - force update required (image update strategy: minor)", highestVersionForCurrentMajorAMD64, highestVersionNextMajorAMD64)))
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(fmt.Sprintf("Worker pool \"cpu-worker2\": Updated machine image \"foo-image\" from \"%s\" to \"%s\". Reason: Machine image version expired - force update required (image update strategy: minor)", highestVersionForCurrentMajorARM, highestVersionNextMajorARM)))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				}).Should(Succeed())
+			})
+
+			It("fail to force update because already on overall latest version (update strategy: minor)", func() {
+				By("Set Shoot's machine version in the CloudProfile to be the latest in the current major")
+				cloneShoot := &gardencorev1beta1.Shoot{}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), cloneShoot)).ToNot(HaveOccurred())
+				patch := client.StrategicMergeFrom(cloneShoot.DeepCopy())
+
+				cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version = &overallLatestVersionAMD64
+				cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version = &overallLatestVersionARM
+				Expect(testClient.Patch(ctx, cloneShoot, patch)).ToNot(HaveOccurred())
+
+				By("Expire Shoot worker 1's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Expire Shoot worker 2's machine image in the CloudProfile")
+				Expect(patchCloudProfileForMachineImageMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update for the first worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[0].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[0].Machine.Image.Version, &expirationDateInThePast)
+
+				By("Wait until manager has observed the CloudProfile update for the second worker")
+				waitMachineImageVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, cloneShoot.Spec.Provider.Workers[1].Machine.Image.Name, *cloneShoot.Spec.Provider.Workers[1].Machine.Image.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(*shoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[0].Machine.Image.Name, Version: &overallLatestVersionAMD64}))
+					g.Expect(*shoot.Spec.Provider.Workers[1].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: shoot.Spec.Provider.Workers[1].Machine.Image.Name, Version: &overallLatestVersionARM}))
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateFailed))
+				}).Should(Succeed())
+			})
+		})
+
+		It("should not update machine image for self-hosted shoot without managed infrastructure", func() {
+			selfHostedShoot := shoot.DeepCopy()
+			selfHostedShoot.Name = ""
+			selfHostedShoot.ResourceVersion = ""
+			selfHostedShoot.Namespace = v1beta1constants.GardenNamespace
+			selfHostedShoot.Spec.CredentialsBindingName = nil
+			selfHostedShoot.Spec.Provider.Workers = []gardencorev1beta1.Worker{
+				{
+					Name:         "worker",
+					Minimum:      1,
+					Maximum:      1,
+					ControlPlane: &gardencorev1beta1.WorkerControlPlane{},
+					Machine:      shoot.Spec.Provider.Workers[0].Machine,
+				},
+			}
+			selfHostedShoot.Spec.Provider.Workers[0].Machine.Image = testMachineImage.DeepCopy()
+			selfHostedShoot.Spec.Maintenance.AutoUpdate.MachineImageVersion = new(true)
+
+			By("Create shoot without managed infrastructure")
+			Expect(testClient.Create(ctx, selfHostedShoot)).To(Succeed())
+			DeferCleanup(func() {
+				By("Delete shoot without managed infrastructure")
+				Expect(client.IgnoreNotFound(testClient.Delete(ctx, selfHostedShoot))).To(Succeed())
+			})
+
+			By("Trigger maintenance")
+			Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, selfHostedShoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+			waitForShootToBeMaintained(selfHostedShoot)
+
+			By("Ensure machine image version was not updated")
+			Expect(testClient.Get(ctx, client.ObjectKeyFromObject(selfHostedShoot), selfHostedShoot)).To(Succeed())
+			Expect(*selfHostedShoot.Spec.Provider.Workers[0].Machine.Image).To(Equal(gardencorev1beta1.ShootMachineImage{Name: testMachineImage.Name, Version: testMachineImage.Version}))
+		})
+	})
+
+	Describe("Kubernetes version maintenance tests", func() {
+		var test = func() {
+			It("Kubernetes version should not be updated: auto update not enabled", func() {
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Consistently(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					return shoot.Spec.Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionLowPatchLowMinor.Version))
+			})
+
+			It("Kubernetes version should be updated: auto update enabled", func() {
+				// set test specific shoot settings
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Spec.Maintenance.AutoUpdate.KubernetesVersion = true
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Control Plane: Updated Kubernetes version from \"0.0.1\" to \"0.0.5\". Reason: Automatic update of Kubernetes version configured"))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					return shoot.Spec.Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionHighestPatchLowMinor.Version))
+			})
+
+			It("Kubernetes version should be updated: force update patch version", func() {
+				By("Expire Shoot's kubernetes version in the CloudProfile")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, testKubernetesVersionLowPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, testKubernetesVersionLowPatchLowMinor.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Control Plane: Updated Kubernetes version from \"0.0.1\" to \"0.0.5\". Reason: Kubernetes version expired - force update required"))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					return shoot.Spec.Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionHighestPatchLowMinor.Version))
+			})
+
+			It("Kubernetes version should be updated: force update minor version", func() {
+				// set the shoots Kubernetes version to be the highest patch version of the minor version
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Spec.Kubernetes.Version = testKubernetesVersionHighestPatchLowMinor.Version
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				By("Expire Shoot's kubernetes version in the CloudProfile")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				// expect shoot to have updated to latest patch version of next minor version
+				Eventually(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Control Plane: Updated Kubernetes version from \"0.0.5\" to \"0.1.5\". Reason: Kubernetes version expired - force update required"))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					return shoot.Spec.Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionHighestPatchConsecutiveMinor.Version))
+			})
+
+			It("Kubernetes version should be updated: force update minor version and maintain feature gates and admission plugins", func() {
+				testKubernetesVersionLowPatchLowMinor = gardencorev1beta1.ExpirableVersion{Version: "1.30.1", Classification: &deprecatedClassification}
+				testKubernetesVersionHighestPatchLowMinor = gardencorev1beta1.ExpirableVersion{Version: "1.30.5", Classification: &deprecatedClassification}
+				testKubernetesVersionLowPatchConsecutiveMinor = gardencorev1beta1.ExpirableVersion{Version: "1.31.1", Classification: &deprecatedClassification}
+				testKubernetesVersionHighestPatchConsecutiveMinor = gardencorev1beta1.ExpirableVersion{Version: "1.31.5", Classification: &deprecatedClassification}
+				var (
+					// Use two actual feature gates from pkg/utils/validation/features/featuregates.go
+					// which are supported in testKubernetesVersionHighestPatchLowMinor.Version
+					// but not in testKubernetesVersionHighestPatchConsecutiveMinor.Version
+					unsupportedfeatureGate1 = "CSIMigrationRBD"
+					unsupportedfeatureGate2 = "APIPriorityAndFairness"
+					// Use two feature gates which are supported in both versions
+					supportedfeatureGate1 = "APIServerIdentity"
+					supportedfeatureGate2 = "AllBeta"
+
+					supportedAdmissionPlugin1 = "AlwaysPullImages"
+					supportedAdmissionPlugin2 = "AlwaysDeny"
+					// No unsupported admission plugins are present as of now
+					unsupportedAdmissionPlugin1 = "PersistentVolumeLabel"
+				)
+
+				patch := client.MergeFrom(cloudProfile.DeepCopy())
+				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{
+					testKubernetesVersionLowPatchLowMinor,
+					testKubernetesVersionHighestPatchLowMinor,
+					testKubernetesVersionLowPatchConsecutiveMinor,
+					testKubernetesVersionHighestPatchConsecutiveMinor,
+				}
+
+				Expect(testClient.Patch(ctx, cloudProfile, patch)).To(Succeed())
+
+				// set the shoots Kubernetes version to be the highest patch version of the minor version
+				shoot130.Spec.Kubernetes = gardencorev1beta1.Kubernetes{
+					Version: testKubernetesVersionHighestPatchLowMinor.Version,
+					KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate1:   true,
+								unsupportedfeatureGate1: true,
+								supportedfeatureGate2:   false,
+							},
+						},
+						AdmissionPlugins: []gardencorev1beta1.AdmissionPlugin{
+							{Name: supportedAdmissionPlugin1},
+							{Name: supportedAdmissionPlugin2},
+							{Name: unsupportedAdmissionPlugin1},
+						},
+					},
+					KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate1:   true,
+								unsupportedfeatureGate1: true,
+							},
+						},
+					},
+					KubeScheduler: &gardencorev1beta1.KubeSchedulerConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate2:   true,
+								unsupportedfeatureGate1: true,
+								unsupportedfeatureGate2: true,
+							},
+						},
+					},
+					KubeProxy: &gardencorev1beta1.KubeProxyConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate1:   true,
+								supportedfeatureGate2:   false,
+								unsupportedfeatureGate2: true,
+							},
+						},
+					},
+					Kubelet: &gardencorev1beta1.KubeletConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate1:   true,
+								unsupportedfeatureGate1: true,
+								unsupportedfeatureGate2: true,
+							},
+						},
+					},
+				}
+
+				By("Create k8s v1.30 Shoot")
+				Expect(testClient.Create(ctx, shoot130)).To(Succeed())
+				log.Info("Created shoot with k8s v1.30 for test", "shoot", client.ObjectKeyFromObject(shoot130))
+
+				DeferCleanup(func() {
+					By("Delete Shoot with k8s v1.30")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, shoot130))).To(Succeed())
+				})
+
+				By("Expire Shoot's kubernetes version in the CloudProfile")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot130.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot130.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot130, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				// expect shoot to have updated to latest patch version of next minor version
+				Eventually(func(g Gomega) string {
+					updatedShoot := &gardencorev1beta1.Shoot{}
+
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot130), updatedShoot)).To(Succeed())
+					g.Expect(updatedShoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Control Plane: Updated Kubernetes version from \"1.30.5\" to \"1.31.5\". Reason: Kubernetes version expired - force update required"))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Removed admission plugins from \"spec.kubernetes.kubeAPIServer.admissionPlugins\" because they are not supported in Kubernetes version \"1.31.5\": PersistentVolumeLabel"))
+					g.Expect(updatedShoot.Spec.Kubernetes.KubeAPIServer.AdmissionPlugins).To(ConsistOf(
+						HaveField("Name", Equal(supportedAdmissionPlugin1)),
+						HaveField("Name", Equal(supportedAdmissionPlugin2)),
+					))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Removed feature gates from \"spec.kubernetes.kubeAPIServer.featureGates\" because they are not supported in Kubernetes version \"1.31.5\": CSIMigrationRBD"))
+					g.Expect(updatedShoot.Spec.Kubernetes.KubeAPIServer.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate1: true,
+						supportedfeatureGate2: false,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Removed feature gates from \"spec.kubernetes.kubeControllerManager.featureGates\" because they are not supported in Kubernetes version \"1.31.5\": CSIMigrationRBD"))
+					g.Expect(updatedShoot.Spec.Kubernetes.KubeControllerManager.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate1: true,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Removed feature gates from \"spec.kubernetes.kubeScheduler.featureGates\" because they are not supported in Kubernetes version \"1.31.5\": APIPriorityAndFairness, CSIMigrationRBD"))
+					g.Expect(updatedShoot.Spec.Kubernetes.KubeScheduler.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate2: true,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Removed feature gates from \"spec.kubernetes.kubeProxy.featureGates\" because they are not supported in Kubernetes version \"1.31.5\": APIPriorityAndFairness"))
+					g.Expect(updatedShoot.Spec.Kubernetes.KubeProxy.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate1: true,
+						supportedfeatureGate2: false,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Removed feature gates from \"spec.kubernetes.kubelet.featureGates\" because they are not supported in Kubernetes version \"1.31.5\": APIPriorityAndFairness, CSIMigrationRBD"))
+					g.Expect(updatedShoot.Spec.Kubernetes.Kubelet.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate1: true,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(updatedShoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+
+					return updatedShoot.Spec.Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionHighestPatchConsecutiveMinor.Version))
+			})
+		}
+
+		Context("Shoot with worker", func() {
+			test()
+		})
+
+		Context("Workerless Shoot", func() {
+			BeforeEach(func() {
+				shoot.Spec.Provider.Workers = nil
+			})
+
+			test()
+		})
+
+		Describe("Worker Pool Kubernetes version maintenance tests", func() {
+			It("Kubernetes version should not be updated: auto update not enabled", func() {
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Consistently(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					return shoot.Spec.Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionLowPatchLowMinor.Version))
+			})
+
+			It("Kubernetes version should be updated: auto update enabled", func() {
+				// set test specific shoot settings
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Spec.Maintenance.AutoUpdate.KubernetesVersion = true
+				shoot.Spec.Provider.Workers[0].Kubernetes = &gardencorev1beta1.WorkerKubernetes{Version: new(testKubernetesVersionLowPatchLowMinor.Version)}
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("All maintenance operations successful. Control Plane: Updated Kubernetes version from \"0.0.1\" to \"0.0.5\". Reason: Automatic update of Kubernetes version configured, Worker pool \"cpu-worker1\": Updated Kubernetes version from \"0.0.1\" to \"0.0.5\". Reason: Automatic update of Kubernetes version configured"))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					return *shoot.Spec.Provider.Workers[0].Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionHighestPatchLowMinor.Version))
+			})
+
+			It("Kubernetes version should be updated: force update patch version", func() {
+				// expire the Shoot's Kubernetes version because autoupdate is set to false
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Spec.Provider.Workers[0].Kubernetes = &gardencorev1beta1.WorkerKubernetes{Version: new(testKubernetesVersionLowPatchLowMinor.Version)}
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				By("Expire Shoot's kubernetes version in the CloudProfile")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, testKubernetesVersionLowPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, testKubernetesVersionLowPatchLowMinor.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Control Plane: Updated Kubernetes version from \"0.0.1\" to \"0.0.5\". Reason: Kubernetes version expired - force update required, Worker pool \"cpu-worker1\": Updated Kubernetes version from \"0.0.1\" to \"0.0.5\". Reason: Kubernetes version expired - force update required"))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					return *shoot.Spec.Provider.Workers[0].Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionHighestPatchLowMinor.Version))
+			})
+
+			It("Kubernetes version should be updated: force update minor version", func() {
+				// set the shoots Kubernetes version to be the highest patch version of the minor version
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Spec.Kubernetes.Version = testKubernetesVersionHighestPatchLowMinor.Version
+				shoot.Spec.Provider.Workers[0].Kubernetes = &gardencorev1beta1.WorkerKubernetes{Version: new(testKubernetesVersionHighestPatchLowMinor.Version)}
+
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				By("Expire Shoot's kubernetes version in the CloudProfile")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				// expect worker pool to have updated to latest patch version of next minor version
+				Eventually(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Control Plane: Updated Kubernetes version from \"0.0.5\" to \"0.1.5\". Reason: Kubernetes version expired - force update required, Worker pool \"cpu-worker1\": Updated Kubernetes version from \"0.0.5\" to \"0.1.5\". Reason: Kubernetes version expired - force update required"))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					return *shoot.Spec.Provider.Workers[0].Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionHighestPatchConsecutiveMinor.Version))
+			})
+
+			It("Worker Pool Kubernetes version should be updated: force update minor version and maintain feature gates", func() {
+				testKubernetesVersionLowPatchLowMinor = gardencorev1beta1.ExpirableVersion{Version: "1.30.1", Classification: &deprecatedClassification}
+				testKubernetesVersionHighestPatchLowMinor = gardencorev1beta1.ExpirableVersion{Version: "1.30.5", Classification: &deprecatedClassification}
+				testKubernetesVersionLowPatchConsecutiveMinor = gardencorev1beta1.ExpirableVersion{Version: "1.31.1", Classification: &deprecatedClassification}
+				testKubernetesVersionHighestPatchConsecutiveMinor = gardencorev1beta1.ExpirableVersion{Version: "1.31.5", Classification: &deprecatedClassification}
+
+				var (
+					// Use two actual feature gates from pkg/utils/validation/features/featuregates.go
+					// which are supported in testKubernetesVersionHighestPatchLowMinor.Version
+					// but not in testKubernetesVersionHighestPatchConsecutiveMinor.Version
+					unsupportedfeatureGate1 = "CSIMigrationRBD"
+					unsupportedfeatureGate2 = "APIPriorityAndFairness"
+					// Use two feature gates which are supported in both versions
+					supportedfeatureGate1 = "APIServerIdentity"
+					supportedfeatureGate2 = "AllBeta"
+				)
+
+				patch := client.MergeFrom(cloudProfile.DeepCopy())
+				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{
+					testKubernetesVersionLowPatchLowMinor,
+					testKubernetesVersionHighestPatchLowMinor,
+					testKubernetesVersionLowPatchConsecutiveMinor,
+					testKubernetesVersionHighestPatchConsecutiveMinor,
+				}
+
+				Expect(testClient.Patch(ctx, cloudProfile, patch)).To(Succeed())
+
+				shoot130.Spec.Kubernetes.Version = testKubernetesVersionHighestPatchLowMinor.Version
+				shoot130.Spec.Provider.Workers[0].Kubernetes = &gardencorev1beta1.WorkerKubernetes{
+					Version: new(testKubernetesVersionHighestPatchLowMinor.Version),
+					Kubelet: &gardencorev1beta1.KubeletConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate1:   true,
+								supportedfeatureGate2:   false,
+								unsupportedfeatureGate1: true,
+								unsupportedfeatureGate2: true,
+							},
+						},
+					},
+				}
+				shoot130.Spec.Provider.Workers[1].Kubernetes = &gardencorev1beta1.WorkerKubernetes{
+					Kubelet: &gardencorev1beta1.KubeletConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate1:   true,
+								unsupportedfeatureGate1: true,
+							},
+						},
+					},
+				}
+
+				By("Create k8s v1.30 Shoot")
+				Expect(testClient.Create(ctx, shoot130)).To(Succeed())
+				log.Info("Created shoot with k8s v1.30 for test", "shoot", client.ObjectKeyFromObject(shoot130))
+
+				DeferCleanup(func() {
+					By("Delete Shoot with k8s v1.30")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, shoot130))).To(Succeed())
+				})
+
+				By("Expire Shoot's kubernetes version in the CloudProfile")
+
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot130.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot130.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot130, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				// expect worker pool to have updated to latest patch version of next minor version
+				Eventually(func(g Gomega) string {
+					updatedShoot := &gardencorev1beta1.Shoot{}
+
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot130), updatedShoot)).To(Succeed())
+					g.Expect(updatedShoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Control Plane: Updated Kubernetes version from \"1.30.5\" to \"1.31.5\". Reason: Kubernetes version expired - force update required"))
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Worker pool \"cpu-worker1\": Updated Kubernetes version from \"1.30.5\" to \"1.31.5\". Reason: Kubernetes version expired - force update required"))
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring(" Removed feature gates from \"spec.provider.workers[0].kubernetes.kubelet.featureGates\" because they are not supported in Kubernetes version \"1.31.5\": APIPriorityAndFairness, CSIMigrationRBD"))
+					g.Expect(updatedShoot.Spec.Provider.Workers[0].Kubernetes.Kubelet.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate1: true,
+						supportedfeatureGate2: false,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring(" Removed feature gates from \"spec.provider.workers[1].kubernetes.kubelet.featureGates\" because they are not supported in Kubernetes version \"1.31.5\": CSIMigrationRBD"))
+					g.Expect(updatedShoot.Spec.Provider.Workers[1].Kubernetes.Kubelet.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate1: true,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(updatedShoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+
+					g.Expect(updatedShoot.Spec.Kubernetes.Version).To(Equal(testKubernetesVersionHighestPatchConsecutiveMinor.Version))
+
+					return *updatedShoot.Spec.Provider.Workers[0].Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionHighestPatchConsecutiveMinor.Version))
+			})
+
+			It("Worker Pool Kubernetes version should be updated, but control plane version stays: force update minor of worker pool version", func() {
+				// set the shoots Kubernetes version to be the highest patch version of the minor version
+				patch := client.MergeFrom(shoot.DeepCopy())
+				shoot.Spec.Kubernetes.Version = testKubernetesVersionLowPatchConsecutiveMinor.Version
+				shoot.Spec.Provider.Workers[0].Kubernetes = &gardencorev1beta1.WorkerKubernetes{Version: new(testKubernetesVersionHighestPatchLowMinor.Version)}
+
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+
+				By("Expire Shoot's worker pool kubernetes version in the CloudProfile")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				// expect worker pool to have updated to latest patch version of next minor version
+				Eventually(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Worker pool \"cpu-worker1\": Updated Kubernetes version from \"0.0.5\" to \"0.1.1\". Reason: Kubernetes version expired - force update required"))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					return *shoot.Spec.Provider.Workers[0].Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionLowPatchConsecutiveMinor.Version))
+			})
+
+			It("Worker Pool Kubernetes version should be updated, but control plane version stays: force update minor version and maintain feature gates", func() {
+				testKubernetesVersionLowPatchLowMinor = gardencorev1beta1.ExpirableVersion{Version: "1.30.1", Classification: &deprecatedClassification}
+				testKubernetesVersionHighestPatchLowMinor = gardencorev1beta1.ExpirableVersion{Version: "1.30.5", Classification: &deprecatedClassification}
+				testKubernetesVersionLowPatchConsecutiveMinor = gardencorev1beta1.ExpirableVersion{Version: "1.31.1", Classification: &deprecatedClassification}
+				testKubernetesVersionHighestPatchConsecutiveMinor = gardencorev1beta1.ExpirableVersion{Version: "1.31.5", Classification: &deprecatedClassification}
+
+				var (
+					// Use two actual feature gates from pkg/utils/validation/features/featuregates.go
+					// which are supported in testKubernetesVersionHighestPatchLowMinor.Version
+					// but not in testKubernetesVersionHighestPatchConsecutiveMinor.Version
+					unsupportedfeatureGate1 = "CSIMigrationRBD"
+					unsupportedfeatureGate2 = "APIPriorityAndFairness"
+					// Use two feature gates which are supported in both versions
+					supportedfeatureGate1 = "APIServerIdentity"
+					supportedfeatureGate2 = "AllBeta"
+				)
+
+				patch := client.MergeFrom(cloudProfile.DeepCopy())
+				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{
+					testKubernetesVersionLowPatchLowMinor,
+					testKubernetesVersionHighestPatchLowMinor,
+					testKubernetesVersionLowPatchConsecutiveMinor,
+					testKubernetesVersionHighestPatchConsecutiveMinor,
+				}
+
+				Expect(testClient.Patch(ctx, cloudProfile, patch)).To(Succeed())
+
+				shoot130.Spec.Kubernetes.Version = testKubernetesVersionLowPatchConsecutiveMinor.Version
+				shoot130.Spec.Provider.Workers[0].Kubernetes = &gardencorev1beta1.WorkerKubernetes{
+					Version: new(testKubernetesVersionHighestPatchLowMinor.Version),
+					Kubelet: &gardencorev1beta1.KubeletConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate1:   true,
+								supportedfeatureGate2:   false,
+								unsupportedfeatureGate1: true,
+								unsupportedfeatureGate2: true,
+							},
+						},
+					},
+				}
+				shoot130.Spec.Provider.Workers[1].Kubernetes = &gardencorev1beta1.WorkerKubernetes{
+					Version: new(testKubernetesVersionHighestPatchLowMinor.Version),
+					Kubelet: &gardencorev1beta1.KubeletConfig{
+						KubernetesConfig: gardencorev1beta1.KubernetesConfig{
+							FeatureGates: map[string]bool{
+								supportedfeatureGate1:   true,
+								unsupportedfeatureGate1: true,
+							},
+						},
+					},
+				}
+
+				By("Create k8s v1.30 Shoot")
+				Expect(testClient.Create(ctx, shoot130)).To(Succeed())
+				log.Info("Created shoot with k8s v1.30 for test", "shoot", client.ObjectKeyFromObject(shoot130))
+
+				DeferCleanup(func() {
+					By("Delete Shoot with k8s v1.30")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, shoot130))).To(Succeed())
+				})
+
+				By("Expire Shoot's kubernetes version in the CloudProfile")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot130.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot130.Spec.CloudProfile.Name, testKubernetesVersionHighestPatchLowMinor.Version, &expirationDateInThePast)
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot130, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				// expect worker pool to have updated to latest patch version of next minor version
+				Eventually(func(g Gomega) string {
+					updatedShoot := &gardencorev1beta1.Shoot{}
+
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot130), updatedShoot)).To(Succeed())
+					g.Expect(updatedShoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring("Worker pool \"cpu-worker1\": Updated Kubernetes version from \"1.30.5\" to \"1.31.1\". Reason: Kubernetes version expired - force update required"))
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring(" Removed feature gates from \"spec.provider.workers[0].kubernetes.kubelet.featureGates\" because they are not supported in Kubernetes version \"1.31.1\": APIPriorityAndFairness, CSIMigrationRBD"))
+					g.Expect(updatedShoot.Spec.Provider.Workers[0].Kubernetes.Kubelet.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate1: true,
+						supportedfeatureGate2: false,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.Description).To(ContainSubstring(" Removed feature gates from \"spec.provider.workers[1].kubernetes.kubelet.featureGates\" because they are not supported in Kubernetes version \"1.31.1\": CSIMigrationRBD"))
+					g.Expect(updatedShoot.Spec.Provider.Workers[1].Kubernetes.Kubelet.FeatureGates).To(Equal(map[string]bool{
+						supportedfeatureGate1: true,
+					}))
+
+					g.Expect(updatedShoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(updatedShoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					return *updatedShoot.Spec.Provider.Workers[0].Kubernetes.Version
+				}).Should(Equal(testKubernetesVersionLowPatchConsecutiveMinor.Version))
+			})
+
+			It("should migrate from SecretBinding to CredentialsBinding when force updating to Kubernetes 1.34", func() {
+				var (
+					secretBinding      *gardencorev1beta1.SecretBinding
+					credentialsBinding *securityv1alpha1.CredentialsBinding
+					secret             *corev1.Secret
+					secretBindingName  = "test-secret-binding"
+				)
+
+				shoot133.Spec.Kubernetes.Version = "1.33.0"
+				shoot133.Spec.SecretBindingName = &secretBindingName
+				shoot133.Spec.CredentialsBindingName = nil
+
+				secret = &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: testID + "-secret-",
+						Namespace:    testNamespace.Name,
+					},
+					Data: map[string][]byte{
+						"serviceaccount.json": []byte(`{"type": "service_account"}`),
+					},
+				}
+				Expect(testClient.Create(ctx, secret)).To(Succeed())
+
+				DeferCleanup(func() {
+					By("Delete Secret")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, secret))).To(Succeed())
+				})
+
+				secretBinding = &gardencorev1beta1.SecretBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      secretBindingName,
+						Namespace: testNamespace.Name,
+					},
+					SecretRef: corev1.SecretReference{
+						Name:      secret.Name,
+						Namespace: secret.Namespace,
+					},
+					Provider: &gardencorev1beta1.SecretBindingProvider{
+						Type: "test-provider",
+					},
+					Quotas: []corev1.ObjectReference{
+						{
+							APIVersion: "v1",
+							Kind:       "Quota",
+							Name:       "test-quota",
+							Namespace:  testNamespace.Name,
+						},
+					},
+				}
+				Expect(testClient.Create(ctx, secretBinding)).To(Succeed())
+
+				DeferCleanup(func() {
+					By("Delete SecretBinding")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, secretBinding))).To(Succeed())
+				})
+
+				By("Create Shoot with k8s v1.33 and SecretBinding")
+				Expect(testClient.Create(ctx, shoot133)).To(Succeed())
+				log.Info("Created shoot with k8s v1.33 and SecretBinding for test", "shoot", client.ObjectKeyFromObject(shoot133))
+
+				DeferCleanup(func() {
+					By("Delete Shoot with k8s v1.33")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, shoot133))).To(Succeed())
+				})
+
+				Expect(shoot133.Spec.SecretBindingName).NotTo(BeNil())
+				Expect(*shoot133.Spec.SecretBindingName).To(Equal(secretBindingName))
+				Expect(shoot133.Spec.CredentialsBindingName).To(BeNil())
+
+				By("Expire Shoot's kubernetes version in the CloudProfile to force update to 1.34")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot133.Spec.CloudProfile.Name, "1.33.0", &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot133.Spec.CloudProfile.Name, "1.33.0", &expirationDateInThePast)
+
+				By("Trigger maintenance")
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot133, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				By("Wait for maintenance to complete and verify migration")
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot133), shoot133)).To(Succeed())
+					g.Expect(shoot133.Status.LastMaintenance).NotTo(BeNil())
+
+					g.Expect(shoot133.Spec.Kubernetes.Version).To(Equal("1.34.0"))
+
+					g.Expect(shoot133.Spec.SecretBindingName).To(BeNil(), "SecretBindingName should be unset after migration")
+					g.Expect(shoot133.Spec.CredentialsBindingName).NotTo(BeNil(), "CredentialsBindingName should be set after migration")
+
+					g.Expect(shoot133.Status.LastMaintenance.Description).To(ContainSubstring(".spec.secretBindingName was migrated to .spec.credentialsBindingName. Reason: SecretBinding is deprecated and can no longer be used for Shoot clusters using Kubernetes version 1.34+"))
+					g.Expect(shoot133.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot133.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+				}).Should(Succeed())
+
+				By("Verify CredentialsBinding was created with correct properties")
+				credentialsBindingName := *shoot133.Spec.CredentialsBindingName
+				credentialsBinding = &securityv1alpha1.CredentialsBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      credentialsBindingName,
+						Namespace: testNamespace.Name,
+					},
+				}
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(credentialsBinding), credentialsBinding)).To(Succeed())
+
+				Expect(credentialsBinding.Provider.Type).To(Equal("test-provider"))
+				Expect(credentialsBinding.CredentialsRef.APIVersion).To(Equal("v1"))
+				Expect(credentialsBinding.CredentialsRef.Kind).To(Equal("Secret"))
+				Expect(credentialsBinding.CredentialsRef.Name).To(Equal(secret.Name))
+				Expect(credentialsBinding.CredentialsRef.Namespace).To(Equal(secret.Namespace))
+				Expect(credentialsBinding.Quotas).To(Equal(secretBinding.Quotas))
+
+				DeferCleanup(func() {
+					By("Delete CredentialsBinding")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, credentialsBinding))).To(Succeed())
+				})
+			})
+
+			It("should remove forbidden fields when force updating to Kubernetes 1.35", func() {
+				shoot134.Spec.Kubernetes.Version = "1.34.0"
+				shoot134.Spec.Addons = &gardencorev1beta1.Addons{
+					KubernetesDashboard: &gardencorev1beta1.KubernetesDashboard{
+						Addon: gardencorev1beta1.Addon{
+							Enabled: true,
+						},
+					},
+				}
+				shoot134.Spec.Kubernetes.KubeScheduler = &gardencorev1beta1.KubeSchedulerConfig{
+					KubeMaxPDVols: new("20"),
+				}
+				shoot134.Spec.Kubernetes.KubeAPIServer = &gardencorev1beta1.KubeAPIServerConfig{
+					EnableAnonymousAuthentication: new(true),
+					WatchCacheSizes: &gardencorev1beta1.WatchCacheSizes{
+						Default: new(int32(50)),
+					},
+				}
+				dnsCredentialsSecretName := "dns-credentials-secret"
+				shoot134.Spec.DNS = &gardencorev1beta1.DNS{
+					Providers: []gardencorev1beta1.DNSProvider{
+						{
+							Type:       new("test-dns"),
+							SecretName: &dnsCredentialsSecretName,
+							CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+								APIVersion: "v1",
+								Kind:       "Secret",
+								Name:       dnsCredentialsSecretName,
+							},
+						},
+					},
+				}
+
+				By("Create Shoot with k8s v1.34")
+				Expect(testClient.Create(ctx, shoot134)).To(Succeed())
+				log.Info("Created shoot with k8s v1.34", "shoot", client.ObjectKeyFromObject(shoot133))
+
+				DeferCleanup(func() {
+					By("Delete Shoot with k8s v1.34")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, shoot134))).To(Succeed())
+				})
+
+				Expect(shoot134.Spec.Addons.KubernetesDashboard).NotTo(BeNil())
+				Expect(shoot134.Spec.DNS.Providers[0].SecretName).NotTo(BeNil())
+
+				By("Expire Shoot's kubernetes version in the CloudProfile to force update to 1.35")
+				Expect(patchCloudProfileForKubernetesVersionMaintenance(ctx, testClient, shoot134.Spec.CloudProfile.Name, "1.34.0", &expirationDateInThePast, &deprecatedClassification)).To(Succeed())
+
+				By("Wait until manager has observed the CloudProfile update")
+				waitKubernetesVersionToBeExpiredInCloudProfile(shoot134.Spec.CloudProfile.Name, "1.34.0", &expirationDateInThePast)
+
+				By("Trigger maintenance")
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot134, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				By("Wait for maintenance to complete and verify migration")
+				Eventually(func(g Gomega) {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot134), shoot134)).To(Succeed())
+					g.Expect(shoot134.Status.LastMaintenance).NotTo(BeNil())
+
+					g.Expect(shoot134.Spec.Kubernetes.Version).To(Equal("1.35.0"))
+
+					g.Expect(shoot134.Spec.Addons).To(BeNil(), "Addons should be unset after migration")
+					g.Expect(shoot134.Spec.Kubernetes.KubeScheduler.KubeMaxPDVols).To(BeNil(), "KubeMaxPDVols should be unset after migration")
+					g.Expect(shoot134.Spec.Kubernetes.KubeAPIServer.EnableAnonymousAuthentication).To(BeNil(), "Default watch cache size should be unset after migration")
+					g.Expect(shoot134.Spec.Kubernetes.KubeAPIServer.WatchCacheSizes.Default).To(BeNil(), "Default watch cache size should be unset after migration")
+					g.Expect(shoot134.Spec.DNS.Providers[0].SecretName).To(BeNil(), "DNS Provider secretName should be unset after migration")
+
+					g.Expect(shoot134.Status.LastMaintenance.Description).To(ContainSubstring(".spec.addons was removed"))
+					g.Expect(shoot134.Status.LastMaintenance.Description).To(ContainSubstring(".spec.kubernetes.kubeAPIServer.watchCacheSizes.default was removed"))
+					g.Expect(shoot134.Status.LastMaintenance.Description).To(ContainSubstring(".spec.kubernetes.kubeScheduler.kubeMaxPDVols was removed"))
+					g.Expect(shoot134.Status.LastMaintenance.Description).To(ContainSubstring(".spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication was removed"))
+					g.Expect(shoot134.Status.LastMaintenance.Description).To(ContainSubstring(".spec.dns.providers[0].secretName was removed"))
+					g.Expect(shoot134.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot134.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+				}).Should(Succeed())
+			})
+
+		})
+	})
+
+	Describe("Credentials rotation maintenance test", func() {
+		BeforeEach(func() {
+			patch := client.MergeFrom(shoot.DeepCopy())
+			shoot.Status.LastOperation = &gardencorev1beta1.LastOperation{Type: gardencorev1beta1.LastOperationTypeReconcile}
+			Expect(testClient.Status().Patch(ctx, shoot, patch)).To(Succeed())
+		})
+
+		DescribeTable("should auto rotate credentials",
+			func(credentialsAutoRotation gardencorev1beta1.MaintenanceCredentialsAutoRotation, maintenanceOperation, descriptionSubstring, operation string) {
+				patch := client.MergeFrom(shoot.DeepCopy())
+				if len(maintenanceOperation) > 0 {
+					shoot.Annotations = map[string]string{
+						"maintenance.gardener.cloud/operation": maintenanceOperation,
+					}
+				}
+				shoot.Spec.Maintenance.AutoRotation = &gardencorev1beta1.MaintenanceAutoRotation{
+					Credentials: &credentialsAutoRotation,
+				}
+				Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+				fakeClock.SetTime(fakeClock.Now().Add(2 * time.Hour))
+
+				Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+				Eventually(func(g Gomega) string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+					g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+					g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring(descriptionSubstring))
+					g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+					g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+					return shoot.ObjectMeta.Annotations[v1beta1constants.GardenerOperation]
+				}).Should(Equal(operation))
+			},
+			Entry("ssh key pair", gardencorev1beta1.MaintenanceCredentialsAutoRotation{
+				SSHKeypair: &gardencorev1beta1.MaintenanceRotationConfig{
+					RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+				},
+			}, "", "Credentials \"rotate-ssh-keypair\": SSH keypair rotation started", "rotate-ssh-keypair"),
+			Entry("observability credentials", gardencorev1beta1.MaintenanceCredentialsAutoRotation{
+				Observability: &gardencorev1beta1.MaintenanceRotationConfig{
+					RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+				},
+			}, "", "Credentials \"rotate-observability-credentials\": Observability passwords rotation started", "rotate-observability-credentials"),
+			Entry("etcd encryption key", gardencorev1beta1.MaintenanceCredentialsAutoRotation{
+				ETCDEncryptionKey: &gardencorev1beta1.MaintenanceRotationConfig{
+					RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+				},
+			}, "", "Credentials \"rotate-etcd-encryption-key\": ETCD Encryption key rotation started", "rotate-etcd-encryption-key"),
+			Entry("etcd encryption key when encryption key rotation start maintenance operation is set", gardencorev1beta1.MaintenanceCredentialsAutoRotation{
+				ETCDEncryptionKey: &gardencorev1beta1.MaintenanceRotationConfig{
+					RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+				},
+			}, "rotate-etcd-encryption-key-start", "Credentials \"rotate-etcd-encryption-key\": ETCD Encryption key rotation started", "rotate-etcd-encryption-key-start"),
+		)
+
+		It("should skip the etcd encryption key rotation without failing the maintenance when a rotation is already in progress", func() {
+			patch := client.MergeFrom(shoot.DeepCopy())
+			shoot.Status.Credentials = &gardencorev1beta1.ShootCredentials{
+				Rotation: &gardencorev1beta1.ShootCredentialsRotation{
+					ETCDEncryptionKey: &gardencorev1beta1.ETCDEncryptionKeyRotation{
+						Phase: gardencorev1beta1.RotationPrepared,
+					},
+				},
+			}
+			Expect(testClient.Status().Patch(ctx, shoot, patch)).To(Succeed())
+
+			patch = client.MergeFrom(shoot.DeepCopy())
+			shoot.Spec.Maintenance.AutoRotation = &gardencorev1beta1.MaintenanceAutoRotation{
+				Credentials: &gardencorev1beta1.MaintenanceCredentialsAutoRotation{
+					SSHKeypair: &gardencorev1beta1.MaintenanceRotationConfig{
+						RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+					},
+					ETCDEncryptionKey: &gardencorev1beta1.MaintenanceRotationConfig{
+						RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+					},
+				},
+			}
+			Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+			fakeClock.SetTime(fakeClock.Now().Add(2 * time.Hour))
+
+			Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+				g.Expect(shoot.Status.LastMaintenance.Description).To(ContainSubstring("Credentials \"rotate-ssh-keypair\": SSH keypair rotation started"))
+				g.Expect(shoot.Status.LastMaintenance.Description).NotTo(ContainSubstring("rotate-etcd-encryption-key"))
+				g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				g.Expect(shoot.Status.LastMaintenance.FailureReason).To(BeNil())
+				g.Expect(shoot.ObjectMeta.Annotations[v1beta1constants.GardenerOperation]).To(And(
+					ContainSubstring("rotate-ssh-keypair"),
+					Not(ContainSubstring("rotate-etcd-encryption-key")),
+				))
+			}).Should(Succeed())
+		})
+
+		It("should auto rotate multiple credentials", func() {
+			patch := client.MergeFrom(shoot.DeepCopy())
+			shoot.Spec.Maintenance.AutoRotation = &gardencorev1beta1.MaintenanceAutoRotation{
+				Credentials: &gardencorev1beta1.MaintenanceCredentialsAutoRotation{
+					SSHKeypair: &gardencorev1beta1.MaintenanceRotationConfig{
+						RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+					},
+					Observability: &gardencorev1beta1.MaintenanceRotationConfig{
+						RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+					},
+					ETCDEncryptionKey: &gardencorev1beta1.MaintenanceRotationConfig{
+						RotationPeriod: new(metav1.Duration{Duration: time.Hour}),
+					},
+				},
+			}
+			Expect(testClient.Patch(ctx, shoot, patch)).To(Succeed())
+			fakeClock.SetTime(fakeClock.Now().Add(2 * time.Hour))
+
+			Expect(kubernetesutils.SetAnnotationAndUpdate(ctx, testClient, shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationMaintain)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+				g.Expect(shoot.Status.LastMaintenance).NotTo(BeNil())
+				g.Expect(shoot.Status.LastMaintenance.Description).To(And(
+					ContainSubstring("Credentials \"rotate-ssh-keypair\": SSH keypair rotation started"),
+					ContainSubstring("Credentials \"rotate-observability-credentials\": Observability passwords rotation started"),
+					ContainSubstring("Credentials \"rotate-etcd-encryption-key\": ETCD Encryption key rotation started"),
+				))
+				g.Expect(shoot.Status.LastMaintenance.State).To(Equal(gardencorev1beta1.LastOperationStateSucceeded))
+				g.Expect(shoot.Status.LastMaintenance.TriggeredTime).To(Equal(metav1.Time{Time: fakeClock.Now()}))
+				g.Expect(shoot.ObjectMeta.Annotations[v1beta1constants.GardenerOperation]).To(And(
+					ContainSubstring("rotate-ssh-keypair"),
+					ContainSubstring("rotate-observability-credentials"),
+					ContainSubstring("rotate-etcd-encryption-key"),
+				))
+			}).Should(Succeed())
+		})
+	})
+},
+	Entry("with capabilities in CloudProfile", true),
+	Entry("without capabilities in CloudProfile", false),
+)

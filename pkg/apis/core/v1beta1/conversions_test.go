@@ -1,0 +1,300 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package v1beta1_test
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/gardener/gardener/pkg/apis/core"
+	. "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+)
+
+var _ = Describe("Conversion", func() {
+	var scheme *runtime.Scheme
+
+	BeforeEach(func() {
+		scheme = runtime.NewScheme()
+		Expect(SchemeBuilder.AddToScheme(scheme)).ToNot(HaveOccurred())
+	})
+
+	Describe("Project conversion", func() {
+		Describe("#Convert_v1alpha1_ProjectMember_To_core_ProjectMember", func() {
+			var (
+				role = "foo"
+
+				in  *ProjectMember
+				out *core.ProjectMember
+			)
+
+			BeforeEach(func() {
+				in = &ProjectMember{}
+				out = &core.ProjectMember{}
+			})
+
+			It("should do nothing because role not set", func() {
+				Expect(scheme.Convert(in, out, nil)).To(Succeed())
+				Expect(out).To(Equal(&core.ProjectMember{}))
+			})
+
+			It("should do nothing because role was found", func() {
+				in = &ProjectMember{
+					Role:  role,
+					Roles: []string{role, "bar"},
+				}
+
+				Expect(scheme.Convert(in, out, nil)).To(Succeed())
+				Expect(out).To(Equal(&core.ProjectMember{
+					Roles: []string{role, "bar"},
+				}))
+			})
+
+			It("should reorder the roles list to make sure the role is at the head", func() {
+				in = &ProjectMember{
+					Role:  role,
+					Roles: []string{"bar", role},
+				}
+
+				Expect(scheme.Convert(in, out, nil)).To(Succeed())
+				Expect(out).To(Equal(&core.ProjectMember{
+					Roles: []string{role, "bar"},
+				}))
+			})
+
+			It("should reorder the roles list to make sure the role is at the head even if there are duplicates", func() {
+				in = &ProjectMember{
+					Role:  role,
+					Roles: []string{"bar", role, role, role, "hugo"},
+				}
+
+				Expect(scheme.Convert(in, out, nil)).To(Succeed())
+				Expect(out).To(Equal(&core.ProjectMember{
+					Roles: []string{role, "bar", "hugo"},
+				}))
+			})
+
+			It("should add the role to the head of roles list", func() {
+				in = &ProjectMember{
+					Role:  role,
+					Roles: []string{"bar"},
+				}
+
+				Expect(scheme.Convert(in, out, nil)).To(Succeed())
+				Expect(out).To(Equal(&core.ProjectMember{
+					Roles: []string{role, "bar"},
+				}))
+			})
+		})
+
+		Describe("#Convert_core_ProjectMember_To_v1alpha1_ProjectMember", func() {
+			var (
+				role = "foo"
+
+				in  *core.ProjectMember
+				out *ProjectMember
+			)
+
+			BeforeEach(func() {
+				in = &core.ProjectMember{}
+				out = &ProjectMember{}
+			})
+
+			It("should do nothing because roles are not set", func() {
+				Expect(scheme.Convert(in, out, nil)).To(Succeed())
+				Expect(out).To(Equal(&ProjectMember{}))
+			})
+
+			It("should add the first role to the role field and remove it from the list", func() {
+				in.Roles = []string{role, "bar"}
+
+				Expect(scheme.Convert(in, out, nil)).To(Succeed())
+				Expect(out).To(Equal(&ProjectMember{
+					Role:  role,
+					Roles: []string{"bar"},
+				}))
+			})
+		})
+	})
+
+	Describe("InternalSecret conversion", func() {
+		var (
+			in  *InternalSecret
+			out *core.InternalSecret
+		)
+
+		BeforeEach(func() {
+			in = &InternalSecret{}
+			out = &core.InternalSecret{}
+		})
+
+		It("should merge data and stringData", func() {
+			in.Data = map[string][]byte{"foo": []byte("bla"), "baz": []byte("bing")}
+			in.StringData = map[string]string{"bar": "blub"}
+
+			Expect(scheme.Convert(in, out, nil)).NotTo(HaveOccurred())
+			Expect(out.Data).To(And(
+				HaveKeyWithValue("foo", BeEquivalentTo("bla")),
+				HaveKeyWithValue("baz", BeEquivalentTo("bing")),
+				HaveKeyWithValue("bar", BeEquivalentTo("blub")),
+			))
+		})
+
+		It("should overwrite data with stringData", func() {
+			in.Data = map[string][]byte{"foo": []byte("bla"), "baz": []byte("bing")}
+			in.StringData = map[string]string{"foo": "boo", "bar": "blub"}
+
+			Expect(scheme.Convert(in, out, nil)).NotTo(HaveOccurred())
+			Expect(out.Data).To(And(
+				HaveKeyWithValue("foo", BeEquivalentTo("boo")),
+				HaveKeyWithValue("baz", BeEquivalentTo("bing")),
+				HaveKeyWithValue("bar", BeEquivalentTo("blub")),
+			))
+		})
+	})
+
+	Describe("ControllerDeployment conversion", func() {
+		Describe("convert from v1beta1 to internal", func() {
+			var (
+				in  *ControllerDeployment
+				out *core.ControllerDeployment
+			)
+
+			BeforeEach(func() {
+				in = &ControllerDeployment{}
+				out = &core.ControllerDeployment{}
+			})
+
+			Context("helm type", func() {
+				BeforeEach(func() {
+					in.Type = "helm"
+					in.ProviderConfig = runtime.RawExtension{
+						Raw: []byte(`{"chart":"Zm9v","values":{"foo":["bar","baz"]}}`),
+					}
+				})
+
+				It("should convert legacy helm deployment to new structure", func() {
+					Expect(scheme.Convert(in, out, nil)).To(Succeed())
+
+					Expect(out.Type).To(BeEmpty(), "type is empty for non-custom type")
+					Expect(out.ProviderConfig).To(BeNil(), "providerConfig is empty for non-custom type")
+					Expect(out.Helm).To(Equal(&core.HelmControllerDeployment{
+						RawChart: []byte("foo"),
+						Values: &apiextensionsv1.JSON{
+							Raw: []byte(`{"foo":["bar","baz"]}`),
+						},
+					}))
+				})
+
+				It("should correctly handle empty providerConfig", func() {
+					in.ProviderConfig.Raw = nil
+
+					Expect(scheme.Convert(in, out, nil)).To(Succeed())
+
+					Expect(out.Helm).To(Equal(&core.HelmControllerDeployment{
+						RawChart: nil,
+						Values:   nil,
+					}))
+				})
+			})
+
+			Context("custom type", func() {
+				BeforeEach(func() {
+					in.Type = "custom"
+					in.ProviderConfig = runtime.RawExtension{
+						Raw: []byte(`{"foo":"bar"}`),
+					}
+				})
+
+				It("should keep type and providerConfig", func() {
+					Expect(scheme.Convert(in, out, nil)).To(Succeed())
+
+					Expect(out.Type).To(Equal("custom"))
+					Expect(out.ProviderConfig).To(Equal(&runtime.Unknown{
+						ContentType: "application/json",
+						Raw:         []byte(`{"foo":"bar"}`),
+					}))
+					Expect(out.Helm).To(BeNil())
+				})
+			})
+		})
+
+		Describe("convert from internal to v1beta1", func() {
+			var (
+				in  *core.ControllerDeployment
+				out *ControllerDeployment
+			)
+
+			BeforeEach(func() {
+				in = &core.ControllerDeployment{}
+				out = &ControllerDeployment{}
+			})
+
+			Context("helm type with rawChart", func() {
+				BeforeEach(func() {
+					in.Helm = &core.HelmControllerDeployment{
+						RawChart: []byte("foo"),
+						Values: &apiextensionsv1.JSON{
+							Raw: []byte(`{"foo":["bar","baz"]}`),
+						},
+					}
+				})
+
+				It("should convert new helm deployment to legacy structure", func() {
+					Expect(scheme.Convert(in, out, nil)).To(Succeed())
+
+					Expect(out.Type).To(Equal("helm"))
+					Expect(out.ProviderConfig).To(Equal(runtime.RawExtension{
+						Raw: []byte(`{"chart":"Zm9v","values":{"foo":["bar","baz"]}}`),
+					}))
+				})
+			})
+
+			Context("helm type with ociRepository", func() {
+				BeforeEach(func() {
+					in.Helm = &core.HelmControllerDeployment{
+						OCIRepository: &core.OCIRepository{
+							Repository: new("url"),
+							Tag:        new("1.0.0"),
+							Digest:     new("sha256:foo"),
+						},
+						Values: &apiextensionsv1.JSON{
+							Raw: []byte(`{"foo":["bar","baz"]}`),
+						},
+					}
+				})
+
+				It("should convert new helm deployment to legacy structure", func() {
+					Expect(scheme.Convert(in, out, nil)).To(Succeed())
+
+					Expect(out.Type).To(Equal("helm"))
+					Expect(out.ProviderConfig).To(Equal(runtime.RawExtension{
+						Raw: []byte(`{"values":{"foo":["bar","baz"]},"ociRepository":{"repository":"url","tag":"1.0.0","digest":"sha256:foo"}}`),
+					}))
+				})
+			})
+
+			Context("custom type", func() {
+				BeforeEach(func() {
+					in.Type = "custom"
+					in.ProviderConfig = &runtime.Unknown{
+						ContentType: "application/json",
+						Raw:         []byte(`{"foo":"bar"}`),
+					}
+				})
+
+				It("should keep type and providerConfig", func() {
+					Expect(scheme.Convert(in, out, nil)).To(Succeed())
+
+					Expect(out.Type).To(Equal("custom"))
+					Expect(out.ProviderConfig).To(Equal(runtime.RawExtension{
+						Raw: []byte(`{"foo":"bar"}`),
+					}))
+				})
+			})
+		})
+	})
+})

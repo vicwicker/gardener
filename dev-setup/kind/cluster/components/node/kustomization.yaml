@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+- patch: |-
+    - op: add
+      path: /nodes/-
+      value:
+        role: worker
+        image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+        labels:
+          topology.kubernetes.io/zone: "0"
+        extraPortMappings: []
+        extraMounts:
+          - hostPath: ./dev/local-backupbuckets
+            containerPath: /etc/gardener/local-backupbuckets
+          - hostPath: ./dev-setup/infra/resolv.conf
+            containerPath: /etc/resolv.conf
+          - hostPath: ${DOCKER_SOCKET}
+            containerPath: /var/run/docker.sock
+        kubeadmConfigPatches:
+          - |
+            apiVersion: kubelet.config.k8s.io/v1beta1
+            kind: KubeletConfiguration
+            maxPods: 500
+            serializeImagePulls: false
+            registryPullQPS: 10
+            registryBurst: 20
+            serverTLSBootstrap: true
+  target:
+    group: kind.x-k8s.io
+    kind: Cluster
+    name: gardener-local
+
+# Patches exclusively for the control plane node (always the first one, and always only exactly one)
+- patch: |-
+    - op: replace
+      path: /nodes/0/role
+      value: control-plane
+  target:
+    group: kind.x-k8s.io
+    kind: Cluster
+    name: gardener-local

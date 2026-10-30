@@ -1,0 +1,461 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package nodeagentauthorizer
+
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	"github.com/go-logr/logr"
+	certificatesv1 "k8s.io/api/certificates/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	jsonserializer "k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	auth "k8s.io/apiserver/pkg/authorization/authorizer"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/component/kubernetes/adminaccess"
+	"github.com/gardener/gardener/pkg/utils"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+)
+
+// NewAuthorizer returns a new authorizer for requests from gardener-node-agents. It never has an opinion on the request.
+func NewAuthorizer(logger logr.Logger, sourceClient, targetClient client.Client, machineNamespace *string, authorizeWithSelectors bool) *authorizer {
+	return &authorizer{
+		sourceClient:           sourceClient,
+		targetClient:           targetClient,
+		logger:                 logger,
+		machineNamespace:       machineNamespace,
+		authorizeWithSelectors: authorizeWithSelectors,
+	}
+}
+
+const (
+	valitailTokenSecretName               = "gardener-valitail"
+	openTelemetryCollectorTokenSecretName = "gardener-opentelemetry-collector"
+)
+
+var (
+	certificateSigningRequestResource = certificatesv1.Resource("certificatesigningrequests")
+	eventCoreResource                 = corev1.Resource("events")
+	eventResource                     = eventsv1.Resource("events")
+	leaseResource                     = coordinationv1.Resource("leases")
+	nodeResource                      = corev1.Resource("nodes")
+	podResource                       = corev1.Resource("pods")
+	secretsResource                   = corev1.Resource("secrets")
+
+	oscDecoder runtime.Decoder
+)
+
+func init() {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(extensionsv1alpha1.AddToScheme(scheme))
+	ser := jsonserializer.NewSerializerWithOptions(jsonserializer.DefaultMetaFactory, scheme, scheme, jsonserializer.SerializerOptions{Yaml: true, Pretty: false, Strict: false})
+	versions := schema.GroupVersions([]schema.GroupVersion{extensionsv1alpha1.SchemeGroupVersion})
+	oscDecoder = serializer.NewCodecFactory(scheme).CodecForVersions(nil, ser, nil, versions)
+}
+
+type authorizer struct {
+	sourceClient client.Client
+	targetClient client.Client
+	logger       logr.Logger
+	// machineNamespace is the namespace where the Machine object is located. If nil, the node name is used for
+	// authorization instead of the machine name. This scenario is used for gardenadm scenario.
+	machineNamespace       *string
+	authorizeWithSelectors bool
+}
+
+var _ auth.Authorizer = (*authorizer)(nil)
+
+func (a *authorizer) Authorize(ctx context.Context, attrs auth.Attributes) (auth.Decision, string, error) {
+	machineName, isNodeAgent := GetNodeAgentIdentity(attrs.GetUser())
+	if !isNodeAgent {
+		return auth.DecisionNoOpinion, "", nil
+	}
+
+	requestLog := a.logger.WithValues(
+		"user", attrs.GetUser().GetName(), "verb", attrs.GetVerb(),
+		"namespace", attrs.GetNamespace(), "resource", attrs.GetResource(), "subresource", attrs.GetSubresource(),
+	)
+
+	if machineName == "" {
+		requestLog.Info("No machine for user")
+		return auth.DecisionDeny, "", nil
+	}
+
+	if attrs.IsResourceRequest() {
+		requestResource := schema.GroupResource{Group: attrs.GetAPIGroup(), Resource: attrs.GetResource()}
+		switch requestResource {
+		case certificateSigningRequestResource:
+			return a.authorizeCertificateSigningRequest(ctx, requestLog, attrs)
+		case eventCoreResource, eventResource:
+			return a.authorizeEvent(requestLog, attrs)
+		case leaseResource:
+			return a.authorizeLease(ctx, requestLog, machineName, attrs)
+		case nodeResource:
+			return a.authorizeNode(ctx, requestLog, machineName, attrs)
+		case podResource:
+			return a.authorizePod(ctx, requestLog, machineName, attrs)
+		case secretsResource:
+			return a.authorizeSecret(ctx, requestLog, machineName, attrs)
+		}
+	}
+
+	return auth.DecisionDeny, "", nil
+}
+
+func (a *authorizer) ConditionsAwareAuthorize(ctx context.Context, attrs auth.Attributes) auth.ConditionsAwareDecision {
+	return auth.ConditionsAwareDecisionFromParts(a.Authorize(ctx, attrs))
+}
+
+func (a *authorizer) EvaluateConditions(_ context.Context, _ auth.ConditionsAwareDecision, _ auth.ConditionsData) (auth.Decision, string, error) {
+	return auth.DecisionDeny, "", auth.ErrorConditionEvaluationNotSupported
+}
+
+func (a *authorizer) authorizeCertificateSigningRequest(ctx context.Context, log logr.Logger, attrs auth.Attributes) (auth.Decision, string, error) {
+	if ok, reason := a.checkSubresource(log, attrs); !ok {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	if allowed, reason := a.checkVerb(log, attrs, "get", "create"); !allowed {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	if attrs.GetVerb() == "create" {
+		return auth.DecisionAllow, "", nil
+	}
+
+	csr := &certificatesv1.CertificateSigningRequest{}
+	if err := a.targetClient.Get(ctx, types.NamespacedName{Name: attrs.GetName()}, csr); err != nil {
+		return auth.DecisionDeny, "", err
+	}
+
+	if csr.Spec.Username != attrs.GetUser().GetName() {
+		log.Info("Denying authorization because the CSR is for a different user", "csrUsername", csr.Spec.Username)
+		return auth.DecisionDeny, fmt.Sprintf("gardener-node-agent is only allowed to read or request CSRs for its own user %q", attrs.GetUser().GetName()), nil
+	}
+
+	return auth.DecisionAllow, "", nil
+}
+
+func (a *authorizer) authorizeEvent(log logr.Logger, attrs auth.Attributes) (auth.Decision, string, error) {
+	if ok, reason := a.checkSubresource(log, attrs); !ok {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	if allowed, reason := a.checkVerb(log, attrs, "create", "patch"); !allowed {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	return auth.DecisionAllow, "", nil
+}
+
+func (a *authorizer) authorizeLease(ctx context.Context, log logr.Logger, machineName string, attrs auth.Attributes) (auth.Decision, string, error) {
+	if ok, reason := a.checkSubresource(log, attrs); !ok {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	allowedVerbs := []string{"get", "list", "watch", "create", "update", "patch"}
+	if allowed, reason := a.checkVerb(log, attrs, allowedVerbs...); !allowed {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	node, reason, err := a.getNode(ctx, log, machineName)
+	if err != nil || reason != "" {
+		return auth.DecisionDeny, reason, err
+	}
+
+	allowedLeases := []string{"gardener-node-agent-" + node.Name}
+	if node.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName] != "" {
+		allowedLeases = append(allowedLeases, node.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName])
+	}
+
+	if (attrs.GetVerb() != "create" && !slices.Contains(allowedLeases, attrs.GetName())) || attrs.GetNamespace() != metav1.NamespaceSystem {
+		log.Info("Denying authorization because gardener-node-agent is not allowed to access the lease", "nodeName", node.Name, "machineName", machineName, "leaseName", attrs.GetName())
+		return auth.DecisionDeny, fmt.Sprintf("this gardener-node-agent can only access leases %v in %q namespace", allowedLeases, metav1.NamespaceSystem), nil
+	}
+
+	return auth.DecisionAllow, "", nil
+}
+
+func (a *authorizer) authorizeNode(ctx context.Context, log logr.Logger, machineName string, attrs auth.Attributes) (auth.Decision, string, error) {
+	if ok, reason := a.checkSubresource(log, attrs, "status"); !ok {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	allowedVerbs := []string{"get", "list", "watch", "patch", "update"}
+	if allowed, reason := a.checkVerb(log, attrs, allowedVerbs...); !allowed {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	// Listing nodes must be allowed unconditionally, because gardener-node-agent only knows its hostname, but not its node name.
+	// Kubelet creates the latter when gardener-node-agent is already running.
+	if attrs.GetVerb() == "list" || attrs.GetVerb() == "watch" {
+		return auth.DecisionAllow, "", nil
+	}
+
+	node, reason, err := a.getNode(ctx, log, machineName)
+	if err != nil || reason != "" {
+		return auth.DecisionDeny, reason, err
+	}
+
+	if attrs.GetName() != node.Name {
+		log.Info("Denying authorization because gardener-node-agent is not allowed to access the node", "nodeName", node.Name, "machineName", machineName)
+		return auth.DecisionDeny, fmt.Sprintf("this gardener-node-agent can only access node %q", node.Name), nil
+	}
+
+	return auth.DecisionAllow, "", nil
+}
+
+func (a *authorizer) authorizePod(ctx context.Context, log logr.Logger, machineName string, attrs auth.Attributes) (auth.Decision, string, error) {
+	if ok, reason := a.checkSubresource(log, attrs); !ok {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	allowedVerbs := []string{"get", "list", "watch", "delete"}
+	if allowed, reason := a.checkVerb(log, attrs, allowedVerbs...); !allowed {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	node, reason, err := a.getNode(ctx, log, machineName)
+	if err != nil || reason != "" {
+		return auth.DecisionDeny, reason, err
+	}
+
+	switch attrs.GetVerb() {
+	case "list", "watch":
+		if !a.authorizeWithSelectors {
+			return auth.DecisionAllow, "", nil
+		}
+
+		// allow a scoped fieldSelector
+		reqs, err := attrs.GetFieldSelector()
+		if err != nil {
+			log.Info("Denying request because field selector is invalid", "error", err)
+			return auth.DecisionDeny, "", fmt.Errorf("error parsing field selector: %w", err)
+		}
+
+		for _, req := range reqs {
+			if req.Field == "spec.nodeName" && req.Operator == selection.Equals && req.Value == node.Name {
+				return auth.DecisionAllow, "", nil
+			}
+		}
+
+		// allow a read of a single pod known to be related to the node
+		if attrs.GetName() != "" {
+			return a.authorizeSinglePod(ctx, log, node.Name, attrs)
+		}
+
+		log.Info("Denying request because only listing/watching pods with spec.nodeName field selector for the same node is allowed")
+		return auth.DecisionDeny, fmt.Sprintf("can only list/watch pods with spec.nodeName=%s field selector", node.Name), nil
+
+	case "get", "delete":
+		return a.authorizeSinglePod(ctx, log, node.Name, attrs)
+	}
+
+	return auth.DecisionAllow, "", nil
+}
+
+func (a *authorizer) authorizeSinglePod(ctx context.Context, log logr.Logger, nodeName string, attrs auth.Attributes) (auth.Decision, string, error) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      attrs.GetName(),
+			Namespace: attrs.GetNamespace(),
+		},
+	}
+	if err := a.targetClient.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+		return auth.DecisionDeny, "", fmt.Errorf("error getting pod %q: %w", client.ObjectKeyFromObject(pod), err)
+	}
+
+	if pod.Spec.NodeName != nodeName {
+		log.Info("Denying request because pod belongs to a different node", "podNodeName", pod.Spec.NodeName)
+		return auth.DecisionDeny, fmt.Sprintf("pod %q does not belong to node %q", client.ObjectKeyFromObject(pod), nodeName), nil
+	}
+
+	return auth.DecisionAllow, "", nil
+}
+
+func (a *authorizer) authorizeSecret(ctx context.Context, log logr.Logger, machineName string, attrs auth.Attributes) (auth.Decision, string, error) {
+	if ok, reason := a.checkSubresource(log, attrs); !ok {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	allowedVerbs := []string{"get", "list", "watch"}
+	if allowed, reason := a.checkVerb(log, attrs, allowedVerbs...); !allowed {
+		return auth.DecisionDeny, reason, nil
+	}
+
+	validSecrets := []string{
+		valitailTokenSecretName,
+		openTelemetryCollectorTokenSecretName,
+		gardenerutils.SecretNamePrefixShootAccess + v1beta1constants.DeploymentNameKubeControllerManager,
+		gardenerutils.SecretNamePrefixShootAccess + v1beta1constants.DeploymentNameKubeScheduler,
+		gardenerutils.SecretNamePrefixShootAccess + v1beta1constants.ETCDMain,
+		gardenerutils.SecretNamePrefixShootAccess + v1beta1constants.ETCDEvents,
+		gardenerutils.SecretNamePrefixShootAccess + adminaccess.ShootAccessSecretNameSuffix,
+	}
+
+	if a.machineNamespace != nil {
+		machine := &machinev1alpha1.Machine{}
+		if err := a.sourceClient.Get(ctx, client.ObjectKey{Name: machineName, Namespace: *a.machineNamespace}, machine); err != nil {
+			return auth.DecisionDeny, "", fmt.Errorf("error getting machine %q: %w", machineName, err)
+		}
+
+		oscSecretName := machine.Spec.NodeTemplateSpec.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName]
+		validSecrets = append(validSecrets, oscSecretName)
+
+		oscSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: oscSecretName, Namespace: metav1.NamespaceSystem}}
+		if err := a.targetClient.Get(ctx, client.ObjectKeyFromObject(oscSecret), oscSecret); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return auth.DecisionDeny, "", fmt.Errorf("error getting OSC secret %q: %w", oscSecretName, err)
+			}
+		} else {
+			var hostname string
+
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: machine.Labels[machinev1alpha1.NodeLabelKey]}}
+			if err := a.targetClient.Get(ctx, client.ObjectKeyFromObject(node), node); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return auth.DecisionDeny, "", fmt.Errorf("error getting node %q: %w", node.Name, err)
+				}
+			} else {
+				hostname = node.Labels[corev1.LabelHostname]
+			}
+
+			secretRefNames, err := secretRefNamesFromOSCSecret(oscSecret, hostname)
+			if err != nil {
+				return auth.DecisionDeny, "", fmt.Errorf("error reading secretRef names from OSC secret %q: %w", oscSecretName, err)
+			}
+			validSecrets = append(validSecrets, secretRefNames...)
+		}
+	} else {
+		var nodeNotFound bool
+
+		node := &corev1.Node{}
+		if err := a.targetClient.Get(ctx, client.ObjectKey{Name: machineName}, node); apierrors.IsNotFound(err) {
+			nodeNotFound = true
+		} else if err != nil {
+			return auth.DecisionDeny, "", fmt.Errorf("error getting node %q: %w", machineName, err)
+		}
+
+		oscSecretList := &corev1.SecretList{}
+		if err := a.targetClient.List(ctx, oscSecretList, &client.ListOptions{
+			LabelSelector: labels.NewSelector().Add(utils.MustNewRequirement(v1beta1constants.LabelWorkerPool, selection.Exists)),
+		}); err != nil {
+			return auth.DecisionDeny, "", fmt.Errorf("error listing operating system config secrets: %w", err)
+		}
+
+		if nodeNotFound {
+			// When the node is not existing, gardener-node-agent is bootstrapping. It needs access to the secret
+			// which includes its operating system config. Since node-agent-authorizer does not know which worker pool
+			// gardener-node-agent uses, it needs access to all operating system config secrets.
+			for _, oscSecret := range oscSecretList.Items {
+				validSecrets = append(validSecrets, oscSecret.Name)
+
+				secretRefNames, err := secretRefNamesFromOSCSecret(&oscSecret, "")
+				if err != nil {
+					return auth.DecisionDeny, "", fmt.Errorf("error reading secretRef names from OSC secret %q: %w", oscSecret.Name, err)
+				}
+				validSecrets = append(validSecrets, secretRefNames...)
+			}
+		} else {
+			// Verify that the secret from node label is an operating system config secret.
+			hostname := node.Labels[corev1.LabelHostname]
+			for _, oscSecret := range oscSecretList.Items {
+				if oscSecret.Name == node.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName] {
+					validSecrets = append(validSecrets, oscSecret.Name)
+
+					secretRefNames, err := secretRefNamesFromOSCSecret(&oscSecret, hostname)
+					if err != nil {
+						return auth.DecisionDeny, "", fmt.Errorf("error reading secretRef names from OSC secret %q: %w", oscSecret.Name, err)
+					}
+					validSecrets = append(validSecrets, secretRefNames...)
+					break
+				}
+			}
+		}
+	}
+
+	if !slices.Contains(validSecrets, attrs.GetName()) || attrs.GetNamespace() != metav1.NamespaceSystem {
+		log.Info("Denying authorization because gardener-node-agent is not allowed to access secret", "secret", attrs.GetName(), "machine", machineName)
+		return auth.DecisionDeny, fmt.Sprintf("gardener-node-agent can only access secrets %v in %q namespace", validSecrets, metav1.NamespaceSystem), nil
+	}
+
+	return auth.DecisionAllow, "", nil
+}
+
+func secretRefNamesFromOSCSecret(secret *corev1.Secret, hostname string) ([]string, error) {
+	oscRaw, ok := secret.Data[nodeagentconfigv1alpha1.DataKeyOperatingSystemConfig]
+	if !ok {
+		return nil, nil
+	}
+
+	osc := &extensionsv1alpha1.OperatingSystemConfig{}
+	if err := runtime.DecodeInto(oscDecoder, oscRaw, osc); err != nil {
+		return nil, fmt.Errorf("unable to decode OSC from secret %q: %w", secret.Name, err)
+	}
+
+	var names []string
+	for _, file := range append(osc.Spec.Files, osc.Status.ExtensionFiles...) {
+		if file.Content.SecretRef != nil && (hostname == "" || file.HostName == nil || *file.HostName == hostname) {
+			names = append(names, file.Content.SecretRef.Name)
+		}
+	}
+
+	return names, nil
+}
+
+func (a *authorizer) checkVerb(log logr.Logger, attrs auth.Attributes, allowedVerbs ...string) (bool, string) {
+	if !slices.Contains(allowedVerbs, attrs.GetVerb()) {
+		log.Info("Denying authorization because verb is not allowed for this resource type", "allowedVerbs", allowedVerbs)
+		return false, fmt.Sprintf("only the following verbs are allowed for this resource type: %+v", allowedVerbs)
+	}
+
+	return true, ""
+}
+
+func (a *authorizer) checkSubresource(log logr.Logger, attrs auth.Attributes, allowedSubresources ...string) (bool, string) {
+	if subresource := attrs.GetSubresource(); len(subresource) > 0 && !slices.Contains(allowedSubresources, subresource) {
+		log.Info("Denying authorization because subresource is not allowed for this resource", "allowedSubresources", allowedSubresources)
+		return false, fmt.Sprintf("only the following subresources are allowed for this resource type: %+v", allowedSubresources)
+	}
+
+	return true, ""
+}
+func (a *authorizer) getNode(ctx context.Context, log logr.Logger, machineName string) (*corev1.Node, string, error) {
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: machineName}}
+
+	if a.machineNamespace != nil {
+		machine := &machinev1alpha1.Machine{}
+		if err := a.sourceClient.Get(ctx, client.ObjectKey{Name: machineName, Namespace: *a.machineNamespace}, machine); err != nil {
+			return nil, "", fmt.Errorf("error getting machine %q: %w", machineName, err)
+		}
+		node.Name = machine.Labels[machinev1alpha1.NodeLabelKey]
+	}
+
+	if err := a.targetClient.Get(ctx, client.ObjectKeyFromObject(node), node); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("Denying request because no related node was found", "machineName", machineName)
+			return nil, fmt.Sprintf("no node for %q found", machineName), nil
+		}
+		return nil, "", fmt.Errorf("error getting node %q: %w", client.ObjectKeyFromObject(node), err)
+	}
+
+	return node, "", nil
+}

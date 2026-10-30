@@ -1,0 +1,334 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist
+
+import (
+	"context"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
+	"github.com/gardener/gardener/pkg/component/etcd/etcd"
+	etcdconstants "github.com/gardener/gardener/pkg/component/etcd/etcd/constants"
+	"github.com/gardener/gardener/pkg/component/shared"
+	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+	"github.com/gardener/gardener/pkg/utils/flow"
+)
+
+// NewEtcd is a function exposed for testing.
+var NewEtcd = etcd.New
+
+// DefaultEtcd returns a deployer for the etcd.
+func (b *Botanist) DefaultEtcd(ctx context.Context, role string, class etcd.Class) (etcd.Interface, error) {
+	values := etcd.Values{
+		Role:                        role,
+		Class:                       class,
+		RuntimeKubernetesVersion:    b.Shoot.RuntimeKubernetesVersion,
+		MaintenanceTimeWindow:       *b.Shoot.GetInfo().Spec.Maintenance.TimeWindow,
+		EvictionRequirement:         getEvictionRequirement(class, b.Shoot),
+		PriorityClassName:           v1beta1constants.PriorityClassNameShootControlPlane500,
+		HighAvailabilityEnabled:     v1beta1helper.IsHAControlPlaneConfigured(b.Shoot.GetInfo()),
+		TopologyAwareRoutingEnabled: b.Shoot.TopologyAwareRoutingEnabled,
+	}
+
+	// Prefix etcd member names with the seed name so that members can be distinguished across
+	// control plane migrations between seeds. Self-hosted shoots have no Seed object.
+	// spec.memberNamePrefix requires etcd-druid v0.37+, only available when UpgradeEtcdVersion is enabled.
+	//
+	// TODO(acumino): Remove this `UpgradeEtcdVersion` feature gate check once the feature gate is permanently enabled and the feature gate is removed.
+	// TODO(acumino): Rework this feature gate condition once `UpgradeEtcdVersion` is enabled by default.
+	if !b.Shoot.IsSelfHosted() &&
+		b.Config != nil && b.Config.ETCDConfig != nil && b.Config.ETCDConfig.FeatureGates["UpgradeEtcdVersion"] {
+		values.MemberNamePrefix = b.Seed.GetInfo().Name
+	}
+
+	// During a live control plane migration the etcd members of the two seeds form a single cluster.
+	if err := b.setLiveMigrationEtcdValues(ctx, &values, role); err != nil {
+		return nil, err
+	}
+
+	defragmentationSchedule, err := determineDefragmentationSchedule(b.Shoot.GetInfo())
+	if err != nil {
+		return nil, err
+	}
+	values.DefragmentationSchedule = &defragmentationSchedule
+
+	if !b.Shoot.HibernationEnabled {
+		values.Replicas = new(getEtcdReplicas(b.Shoot.GetInfo()))
+	}
+
+	switch role {
+	case v1beta1constants.ETCDRoleMain:
+		if etcd := b.Shoot.GetInfo().Spec.Kubernetes.ETCD; etcd != nil && etcd.Main != nil && etcd.Main.Autoscaling != nil {
+			values.Autoscaling.MinAllowed = etcd.Main.Autoscaling.MinAllowed
+		}
+		values.StorageCapacity = b.GetValidVolumeSize("25Gi")
+	case v1beta1constants.ETCDRoleEvents:
+		if etcd := b.Shoot.GetInfo().Spec.Kubernetes.ETCD; etcd != nil && etcd.Events != nil && etcd.Events.Autoscaling != nil {
+			values.Autoscaling.MinAllowed = etcd.Events.Autoscaling.MinAllowed
+		}
+		values.StorageCapacity = b.GetValidVolumeSize("10Gi")
+	}
+
+	if b.Shoot.RunsControlPlane() {
+		values.StaticPodConfig = &etcd.StaticPodConfig{}
+	}
+
+	return NewEtcd(b.Logger, b.SeedClientSet.Client(), b.Shoot.ControlPlaneNamespace, b.SecretsManager, values), nil
+}
+
+func getEvictionRequirement(c etcd.Class, s *shoot.Shoot) *string {
+	if c == etcd.ClassImportant && (s.Purpose == gardencorev1beta1.ShootPurposeProduction || s.Purpose == gardencorev1beta1.ShootPurposeInfrastructure) {
+		return new(v1beta1constants.EvictionRequirementNever)
+	}
+	if metav1.HasAnnotation(s.GetInfo().ObjectMeta, v1beta1constants.ShootAlphaControlPlaneScaleDownDisabled) {
+		return new(v1beta1constants.EvictionRequirementNever)
+	}
+	return new(v1beta1constants.EvictionRequirementInMaintenanceWindowOnly)
+}
+
+// DeployEtcd deploys the etcd main and events.
+func (b *Botanist) DeployEtcd(ctx context.Context) error {
+	if backupConfig := v1beta1helper.GetBackupConfigForShoot(b.Shoot.GetInfo(), b.GetSeed()); backupConfig != nil {
+		secret := &corev1.Secret{}
+		if err := b.SeedClientSet.Client().Get(ctx, client.ObjectKey{Namespace: b.Shoot.ControlPlaneNamespace, Name: v1beta1constants.BackupSecretName}, secret); err != nil {
+			return err
+		}
+
+		snapshotSchedule, err := determineBackupSchedule(b.Shoot.GetInfo())
+		if err != nil {
+			return err
+		}
+
+		var (
+			backupLeaderElection         *gardenletconfigv1alpha1.ETCDBackupLeaderElection
+			deltaSnapshotRetentionPeriod *metav1.Duration
+		)
+		if b.Config != nil && b.Config.ETCDConfig != nil {
+			backupLeaderElection = b.Config.ETCDConfig.BackupLeaderElection
+			deltaSnapshotRetentionPeriod = b.Config.ETCDConfig.DeltaSnapshotRetentionPeriod
+		}
+
+		b.Shoot.Components.ControlPlane.EtcdMain.SetBackupConfig(&etcd.BackupConfig{
+			Provider:                     backupConfig.Provider,
+			SecretRefName:                v1beta1constants.BackupSecretName,
+			Prefix:                       b.Shoot.BackupEntryName,
+			Container:                    string(secret.Data[v1beta1constants.DataKeyBackupBucketName]),
+			FullSnapshotSchedule:         snapshotSchedule,
+			LeaderElection:               backupLeaderElection,
+			DeltaSnapshotRetentionPeriod: deltaSnapshotRetentionPeriod,
+		})
+	}
+
+	// Roll out the new peer CA first so that every member in the cluster trusts the old and the new CA.
+	// This is required because peer certificates which are used for client and server authentication at the same time,
+	// are re-created with the new CA in the `Deploy` step.
+	if sets.New(
+		gardencorev1beta1.RotationPreparing,
+		gardencorev1beta1.RotationPreparingWithoutWorkersRollout,
+	).Has(v1beta1helper.GetShootCARotationPhase(b.Shoot.GetInfo().Status.Credentials)) {
+		var taskFns []flow.TaskFn
+
+		for name, component := range map[string]etcd.Interface{
+			"etcd-main":   b.Shoot.Components.ControlPlane.EtcdMain,
+			"etcd-events": b.Shoot.Components.ControlPlane.EtcdEvents,
+		} {
+			if peerCARolloutCompleted, err := component.IsPeerCARolledOut(ctx); err != nil {
+				return fmt.Errorf("failed to check if peer CA rollout is completed for %s: %w", name, err)
+			} else if !peerCARolloutCompleted {
+				taskFns = append(taskFns, func(ctx context.Context) error {
+					if err := component.RolloutPeerCA(ctx); err != nil {
+						return err
+					}
+
+					// For hosted shoots, changing the Etcd resources leads to a rollout of the pods. This is not true
+					// for self-hosted shoots: Here, we first have to translate the created StatefulSet into static
+					// pods, populate them via OperatingSystemConfig to the node, and wait for kubelet to restart them.
+					// Since all this is a bit more involved, we are performing these steps in the
+					// `ReconcileStaticControlPlanePodsTaskGroup` function as part of the flow (instead of doing
+					// it here like for hosted shoots).
+					if b.Shoot.IsSelfHosted() {
+						return nil
+					}
+
+					return component.MarkAsPeerCARolloutCompleted(ctx)
+				})
+			}
+		}
+
+		if len(taskFns) > 0 {
+			if err := flow.Parallel(taskFns...)(ctx); err != nil {
+				return err
+			}
+
+			// For self-hosted shoots, we have to first translate the Etcd StatefulSet into static pods and roll them
+			// out before we can continue and modify the change the Etcd resource again. Hence, we stop here and call
+			// the `DeployEtcd` function again in the `ReconcileStaticControlPlanePodsTaskGroup` function.
+			if b.Shoot.IsSelfHosted() {
+				return nil
+			}
+		}
+	} else {
+		// Clear the peer-CA-rollout marker on both etcds, so that a subsequent CA rotation re-runs the peer CA bundle
+		// rollout (RolloutPeerCA). This is the counterpart to setting the marker via `MarkAsPeerCARolloutCompleted` during
+		// the `Preparing` phase above.
+		// TODO(timuthy): Explicitly check for the `RotationCompleting` phase here, after Gardener v1.155.0 has been released. Due to an earlier regression, all phases but `Preparing` must be considered at the moment.
+		if err := flow.Parallel(
+			b.Shoot.Components.ControlPlane.EtcdMain.UnmarkAsPeerCARolloutCompleted,
+			b.Shoot.Components.ControlPlane.EtcdEvents.UnmarkAsPeerCARolloutCompleted,
+		)(ctx); err != nil {
+			return err
+		}
+	}
+
+	return b.deployOrRestoreEtcd(ctx)
+}
+
+// WaitUntilEtcdsReady waits until both etcd-main and etcd-events are ready.
+func (b *Botanist) WaitUntilEtcdsReady(ctx context.Context) error {
+	return flow.Parallel(
+		b.Shoot.Components.ControlPlane.EtcdMain.Wait,
+		b.Shoot.Components.ControlPlane.EtcdEvents.Wait,
+	)(ctx)
+}
+
+// DestroyEtcd destroys the etcd main and events.
+func (b *Botanist) DestroyEtcd(ctx context.Context) error {
+	return flow.Parallel(
+		b.Shoot.Components.ControlPlane.EtcdMain.Destroy,
+		b.Shoot.Components.ControlPlane.EtcdEvents.Destroy,
+	)(ctx)
+}
+
+// WaitUntilEtcdsDeleted waits until both etcd-main and etcd-events are deleted.
+func (b *Botanist) WaitUntilEtcdsDeleted(ctx context.Context) error {
+	return flow.Parallel(
+		b.Shoot.Components.ControlPlane.EtcdMain.WaitCleanup,
+		b.Shoot.Components.ControlPlane.EtcdEvents.WaitCleanup,
+	)(ctx)
+}
+
+// SnapshotEtcd executes into the etcd-main pod and triggers a full snapshot.
+func (b *Botanist) SnapshotEtcd(ctx context.Context) error {
+	return shared.SnapshotEtcd(ctx, b.SecretsManager, b.Shoot.Components.ControlPlane.EtcdMain)
+}
+
+// ScaleETCDToZero scales ETCD main and events replicas to zero.
+func (b *Botanist) ScaleETCDToZero(ctx context.Context) error {
+	return b.scaleETCD(ctx, 0)
+}
+
+// ScaleUpETCD scales ETCD main and events replicas to the configured replica count.
+func (b *Botanist) ScaleUpETCD(ctx context.Context) error {
+	return b.scaleETCD(ctx, getEtcdReplicas(b.Shoot.GetInfo()))
+}
+
+func (b *Botanist) scaleETCD(ctx context.Context, replicas int32) error {
+	if err := b.Shoot.Components.ControlPlane.EtcdMain.Scale(ctx, replicas); err != nil {
+		return err
+	}
+	return b.Shoot.Components.ControlPlane.EtcdEvents.Scale(ctx, replicas)
+}
+
+func (b *Botanist) deployOrRestoreEtcd(ctx context.Context) error {
+	isRestoreRequired, err := b.isRestorationOfMultiNodeMainEtcdRequired(ctx)
+	if err != nil {
+		return err
+	}
+
+	if isRestoreRequired {
+		return b.restoreMultiNodeEtcd(ctx)
+	}
+
+	return flow.Parallel(
+		b.Shoot.Components.ControlPlane.EtcdMain.Deploy,
+		b.Shoot.Components.ControlPlane.EtcdEvents.Deploy,
+	)(ctx)
+}
+
+func (b *Botanist) isRestorationOfMultiNodeMainEtcdRequired(ctx context.Context) (bool, error) {
+	if !b.Shoot.IsRestorePhase() || !v1beta1helper.IsHAControlPlaneConfigured(b.Shoot.GetInfo()) {
+		return false, nil
+	}
+
+	etcd, err := b.Shoot.Components.ControlPlane.EtcdMain.Get(ctx)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+
+	// The etcd has already been scaled up to the desired number of replicas
+	// and therefore has been restored, then it has been scaled down to 0
+	// replicas as part of the reconciliation flow for hibernated shoots.
+	if b.Shoot.HibernationEnabled && etcd.Spec.Replicas == 0 {
+		return false, nil
+	}
+	// The etcd has already been scaled up to the desired number of replicas
+	// and therefore has been restored.
+	if etcd.Spec.Replicas == getEtcdReplicas(b.Shoot.GetInfo()) {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (b *Botanist) restoreMultiNodeEtcd(ctx context.Context) error {
+	for _, component := range []etcd.Interface{b.Shoot.Components.ControlPlane.EtcdMain, b.Shoot.Components.ControlPlane.EtcdEvents} {
+		originalReplicas := component.GetReplicas()
+		defer func() {
+			// Revert the original replica count for the etcd. This is done in case a step
+			// is added to the reconciliation flow that depends on the etcd's replica count.
+			component.SetReplicas(originalReplicas)
+		}()
+		component.SetReplicas(new(int32(1)))
+	}
+
+	return flow.Parallel(
+		b.Shoot.Components.ControlPlane.EtcdMain.Deploy,
+		b.Shoot.Components.ControlPlane.EtcdEvents.Deploy,
+	)(ctx)
+}
+
+func determineBackupSchedule(shoot *gardencorev1beta1.Shoot) (string, error) {
+	return timewindow.DetermineSchedule(
+		"%d %d * * *",
+		shoot.Spec.Maintenance.TimeWindow.Begin,
+		shoot.Spec.Maintenance.TimeWindow.End,
+		shoot.Status.UID,
+		shoot.CreationTimestamp,
+		timewindow.RandomizeWithinFirstHourOfTimeWindow,
+	)
+}
+
+func determineDefragmentationSchedule(shoot *gardencorev1beta1.Shoot) (string, error) {
+	scheduleFormat := "%d %d * * *"
+
+	return timewindow.DetermineSchedule(
+		scheduleFormat,
+		shoot.Spec.Maintenance.TimeWindow.Begin,
+		shoot.Spec.Maintenance.TimeWindow.End,
+		shoot.Status.UID,
+		shoot.CreationTimestamp,
+		timewindow.RandomizeWithinTimeWindow,
+	)
+}
+
+func getEtcdReplicas(shoot *gardencorev1beta1.Shoot) int32 {
+	if v1beta1helper.IsHAControlPlaneConfigured(shoot) {
+		return etcdconstants.HAReplicaCount
+	}
+	return 1
+}

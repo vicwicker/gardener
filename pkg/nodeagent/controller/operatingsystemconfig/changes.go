@@ -1,0 +1,518 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package operatingsystemconfig
+
+import (
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+
+	"github.com/go-logr/logr"
+	"github.com/spf13/afero"
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
+	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
+	"k8s.io/utils/ptr"
+
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
+	kubeletcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
+	oscutils "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/utils"
+	"github.com/gardener/gardener/pkg/nodeagent"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
+)
+
+func extractOSCFromSecret(secret *corev1.Secret) (*extensionsv1alpha1.OperatingSystemConfig, string, error) {
+	oscRaw, ok := secret.Data[nodeagentconfigv1alpha1.DataKeyOperatingSystemConfig]
+	if !ok {
+		return nil, "", fmt.Errorf("no %s key found in OSC secret", nodeagentconfigv1alpha1.DataKeyOperatingSystemConfig)
+	}
+
+	osc := &extensionsv1alpha1.OperatingSystemConfig{}
+	if err := runtime.DecodeInto(nodeagent.Codec, oscRaw, osc); err != nil {
+		return nil, "", fmt.Errorf("unable to decode OSC from secret data key %s: %w", nodeagentconfigv1alpha1.DataKeyOperatingSystemConfig, err)
+	}
+
+	return osc, secret.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumDownloadedOperatingSystemConfig], nil
+}
+
+func computeOperatingSystemConfigChanges(
+	log logr.Logger,
+	fs afero.Afero,
+	newOSC *extensionsv1alpha1.OperatingSystemConfig,
+	newOSCChecksum string,
+	currentOSVersion *string,
+	skipPersist bool,
+	hostName string,
+) (*operatingSystemConfigChanges, error) {
+	changes := &operatingSystemConfigChanges{
+		fs:                            fs,
+		OperatingSystemConfigChecksum: newOSCChecksum,
+		skipPersist:                   skipPersist,
+	}
+
+	oldChanges, err := loadOSCChanges(fs)
+	if err != nil {
+		if !errors.Is(err, afero.ErrFileNotFound) {
+			return nil, fmt.Errorf("failed to load old osc changes file: %w", err)
+		}
+		// there is no file (yet), set to an empty file, the hashes will mismatch
+		oldChanges = &operatingSystemConfigChanges{
+			skipPersist: skipPersist,
+		}
+	}
+
+	if oldChanges.OperatingSystemConfigChecksum == changes.OperatingSystemConfigChecksum {
+		log.Info("Found previously computed OperatingSystemConfig changes on disk, remaining work",
+			"changedFiles", len(oldChanges.Files.Changed),
+			"deletedFiles", len(oldChanges.Files.Deleted),
+			"changedUnits", len(oldChanges.Units.Changed),
+			"deletedUnits", len(oldChanges.Units.Deleted),
+			"unitCommands", len(oldChanges.Units.Commands),
+		)
+		// we already computed the changes, and might have partially applied them
+		return oldChanges, nil
+	}
+
+	log.Info("OperatingSystemConfig changes checksum does not match, computing new changes")
+
+	// create copy so that we don't accidentally update the `newOSC` when items are removed from the
+	// `operatingSystemConfigChanges` when they are marked as completed.
+	newOSC = newOSC.DeepCopy()
+
+	// osc.files and osc.unit.files should be changed the same way by OSC controller.
+	// The reason for assigning files to units is the detection of changes which require the restart of a unit.
+	newOSCFiles := CollectAllFiles(newOSC, hostName)
+
+	oldOSCRaw, err := fs.ReadFile(nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath)
+	if err != nil {
+		if !errors.Is(err, afero.ErrFileNotFound) {
+			return nil, fmt.Errorf("error reading last applied OSC from file path %s: %w", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, err)
+		}
+
+		var (
+			unitChanges  []changedUnit
+			unitCommands []unitCommand
+		)
+
+		for _, unit := range mergeUnits(newOSC.Spec.Units, newOSC.Status.ExtensionUnits) {
+			unitCommands = append(unitCommands, unitCommand{
+				Name:    unit.Name,
+				Command: getCommandToExecute(unit),
+			})
+			unitChanges = append(unitChanges, changedUnit{
+				Unit:           unit,
+				DropInsChanges: dropIns{Changed: unit.DropIns},
+			})
+		}
+
+		changes.Files.Changed = newOSCFiles
+		changes.Units.Changed = unitChanges
+		changes.Units.Commands = unitCommands
+
+		changes.Containerd.ConfigFileChanged = true
+		if extensionsv1alpha1helper.HasContainerdConfiguration(newOSC.Spec.CRIConfig) {
+			newRegistries := newOSC.Spec.CRIConfig.Containerd.Registries
+			upstreamsToProbe := make([]string, 0, len(newRegistries))
+			for _, registryConfig := range newRegistries {
+				if ptr.Deref(registryConfig.ReadinessProbe, false) {
+					upstreamsToProbe = append(upstreamsToProbe, registryConfig.Upstream)
+				}
+			}
+
+			changes.Containerd.Registries = containerdRegistries{
+				Desired:          newRegistries,
+				UpstreamsToProbe: upstreamsToProbe,
+			}
+		}
+		changes.lock.Lock()
+		defer changes.lock.Unlock()
+		return changes, changes.persist()
+	}
+
+	oldOSC := &extensionsv1alpha1.OperatingSystemConfig{}
+	if err := runtime.DecodeInto(nodeagent.Codec, oldOSCRaw, oldOSC); err != nil {
+		return nil, fmt.Errorf("unable to decode the old OSC read from file path %s: %w", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, err)
+	}
+
+	oldOSCFiles := CollectAllFiles(oldOSC, hostName)
+	// File changes have to be computed in one step for all files,
+	// because moving a file from osc.unit.files to osc.files or vice versa should not result in a change and a delete event.
+	changes.Files = computeFileDiffs(oldOSCFiles, newOSCFiles)
+
+	changes.Units = computeUnitDiffs(
+		mergeUnits(oldOSC.Spec.Units, oldOSC.Status.ExtensionUnits),
+		mergeUnits(newOSC.Spec.Units, newOSC.Status.ExtensionUnits),
+		changes.Files,
+	)
+
+	if oldOSC.Spec.InPlaceUpdates != nil && newOSC.Spec.InPlaceUpdates != nil {
+		isOsVersionUpToDate, err := IsOsVersionUpToDate(currentOSVersion, newOSC)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compute OS version change: %w", err)
+		}
+		changes.InPlaceUpdates.OperatingSystem = !isOsVersionUpToDate
+
+		if oldOSC.Spec.InPlaceUpdates.KubeletVersion != newOSC.Spec.InPlaceUpdates.KubeletVersion {
+			changes.InPlaceUpdates.Kubelet.MinorVersion, err = versionutils.CheckIfMinorVersionUpdate(oldOSC.Spec.InPlaceUpdates.KubeletVersion, newOSC.Spec.InPlaceUpdates.KubeletVersion)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check if kubelet minor version was updated: %w", err)
+			}
+		}
+
+		oldKubeletConfig, err := getKubeletConfig(oldOSC)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get old kubelet config from the OSC: %w", err)
+		}
+		newKubeletConfig, err := getKubeletConfig(newOSC)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get new kubelet config from the OSC: %w", err)
+		}
+
+		changes.InPlaceUpdates.Kubelet.Config, changes.InPlaceUpdates.Kubelet.CPUManagerPolicy, err = ComputeKubeletConfigChange(oldKubeletConfig, newKubeletConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check if kubelet config has changed: %w", err)
+		}
+
+		caRotation, saKeyRotation := ComputeCredentialsRotationChanges(oldOSC, newOSC)
+		changes.InPlaceUpdates.CertificateAuthoritiesRotation.Kubelet = caRotation
+		changes.InPlaceUpdates.CertificateAuthoritiesRotation.NodeAgent = caRotation
+		changes.InPlaceUpdates.ServiceAccountKeyRotation = saKeyRotation
+	}
+
+	var (
+		newRegistries []extensionsv1alpha1.RegistryConfig
+		oldRegistries []extensionsv1alpha1.RegistryConfig
+	)
+
+	if extensionsv1alpha1helper.HasContainerdConfiguration(newOSC.Spec.CRIConfig) {
+		newRegistries = newOSC.Spec.CRIConfig.Containerd.Registries
+		if !extensionsv1alpha1helper.HasContainerdConfiguration(oldOSC.Spec.CRIConfig) {
+			changes.Containerd.ConfigFileChanged = true
+		} else {
+			var (
+				newContainerd = newOSC.Spec.CRIConfig.Containerd
+				oldContainerd = oldOSC.Spec.CRIConfig.Containerd
+			)
+
+			changes.Containerd.ConfigFileChanged = !apiequality.Semantic.DeepEqual(newContainerd.SandboxImage, oldContainerd.SandboxImage) ||
+				!apiequality.Semantic.DeepEqual(newContainerd.Plugins, oldContainerd.Plugins) ||
+				!apiequality.Semantic.DeepEqual(newOSC.Spec.CRIConfig.CgroupDriver, oldOSC.Spec.CRIConfig.CgroupDriver)
+
+			oldRegistries = oldOSC.Spec.CRIConfig.Containerd.Registries
+		}
+	}
+	changes.Containerd.Registries = computeContainerdRegistryDiffs(newRegistries, oldRegistries)
+
+	changes.lock.Lock()
+	defer changes.lock.Unlock()
+	return changes, changes.persist()
+}
+
+// IsOsVersionUpToDate checks if the current OS version is up to date with the version specified in the new OSC.
+func IsOsVersionUpToDate(currentOSVersion *string, newOSC *extensionsv1alpha1.OperatingSystemConfig) (bool, error) {
+	if currentOSVersion == nil {
+		return false, fmt.Errorf("current OS version is nil")
+	}
+
+	if newOSC.Spec.InPlaceUpdates.OperatingSystemVersion == "" {
+		return true, nil
+	}
+
+	osVersionUpToDate, err := versionutils.CompareVersions(*currentOSVersion, "=", newOSC.Spec.InPlaceUpdates.OperatingSystemVersion)
+	if err != nil {
+		return false, fmt.Errorf("failed comparing current OS version %q with OS version in the new OSC %q: %w", *currentOSVersion, newOSC.Spec.InPlaceUpdates.OperatingSystemVersion, err)
+	}
+
+	return osVersionUpToDate, nil
+}
+
+// ComputeCredentialsRotationChanges computes if the credentials rotation has changed between the old and new OSC.
+func ComputeCredentialsRotationChanges(oldOSC, newOSC *extensionsv1alpha1.OperatingSystemConfig) (bool, bool) {
+	if newOSC.Spec.InPlaceUpdates.CredentialsRotation == nil {
+		return false, false
+	}
+
+	// Rotation is triggered for the first time
+	if oldOSC.Spec.InPlaceUpdates.CredentialsRotation == nil {
+		caRotation := newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil && newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime != nil
+
+		serviceAccountKeyRotation := newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil && newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime != nil
+
+		return caRotation, serviceAccountKeyRotation
+	}
+
+	caRotation := oldOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil &&
+		newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil &&
+		!oldOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime.Equal(newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime)
+
+	serviceAccountKeyRotation := oldOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil &&
+		newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil &&
+		!oldOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime.Equal(newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime)
+
+	return caRotation, serviceAccountKeyRotation
+}
+
+func getKubeletConfig(osc *extensionsv1alpha1.OperatingSystemConfig) (*kubeletconfigv1beta1.KubeletConfiguration, error) {
+	var (
+		fciCodec           = oscutils.NewFileContentInlineCodec()
+		kubeletConfigCodec = kubeletcomponent.NewConfigCodec(fciCodec)
+	)
+
+	for _, file := range osc.Spec.Files {
+		if file.Path == kubeletcomponent.PathKubeletConfig {
+			return kubeletConfigCodec.Decode(file.Content.Inline)
+		}
+	}
+
+	return nil, fmt.Errorf("kubelet config file with path: %q not found in OSC", kubeletcomponent.PathKubeletConfig)
+}
+
+// ComputeKubeletConfigChange computes changes in the kubelet configuration relevant for in-place updates.
+// This function needs to be updated when the kubelet configuration triggers in https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_updates.md#rolling-update-triggers are changed.
+func ComputeKubeletConfigChange(oldConfig, newConfig *kubeletconfigv1beta1.KubeletConfiguration) (bool, bool, error) {
+	cpuManagerPolicyChanged := oldConfig.CPUManagerPolicy != newConfig.CPUManagerPolicy
+	collectRelevantEntries := func(data map[string]string, relevantKeys []string) map[string]string {
+		filteredData := make(map[string]string)
+		relevantKeysSet := sets.New(relevantKeys...)
+
+		for k, v := range data {
+			if !relevantKeysSet.Has(k) {
+				continue
+			}
+			filteredData[k] = v
+		}
+
+		return filteredData
+	}
+
+	// Copy only relevant config values for comparison.
+	relevantEvictionNames := []string{components.MemoryAvailable, components.ImageFSAvailable, components.ImageFSInodesFree, components.NodeFSAvailable, components.NodeFSInodesFree}
+	oldRelevantEvictionHard := collectRelevantEntries(oldConfig.EvictionHard, relevantEvictionNames)
+	newRelevantEvictionHard := collectRelevantEntries(newConfig.EvictionHard, relevantEvictionNames)
+
+	if !maps.Equal(oldRelevantEvictionHard, newRelevantEvictionHard) {
+		return true, cpuManagerPolicyChanged, nil
+	}
+
+	for _, config := range []*kubeletconfigv1beta1.KubeletConfiguration{oldConfig, newConfig} {
+		if err := validateQuantities(config); err != nil {
+			return false, cpuManagerPolicyChanged, fmt.Errorf("error validating quantities: %v", err)
+		}
+	}
+
+	// Copy only relevant config values for comparison.
+	relevantKubeReservedNames := []string{"cpu", "memory", "ephemeral-storage", "pid"}
+	oldConfigKubeReserved := collectRelevantEntries(oldConfig.KubeReserved, relevantKubeReservedNames)
+	newConfigKubeReserved := collectRelevantEntries(newConfig.KubeReserved, relevantKubeReservedNames)
+
+	return !maps.Equal(oldConfigKubeReserved, newConfigKubeReserved), cpuManagerPolicyChanged, nil
+}
+
+func validateQuantities(config *kubeletconfigv1beta1.KubeletConfiguration) error {
+	if config == nil {
+		return nil
+	}
+
+	for _, q := range config.KubeReserved {
+		if _, err := resource.ParseQuantity(q); err != nil {
+			return fmt.Errorf("failed to parse quantity: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func computeUnitDiffs(oldUnits, newUnits []extensionsv1alpha1.Unit, fileDiffs files) units {
+	var u units
+
+	var changedFiles = sets.New[string]()
+	// Only changed files are relevant here. Deleted files must be removed from `Unit.FilePaths` too which leads to a semantic difference.
+	for _, file := range fileDiffs.Changed {
+		changedFiles.Insert(file.Path)
+	}
+
+	for _, oldUnit := range oldUnits {
+		if !slices.ContainsFunc(newUnits, func(newUnit extensionsv1alpha1.Unit) bool {
+			return oldUnit.Name == newUnit.Name
+		}) {
+			u.Deleted = append(u.Deleted, oldUnit)
+		}
+	}
+
+	for _, newUnit := range newUnits {
+		oldUnitIndex := slices.IndexFunc(oldUnits, func(oldUnit extensionsv1alpha1.Unit) bool {
+			return oldUnit.Name == newUnit.Name
+		})
+
+		var fileContentChanged bool
+		for _, filePath := range newUnit.FilePaths {
+			if changedFiles.Has(filePath) {
+				fileContentChanged = true
+			}
+		}
+		commandToExecute := getCommandToExecute(newUnit)
+
+		if oldUnitIndex == -1 {
+			u.Changed = append(u.Changed, changedUnit{
+				Unit:           newUnit,
+				DropInsChanges: dropIns{Changed: newUnit.DropIns},
+			})
+			u.Commands = append(u.Commands, unitCommand{
+				Name:    newUnit.Name,
+				Command: commandToExecute,
+			})
+		} else if !apiequality.Semantic.DeepEqual(oldUnits[oldUnitIndex], newUnit) || fileContentChanged {
+			var d dropIns
+
+			for _, oldDropIn := range oldUnits[oldUnitIndex].DropIns {
+				if !slices.ContainsFunc(newUnit.DropIns, func(newDropIn extensionsv1alpha1.DropIn) bool {
+					return oldDropIn.Name == newDropIn.Name
+				}) {
+					d.Deleted = append(d.Deleted, oldDropIn)
+				}
+			}
+
+			for _, newDropIn := range newUnit.DropIns {
+				oldDropInIndex := slices.IndexFunc(oldUnits[oldUnitIndex].DropIns, func(oldDropIn extensionsv1alpha1.DropIn) bool {
+					return oldDropIn.Name == newDropIn.Name
+				})
+
+				if oldDropInIndex == -1 || !apiequality.Semantic.DeepEqual(oldUnits[oldUnitIndex].DropIns[oldDropInIndex], newDropIn) {
+					d.Changed = append(d.Changed, newDropIn)
+					continue
+				}
+			}
+
+			u.Changed = append(u.Changed, changedUnit{
+				Unit:           newUnit,
+				DropInsChanges: d,
+			})
+			u.Commands = append(u.Commands, unitCommand{
+				Name:    newUnit.Name,
+				Command: commandToExecute,
+			})
+		}
+	}
+
+	return u
+}
+
+func computeFileDiffs(oldFiles, newFiles []extensionsv1alpha1.File) files {
+	var f files
+
+	for _, oldFile := range oldFiles {
+		if !slices.ContainsFunc(newFiles, func(newFile extensionsv1alpha1.File) bool {
+			return oldFile.Path == newFile.Path
+		}) {
+			f.Deleted = append(f.Deleted, oldFile)
+		}
+	}
+
+	for _, newFile := range newFiles {
+		oldFileIndex := slices.IndexFunc(oldFiles, func(oldFile extensionsv1alpha1.File) bool {
+			return oldFile.Path == newFile.Path
+		})
+
+		if oldFileIndex == -1 || !apiequality.Semantic.DeepEqual(oldFiles[oldFileIndex], newFile) {
+			f.Changed = append(f.Changed, newFile)
+			continue
+		}
+	}
+
+	return f
+}
+
+func mergeUnits(specUnits, statusUnits []extensionsv1alpha1.Unit) []extensionsv1alpha1.Unit {
+	var out []extensionsv1alpha1.Unit
+
+	for _, unit := range append(specUnits, statusUnits...) {
+		unitIndex := slices.IndexFunc(out, func(existingUnit extensionsv1alpha1.Unit) bool {
+			return existingUnit.Name == unit.Name
+		})
+
+		if unitIndex == -1 {
+			out = append(out, unit)
+			continue
+		}
+
+		if unit.Enable != nil {
+			out[unitIndex].Enable = unit.Enable
+		}
+		if unit.Command != nil {
+			out[unitIndex].Command = unit.Command
+		}
+		if unit.Content != nil {
+			out[unitIndex].Content = unit.Content
+		}
+		out[unitIndex].DropIns = append(out[unitIndex].DropIns, unit.DropIns...)
+		out[unitIndex].FilePaths = append(out[unitIndex].FilePaths, unit.FilePaths...)
+	}
+
+	return out
+}
+
+// CollectAllFiles returns the list of all files from spec and status of the given OSC, optionally filtered for the given node.
+func CollectAllFiles(osc *extensionsv1alpha1.OperatingSystemConfig, hostName string) []extensionsv1alpha1.File {
+	allFiles := slices.Clone(append(osc.Spec.Files, osc.Status.ExtensionFiles...))
+	return slices.DeleteFunc(allFiles, func(file extensionsv1alpha1.File) bool {
+		return file.HostName != nil && *file.HostName != hostName
+	})
+}
+
+func computeContainerdRegistryDiffs(newRegistries, oldRegistries []extensionsv1alpha1.RegistryConfig) containerdRegistries {
+	r := containerdRegistries{
+		Desired: newRegistries,
+	}
+
+	// Compute deleted upstreams
+	upstreamsInUse := sets.New[string]()
+	for _, registryConfig := range r.Desired {
+		upstreamsInUse.Insert(registryConfig.Upstream)
+	}
+
+	r.Deleted = slices.DeleteFunc(oldRegistries, func(config extensionsv1alpha1.RegistryConfig) bool {
+		return upstreamsInUse.Has(config.Upstream)
+	})
+
+	// Compute upstreams to probe
+	for _, newRegistry := range newRegistries {
+		// Exit early if the registry endpoints should not be probed.
+		if !ptr.Deref(newRegistry.ReadinessProbe, false) {
+			continue
+		}
+
+		oldRegistryIndex := slices.IndexFunc(oldRegistries, func(oldRegistry extensionsv1alpha1.RegistryConfig) bool {
+			return oldRegistry.Upstream == newRegistry.Upstream
+		})
+
+		if oldRegistryIndex == -1 {
+			// A new registry config with enabled readiness probe is added. It has to be probed.
+			r.UpstreamsToProbe = append(r.UpstreamsToProbe, newRegistry.Upstream)
+		} else {
+			oldRegistry := oldRegistries[oldRegistryIndex]
+			if !apiequality.Semantic.DeepEqual(oldRegistry, newRegistry) {
+				// There is a change in the registry config. It has to be probed again.
+				r.UpstreamsToProbe = append(r.UpstreamsToProbe, newRegistry.Upstream)
+			}
+		}
+	}
+
+	return r
+}
+
+func getCommandToExecute(newUnit extensionsv1alpha1.Unit) extensionsv1alpha1.UnitCommand {
+	commandToExecute := extensionsv1alpha1.CommandRestart
+	if !ptr.Deref(newUnit.Enable, true) || ptr.Deref(newUnit.Command, "") == extensionsv1alpha1.CommandStop {
+		commandToExecute = extensionsv1alpha1.CommandStop
+	}
+	return commandToExecute
+}

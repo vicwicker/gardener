@@ -1,0 +1,141 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package care
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/utils/clock"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/operator/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/utils/flow"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
+)
+
+var (
+	// NewHealthCheck is used to create a new Health check instance.
+	NewHealthCheck = defaultNewHealthCheck
+)
+
+// Reconciler reconciles garden resources and executes health check operations.
+type Reconciler struct {
+	RuntimeClient   client.Client
+	Config          operatorconfigv1alpha1.OperatorConfiguration
+	Clock           clock.Clock
+	GardenNamespace string
+	// GardenClientMap is the ClientMap used to communicate with the virtual garden cluster. It should be set by AddToManager function but the field is still public for usage in tests.
+	GardenClientMap clientmap.ClientMap
+
+	registerManagedResourceWatchFunc func() error
+	managedResourceWatchRegistered   bool
+}
+
+// Reconcile reconciles Garden resources and executes health check operations.
+func (r *Reconciler) Reconcile(reconcileCtx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	log := logf.FromContext(reconcileCtx)
+
+	garden := &operatorv1alpha1.Garden{}
+	if err := r.RuntimeClient.Get(reconcileCtx, req.NamespacedName, garden); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("Object is gone, stop reconciling")
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, fmt.Errorf("error retrieving object from store: %w", err)
+	}
+
+	if !r.managedResourceWatchRegistered && r.registerManagedResourceWatchFunc != nil {
+		if err := r.registerManagedResourceWatchFunc(); err != nil {
+			log.Error(err, "Failed registering watch for resources.gardener.cloud/v1alpha1.ManagedResource now that a operator.gardener.cloud/v1alpha1.Garden object has been created")
+		} else {
+			r.managedResourceWatchRegistered = true
+		}
+	}
+
+	ctx, cancel := controllerutils.GetChildReconciliationContext(reconcileCtx, r.Config.Controllers.GardenCare.SyncPeriod.Duration)
+	defer cancel()
+
+	log.V(1).Info("Starting garden care")
+
+	// Initialize conditions based on the current status.
+	gardenConditions := NewGardenConditions(r.Clock, garden.Status)
+	gardenConstraints := NewGardenConstraints(r.Clock, garden.Status)
+
+	gardenClientSet, err := r.GardenClientMap.GetClient(reconcileCtx, keys.ForGarden(garden))
+	if err != nil {
+		log.V(1).Info("Could not get garden client", "error", err)
+	}
+
+	conditionThresholds := r.conditionThresholdsToProgressingMapping()
+
+	var updatedConditions, updatedConstraints []gardencorev1beta1.Condition
+	_ = flow.Parallel(
+		// Trigger health check
+		func(ctx context.Context) error {
+			updatedConditions = NewHealthCheck(
+				garden,
+				r.RuntimeClient,
+				gardenClientSet,
+				r.Clock,
+				conditionThresholds,
+				r.GardenNamespace,
+				checker.NewHealthChecker(
+					log,
+					r.RuntimeClient,
+					r.Clock,
+					checker.WithConditionThresholds(conditionThresholds),
+					checker.WithLastOperation(garden.Status.LastOperation)),
+			).Check(ctx, gardenConditions)
+			return nil
+		},
+		// Trigger constraint check
+		func(ctx context.Context) error {
+			updatedConstraints = NewConstraintCheck(r.RuntimeClient, r.Clock, r.GardenNamespace).Check(ctx, gardenConstraints)
+			return nil
+		},
+	)(ctx)
+
+	conditionsNeedUpdate := v1beta1helper.ConditionsNeedUpdate(gardenConditions.ConvertToSlice(), updatedConditions)
+	constraintsNeedUpdate := v1beta1helper.ConditionsNeedUpdate(gardenConstraints.ConvertToSlice(), updatedConstraints)
+
+	if conditionsNeedUpdate || constraintsNeedUpdate {
+		// Rebuild garden conditions/constraints to ensure that only the entries with the
+		// correct types will be updated, and any other entries will remain intact
+		patch := client.MergeFrom(garden.DeepCopy())
+		if conditionsNeedUpdate {
+			garden.Status.Conditions = v1beta1helper.BuildConditions(garden.Status.Conditions, updatedConditions, gardenConditions.ConditionTypes())
+		}
+		if constraintsNeedUpdate {
+			garden.Status.Constraints = v1beta1helper.BuildConditions(garden.Status.Constraints, updatedConstraints, gardenConstraints.ConstraintTypes())
+		}
+
+		log.Info("Updating garden status conditions and constraints")
+		if err := r.RuntimeClient.Status().Patch(reconcileCtx, garden, patch); err != nil {
+			log.Error(err, "Could not update garden status")
+			return reconcile.Result{}, err
+		}
+	}
+
+	return reconcile.Result{RequeueAfter: r.Config.Controllers.GardenCare.SyncPeriod.Duration}, nil
+}
+
+func (r *Reconciler) conditionThresholdsToProgressingMapping() map[gardencorev1beta1.ConditionType]time.Duration {
+	conditions := map[gardencorev1beta1.ConditionType]time.Duration{}
+	for _, condition := range r.Config.Controllers.GardenCare.ConditionThresholds {
+		conditions[gardencorev1beta1.ConditionType(condition.Type)] = condition.Duration.Duration
+	}
+	return conditions
+}

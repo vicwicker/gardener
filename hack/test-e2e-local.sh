@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Contributors to the Gardener project
+#
+# SPDX-License-Identifier: Apache-2.0
+
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+TYPE="default"
+case $1 in
+  operator|gardenadm)
+  TYPE="$1"
+  # shift that type argument is removed from ginkgo cli parameters
+  shift
+  ;;
+esac
+
+echo "> E2E Tests"
+
+source "$(dirname "$0")/test-e2e-local.env"
+source $(dirname "${0}")/ci-common.sh
+
+ginkgo_flags=
+
+# If running in prow, we want to generate a machine-readable JUnit report under the location specified via $ARTIFACTS.
+# The report is written by the custom JUnit reporter registered in the test suite, which adds a JUnit view above the
+# build log that shows an overview over successful and failed test cases.
+if [ -n "${CI:-}" -a -n "${ARTIFACTS:-}" ]; then
+  mkdir -p "$ARTIFACTS"
+  if [ "${JOB_TYPE:-}" != "periodic" ]; then
+    ginkgo_flags="--fail-fast"
+  fi
+fi
+
+GO111MODULE=on ginkgo run --timeout=125m $ginkgo_flags --v --show-node-events "$@"

@@ -1,0 +1,300 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/hashicorp/go-multierror"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/component/extensions/worker"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+	"github.com/gardener/gardener/pkg/utils/retry"
+	"github.com/gardener/gardener/pkg/utils/secrets"
+)
+
+// DefaultWorker creates the default deployer for the Worker custom resource.
+func (b *Botanist) DefaultWorker() worker.Interface {
+	if b.Shoot.IsWorkerless {
+		return nil
+	}
+
+	return worker.New(
+		b.Logger,
+		b.SeedClientSet.Client(),
+		&worker.Values{
+			Namespace:           b.Shoot.ControlPlaneNamespace,
+			Name:                b.Shoot.GetInfo().Name,
+			Type:                b.Shoot.GetInfo().Spec.Provider.Type,
+			Region:              b.Shoot.GetInfo().Spec.Region,
+			Workers:             b.workerPoolsForWorkerResource(),
+			KubernetesVersion:   b.Shoot.KubernetesVersion,
+			KubeletConfig:       b.Shoot.GetInfo().Spec.Kubernetes.Kubelet,
+			MachineTypes:        b.Shoot.CloudProfile.Spec.MachineTypes,
+			NodeLocalDNSEnabled: v1beta1helper.IsNodeLocalDNSEnabled(b.Shoot.GetInfo().Spec.SystemComponents),
+			PreferIPv6:          b.Shoot.PreferIPv6(),
+		},
+		worker.DefaultInterval,
+		worker.DefaultSevereThreshold,
+		worker.DefaultTimeout,
+	)
+}
+
+// workerPoolsForWorkerResource returns the worker pools which should be part of the Worker resource.
+// In `gardenadm bootstrap`, we only deploy the control plane worker pool and reduce it to a single machine. The
+// bootstrap cluster is thrown away after `gardenadm init` was executed on this very machine. All other worker pools
+// and the remaining control plane machines are created when running `gardenadm init`, which deploys the full `Worker`
+// with all pools in their configured size.
+func (b *Botanist) workerPoolsForWorkerResource() []gardencorev1beta1.Worker {
+	if !b.isGardenadmBootstrap() {
+		return b.Shoot.GetInfo().Spec.Provider.Workers
+	}
+
+	// ControlPlaneWorkerPoolForShoot returns a pointer into the passed slice, hence we must work on a copy of the shoot
+	// to avoid mutating the pool of the shoot object shared with all other components.
+	pool := v1beta1helper.ControlPlaneWorkerPoolForShoot(b.Shoot.GetInfo().DeepCopy().Spec.Provider.Workers)
+
+	// The Worker actuator sets the replicas of a new MachineDeployment to the pool's minimum and providers distribute
+	// the pool's minimum and maximum over the pool's zones. Accordingly, restricting the pool to minimum=maximum=1 and a
+	// single zone yields exactly one MachineDeployment with exactly one machine.
+	// Note that minimum and maximum must be equal. Otherwise, the actuator considers the pool to be managed by the
+	// cluster-autoscaler and stops pinning the MachineDeployment's replicas, which would break re-runs of
+	// `gardenadm bootstrap`.
+	pool.Minimum = 1
+	pool.Maximum = 1
+	if len(pool.Zones) > 1 {
+		pool.Zones = pool.Zones[:1]
+	}
+
+	return []gardencorev1beta1.Worker{*pool}
+}
+
+// DeployWorker deploys the Worker custom resource and triggers the restore operation in case
+// the Shoot is in the restore phase of the control plane migration
+func (b *Botanist) DeployWorker(ctx context.Context) error {
+	if v1beta1helper.ShootEnablesSSHAccess(b.Shoot.GetInfo()) {
+		sshKeypairSecret, found := b.SecretsManager.Get(v1beta1constants.SecretNameSSHKeyPair)
+		if !found {
+			return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameSSHKeyPair)
+		}
+		b.Shoot.Components.Extensions.Worker.SetSSHPublicKey(sshKeypairSecret.Data[secrets.DataKeySSHAuthorizedKeys])
+	}
+
+	b.Shoot.Components.Extensions.Worker.SetInfrastructureProviderStatus(b.Shoot.Components.Extensions.Infrastructure.ProviderStatus())
+	b.Shoot.Components.Extensions.Worker.SetWorkerPoolNameToOperatingSystemConfigsMap(b.Shoot.Components.Extensions.OperatingSystemConfig.WorkerPoolNameToOperatingSystemConfigsMap())
+
+	if b.Shoot.IsRestorePhase() {
+		return b.Shoot.Components.Extensions.Worker.Restore(ctx, b.Shoot.GetShootState())
+	}
+
+	return b.Shoot.Components.Extensions.Worker.Deploy(ctx)
+}
+
+// ListControlPlaneNodes returns the Node objects that have the standard `node-role.kubernetes.io/control-plane` label.
+// It returns an error if no matching nodes are found.
+func (b *Botanist) ListControlPlaneNodes(ctx context.Context) ([]corev1.Node, error) {
+	nodeList := &corev1.NodeList{}
+	if err := b.SeedClientSet.Client().List(ctx, nodeList, client.MatchingLabels{v1beta1constants.LabelNodeRoleControlPlane: ""}); err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+	if len(nodeList.Items) == 0 {
+		return nil, fmt.Errorf("no control plane nodes found")
+	}
+
+	return nodeList.Items, nil
+}
+
+// WorkerPoolToNodesMap lists all the nodes with the given client in the shoot cluster. It returns a map whose key is
+// the name of a worker pool and whose values are the corresponding nodes.
+func WorkerPoolToNodesMap(ctx context.Context, shootClient client.Client) (map[string][]corev1.Node, error) {
+	nodeList := &corev1.NodeList{}
+	if err := shootClient.List(ctx, nodeList); err != nil {
+		return nil, err
+	}
+
+	workerPoolToNodes := make(map[string][]corev1.Node)
+	for _, node := range nodeList.Items {
+		if pool, ok := node.Labels[v1beta1constants.LabelWorkerPool]; ok {
+			workerPoolToNodes[pool] = append(workerPoolToNodes[pool], node)
+		}
+	}
+
+	return workerPoolToNodes, nil
+}
+
+// WorkerPoolToOperatingSystemConfigSecretMetaMap lists all the cloud-config secrets with the given client in the shoot cluster.
+// It returns a map whose key is the name of a worker pool and whose values are the corresponding metadata of the
+// cloud-config script stored inside the secret's data.
+func WorkerPoolToOperatingSystemConfigSecretMetaMap(ctx context.Context, shootClient client.Client) (map[string]metav1.ObjectMeta, error) {
+	secretList := &corev1.SecretList{}
+	if err := shootClient.List(ctx, secretList, client.InNamespace(metav1.NamespaceSystem), client.MatchingLabels{v1beta1constants.GardenRole: v1beta1constants.GardenRoleOperatingSystemConfig}); err != nil {
+		return nil, err
+	}
+
+	workerPoolToCloudConfigSecretMeta := make(map[string]metav1.ObjectMeta, len(secretList.Items))
+	for _, secret := range secretList.Items {
+		if poolName, ok := secret.Labels[v1beta1constants.LabelWorkerPool]; ok {
+			workerPoolToCloudConfigSecretMeta[poolName] = secret.ObjectMeta
+		}
+	}
+
+	return workerPoolToCloudConfigSecretMeta, nil
+}
+
+// OperatingSystemConfigUpdatedForAllWorkerPools checks if all the non-preserved nodes for all the provided worker pools have successfully
+// applied the desired version of their cloud-config user data.
+// Since preserved unhealthy nodes are intentionally preserved and may not get their cloud-config updated, they are skipped in the check
+// to avoid blocking shoot reconciliation.
+func OperatingSystemConfigUpdatedForAllWorkerPools(
+	workers []gardencorev1beta1.Worker,
+	workerPoolToNodes map[string][]corev1.Node,
+	workerPoolToOperatingSystemConfigSecretMeta map[string]metav1.ObjectMeta,
+) error {
+	var result error
+
+	for _, worker := range workers {
+		secretMeta, ok := workerPoolToOperatingSystemConfigSecretMeta[worker.Name]
+		if !ok {
+			result = multierror.Append(result, fmt.Errorf("missing operating system config secret metadata for worker pool %q", worker.Name))
+			continue
+		}
+
+		var (
+			gardenerNodeAgentSecretName = secretMeta.Name
+			secretChecksum              = secretMeta.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumDownloadedOperatingSystemConfig]
+		)
+
+		for _, node := range workerPoolToNodes[worker.Name] {
+			if nodeToBeDeleted(node, gardenerNodeAgentSecretName) {
+				continue
+			}
+
+			// Skip preserved unhealthy nodes - these nodes may not get their OSC
+			// updated for an extended period of time and should not block shoot reconciliation.
+			if health.IsNodePreservedAndUnhealthy(node) {
+				continue
+			}
+
+			if nodeChecksum, ok := node.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig]; !ok {
+				result = multierror.Append(result, fmt.Errorf("the last successfully applied operating system config on node %q hasn't been reported yet", node.Name))
+			} else if nodeChecksum != secretChecksum {
+				result = multierror.Append(result, fmt.Errorf("the last successfully applied operating system config on node %q is outdated (current: %s, desired: %s)", node.Name, nodeChecksum, secretChecksum))
+			}
+		}
+	}
+
+	return result
+}
+
+func nodeToBeDeleted(node corev1.Node, gardenerNodeAgentSecretName string) bool {
+	if nodeTaintedForNoSchedule(node) {
+		return true
+	}
+
+	if val, ok := node.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName]; ok {
+		return val != gardenerNodeAgentSecretName
+	}
+
+	return false
+}
+
+func nodeTaintedForNoSchedule(node corev1.Node) bool {
+	// mcmPreferNoScheduleKey is used to identify machineSet nodes on which PreferNoSchedule taint is added on
+	// older machineSets during a rolling update
+	const mcmPreferNoScheduleKey = "deployment.machine.sapcloud.io/prefer-no-schedule"
+
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == mcmPreferNoScheduleKey && taint.Effect == corev1.TaintEffectPreferNoSchedule {
+			return true
+		}
+	}
+
+	return false
+}
+
+// exposed for testing
+var (
+	// IntervalWaitOperatingSystemConfigUpdated is the interval when waiting until the operating system config was
+	// updated for all worker pools.
+	IntervalWaitOperatingSystemConfigUpdated = 5 * time.Second
+	// GetTimeoutWaitOperatingSystemConfigUpdated retrieves the timeout when waiting until the operating system config
+	// was updated for all worker pools.
+	GetTimeoutWaitOperatingSystemConfigUpdated = getTimeoutWaitOperatingSystemConfigUpdated
+)
+
+func getTimeoutWaitOperatingSystemConfigUpdated(shoot *shootpkg.Shoot) time.Duration {
+	reconciliationTimeout := controllerutils.DefaultReconciliationTimeout
+	// In self-hosted shoots, the control plane runs as static pods on the nodes. Rolling them out (e.g., switching from
+	// the bootstrap etcd to etcd-main) restarts kube-apiserver and can take several minutes.
+	if shoot.IsSelfHosted() {
+		reconciliationTimeout = 10 * time.Minute
+	}
+	return shoot.OSCSyncJitterPeriod.Duration + reconciliationTimeout
+}
+
+// WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools waits for a maximum of 2*GetTimeoutWaitOperatingSystemConfigUpdated
+// until all the non-preserved nodes for all the worker pools in the Shoot have successfully applied the desired version of their
+// operating system config.
+func (b *Botanist) WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools(ctx context.Context, forControlPlanePoolOnly, tolerateErrors bool) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, GetTimeoutWaitOperatingSystemConfigUpdated(b.Shoot))
+	defer cancel()
+
+	retryFn := retry.SevereError
+	if tolerateErrors {
+		retryFn = retry.MinorError
+	}
+
+	workerPools, err := b.relevantWorkerPools(forControlPlanePoolOnly)
+	if err != nil {
+		return err
+	}
+
+	// managedresources.WaitUntilHealthy internally treats transient errors while getting the ManagedResource (e.g., "connection refused")
+	// as severe, causing it to abort immediately and return error.
+	// For self-hosted shoots (tolerateErrors=true), the API server may be transiently unavailable
+	// during static pod rollout, so we wrap the call in a retry loop to tolerate such transient failures.
+	if err := retry.Until(timeoutCtx, IntervalWaitOperatingSystemConfigUpdated, func(ctx context.Context) (done bool, err error) {
+		if err := managedresources.WaitUntilHealthy(ctx, b.SeedClientSet.Client(), b.Shoot.ControlPlaneNamespace, GardenerNodeAgentManagedResourceName); err != nil {
+			return retryFn(fmt.Errorf("the operating system configs for the worker nodes were not populated yet: %w", err))
+		}
+
+		return retry.Ok()
+	}); err != nil {
+		return err
+	}
+
+	timeoutCtx2, cancel2 := context.WithTimeout(ctx, GetTimeoutWaitOperatingSystemConfigUpdated(b.Shoot))
+	defer cancel2()
+
+	return retry.Until(timeoutCtx2, IntervalWaitOperatingSystemConfigUpdated, func(ctx context.Context) (done bool, err error) {
+		workerPoolToNodes, err := WorkerPoolToNodesMap(ctx, b.ShootClientSet.Client())
+		if err != nil {
+			return retryFn(err)
+		}
+
+		workerPoolToOperatingSystemConfigSecretMeta, err := WorkerPoolToOperatingSystemConfigSecretMetaMap(ctx, b.ShootClientSet.Client())
+		if err != nil {
+			return retryFn(err)
+		}
+
+		if err := OperatingSystemConfigUpdatedForAllWorkerPools(workerPools, workerPoolToNodes, workerPoolToOperatingSystemConfigSecretMeta); err != nil {
+			return retry.MinorError(err)
+		}
+
+		return retry.Ok()
+	})
+}

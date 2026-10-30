@@ -1,0 +1,39 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package garbagecollector
+
+import (
+	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	"github.com/gardener/gardener/pkg/controllerutils"
+)
+
+// ControllerName is the name of the controller.
+const ControllerName = "garbage-collector"
+
+// AddToManager adds Reconciler to the given manager.
+func (r *Reconciler) AddToManager(mgr manager.Manager, targetCluster cluster.Cluster) error {
+	if r.TargetClient == nil {
+		r.TargetClient = targetCluster.GetClient()
+	}
+	if r.MinimumObjectLifetime == nil {
+		r.MinimumObjectLifetime = new(10 * time.Minute)
+	}
+
+	return builder.
+		ControllerManagedBy(mgr).
+		Named(ControllerName).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: 1,
+			ReconciliationTimeout:   r.Config.SyncPeriod.Duration,
+		}).
+		WatchesRawSource(controllerutils.EnqueueOnce).
+		Complete(r)
+}

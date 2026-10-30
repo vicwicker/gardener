@@ -1,0 +1,669 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package proxy
+
+import (
+	_ "embed"
+	"fmt"
+
+	"github.com/Masterminds/semver/v3"
+	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	componentbaseconfigv1alpha1 "k8s.io/component-base/config/v1alpha1"
+	kubeproxyconfigv1alpha1 "k8s.io/kube-proxy/config/v1alpha1"
+
+	gardencore "github.com/gardener/gardener/pkg/apis/core"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
+	"github.com/gardener/gardener/pkg/utils"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+	netutils "github.com/gardener/gardener/pkg/utils/net"
+)
+
+const (
+	daemonSetNamePrefix = "kube-proxy"
+	// ConfigNamePrefix is the prefix for the name of the kube-proxy ConfigMap.
+	ConfigNamePrefix = "kube-proxy-config"
+
+	containerName             = "kube-proxy"
+	containerNameConntrackFix = "conntrack-fix"
+	serviceName               = "kube-proxy"
+
+	portNameMetrics = "metrics"
+	portMetrics     = 10249
+	portHealthz     = 10256
+
+	dataKeyKubeconfig         = "kubeconfig"
+	dataKeyConfig             = "config.yaml"
+	dataKeyConntrackFixScript = "conntrack_fix.sh"
+	dataKeyCleanupScript      = "cleanup.sh"
+
+	volumeMountPathKubeconfig         = "/var/lib/kube-proxy-kubeconfig"
+	volumeMountPathConfig             = "/var/lib/kube-proxy-config"
+	volumeMountPathDir                = "/var/lib/kube-proxy"
+	volumeMountPathMode               = "/var/lib/kube-proxy/mode"
+	volumeMountPathCleanupScript      = "/script"
+	volumeMountPathConntrackFixScript = "/script"
+	volumeMountPathKernelModules      = "/lib/modules"
+	volumeMountPathSSLCertsHosts      = "/etc/ssl/certs"
+	volumeMountPathXtablesLock        = "/run/xtables.lock"
+
+	volumeNameKubeconfig         = "kubeconfig"
+	volumeNameConfig             = "kube-proxy-config"
+	volumeNameDir                = "kube-proxy-dir"
+	volumeNameMode               = "kube-proxy-mode"
+	volumeNameCleanupScript      = "kube-proxy-cleanup-script"
+	volumeNameConntrackFixScript = "conntrack-fix-script"
+	volumeNameKernelModules      = "kernel-modules"
+	volumeNameSSLCertsHosts      = "ssl-certs-hosts"
+	volumeNameXtablesLock        = "xtables-lock"
+
+	hostPathSSLCertsHosts = "/usr/share/ca-certificates"
+	hostPathKernelModules = "/lib/modules"
+	hostPathDir           = "/var/lib/kube-proxy"
+	hostPathXtablesLock   = "/run/xtables.lock"
+)
+
+var (
+	//go:embed resources/conntrack-fix.sh
+	conntrackFixScript string
+	//go:embed resources/cleanup.sh
+	cleanupScript string
+
+	// constraintK8sGreaterEqual1330Less1336 is a version constraint for versions >= 1.33.0, < 1.33.6.
+	constraintK8sGreaterEqual1330Less1336 *semver.Constraints
+)
+
+func init() {
+	var err error
+	constraintK8sGreaterEqual1330Less1336, err = semver.NewConstraint(">= 1.33.0, < 1.33.6")
+	utilruntime.Must(err)
+}
+
+func (k *kubeProxy) computeCentralResourcesData() (map[string][]byte, error) {
+	componentConfigRaw, err := k.getRawComponentConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
+
+		serviceAccount = &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "kube-proxy",
+				Namespace: metav1.NamespaceSystem,
+			},
+			AutomountServiceAccountToken: new(false),
+		}
+
+		// This ClusterRoleBinding is similar to 'system:node-proxier' with the difference that it binds the kube-proxy's
+		// ServiceAccount to the 'system:node-proxier' ClusterRole.
+		clusterRoleBinding = &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "gardener.cloud:target:node-proxier",
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     "system:node-proxier",
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      serviceAccount.Name,
+				Namespace: metav1.NamespaceSystem,
+			}},
+		}
+
+		service = &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceName,
+				Namespace: metav1.NamespaceSystem,
+				Labels:    GetLabels(),
+			},
+			Spec: corev1.ServiceSpec{
+				Type:      corev1.ServiceTypeClusterIP,
+				ClusterIP: corev1.ClusterIPNone,
+				Ports: []corev1.ServicePort{{
+					Name:     portNameMetrics,
+					Port:     int32(portMetrics),
+					Protocol: corev1.ProtocolTCP,
+				}},
+				Selector: GetLabels(),
+			},
+		}
+
+		secret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "kube-proxy",
+				Namespace: metav1.NamespaceSystem,
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: map[string][]byte{dataKeyKubeconfig: k.values.Kubeconfig},
+		}
+
+		configMap = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      ConfigNamePrefix,
+				Namespace: metav1.NamespaceSystem,
+				Labels:    utils.MergeStringMaps(GetLabels(), getSystemComponentLabels()),
+			},
+			Data: map[string]string{dataKeyConfig: componentConfigRaw},
+		}
+
+		configMapConntrackFixScript = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "kube-proxy-conntrack-fix-script",
+				Namespace: metav1.NamespaceSystem,
+				Labels:    utils.MergeStringMaps(GetLabels(), getSystemComponentLabels()),
+			},
+			Data: map[string]string{dataKeyConntrackFixScript: conntrackFixScript},
+		}
+
+		configMapCleanupScript = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "kube-proxy-cleanup-script",
+				Namespace: metav1.NamespaceSystem,
+				Labels:    utils.MergeStringMaps(GetLabels(), getSystemComponentLabels()),
+			},
+			Data: map[string]string{dataKeyCleanupScript: cleanupScript},
+		}
+	)
+
+	utilruntime.Must(kubernetesutils.MakeUnique(secret))
+	utilruntime.Must(kubernetesutils.MakeUnique(configMap))
+	utilruntime.Must(kubernetesutils.MakeUnique(configMapConntrackFixScript))
+	utilruntime.Must(kubernetesutils.MakeUnique(configMapCleanupScript))
+
+	k.serviceAccount = serviceAccount
+	k.secret = secret
+	k.configMap = configMap
+	k.configMapCleanupScript = configMapCleanupScript
+	k.configMapConntrackFixScript = configMapConntrackFixScript
+
+	return registry.AddAllAndSerialize(
+		serviceAccount,
+		clusterRoleBinding,
+		service,
+		secret,
+		configMap,
+		configMapConntrackFixScript,
+		configMapCleanupScript,
+	)
+}
+
+func (k *kubeProxy) computePoolResourcesData(pool WorkerPool) (map[string][]byte, error) {
+	var (
+		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
+
+		directoryOrCreate = corev1.HostPathDirectoryOrCreate
+		fileOrCreate      = corev1.HostPathFileOrCreate
+
+		daemonSet = &appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name(pool, new(false)),
+				Namespace: metav1.NamespaceSystem,
+				Labels: utils.MergeStringMaps(
+					getSystemComponentLabels(),
+					map[string]string{v1beta1constants.LabelNodeCriticalComponent: "true"},
+				),
+			},
+			Spec: appsv1.DaemonSetSpec{
+				UpdateStrategy: appsv1.DaemonSetUpdateStrategy{
+					Type: appsv1.RollingUpdateDaemonSetStrategyType,
+				},
+				Selector: &metav1.LabelSelector{
+					MatchLabels: getPoolLabels(pool),
+				},
+				RevisionHistoryLimit: new(int32(2)),
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: utils.MergeStringMaps(
+							getPoolLabels(pool),
+							getSystemComponentLabels(),
+							map[string]string{v1beta1constants.LabelNodeCriticalComponent: "true"},
+						),
+					},
+					Spec: corev1.PodSpec{
+						NodeSelector: map[string]string{
+							v1beta1constants.LabelWorkerPool:              pool.Name,
+							v1beta1constants.LabelWorkerKubernetesVersion: pool.KubernetesVersion.String(),
+						},
+						InitContainers:    k.getInitContainers(pool.Image, pool.ControlPlane, pool.KubernetesVersion),
+						PriorityClassName: "system-node-critical",
+						SecurityContext: &corev1.PodSecurityContext{
+							SeccompProfile: &corev1.SeccompProfile{
+								Type: corev1.SeccompProfileTypeRuntimeDefault,
+							},
+						},
+						Tolerations: []corev1.Toleration{
+							{
+								Effect:   corev1.TaintEffectNoSchedule,
+								Operator: corev1.TolerationOpExists,
+							},
+							{
+								Effect:   corev1.TaintEffectNoExecute,
+								Operator: corev1.TolerationOpExists,
+							},
+						},
+						HostNetwork:        true,
+						ServiceAccountName: k.serviceAccount.Name,
+						Containers: []corev1.Container{
+							k.getKubeProxyContainer(pool.Image, false, pool.ControlPlane, pool.KubernetesVersion),
+							{
+								// sidecar container with fix for conntrack
+								Name:            containerNameConntrackFix,
+								Image:           k.values.ImageAlpine,
+								ImagePullPolicy: corev1.PullIfNotPresent,
+								Command: []string{
+									"/bin/sh",
+									fmt.Sprintf("%s/%s", volumeMountPathConntrackFixScript, dataKeyConntrackFixScript),
+								},
+								SecurityContext: &corev1.SecurityContext{
+									AllowPrivilegeEscalation: new(false),
+									Capabilities: &corev1.Capabilities{
+										Add: []corev1.Capability{"NET_ADMIN"},
+									},
+								},
+								VolumeMounts: []corev1.VolumeMount{
+									{
+										Name:      volumeNameConntrackFixScript,
+										MountPath: volumeMountPathConntrackFixScript,
+									},
+								},
+							},
+						},
+						Volumes: []corev1.Volume{
+							{
+								Name: volumeNameKubeconfig,
+								VolumeSource: corev1.VolumeSource{
+									Secret: &corev1.SecretVolumeSource{
+										SecretName: k.secret.Name,
+									},
+								},
+							},
+							{
+								Name: volumeNameConfig,
+								VolumeSource: corev1.VolumeSource{
+									ConfigMap: &corev1.ConfigMapVolumeSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: k.configMap.Name,
+										},
+									},
+								},
+							},
+							{
+								Name: volumeNameSSLCertsHosts,
+								VolumeSource: corev1.VolumeSource{
+									HostPath: &corev1.HostPathVolumeSource{
+										Path: hostPathSSLCertsHosts,
+									},
+								},
+							},
+							{
+								Name: volumeNameKernelModules,
+								VolumeSource: corev1.VolumeSource{
+									HostPath: &corev1.HostPathVolumeSource{
+										Path: hostPathKernelModules,
+									},
+								},
+							},
+							{
+								Name: volumeNameCleanupScript,
+								VolumeSource: corev1.VolumeSource{
+									ConfigMap: &corev1.ConfigMapVolumeSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: k.configMapCleanupScript.Name,
+										},
+										DefaultMode: new(int32(0777)),
+									},
+								},
+							},
+							{
+								Name: volumeNameDir,
+								VolumeSource: corev1.VolumeSource{
+									HostPath: &corev1.HostPathVolumeSource{
+										Path: hostPathDir,
+										Type: &directoryOrCreate,
+									},
+								},
+							},
+							{
+								Name: volumeNameMode,
+								VolumeSource: corev1.VolumeSource{
+									HostPath: &corev1.HostPathVolumeSource{
+										Path: hostPathDir + "/mode",
+										Type: &fileOrCreate,
+									},
+								},
+							},
+							{
+								Name: volumeNameConntrackFixScript,
+								VolumeSource: corev1.VolumeSource{
+									ConfigMap: &corev1.ConfigMapVolumeSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: k.configMapConntrackFixScript.Name,
+										},
+									},
+								},
+							},
+							{
+								Name: volumeNameXtablesLock,
+								VolumeSource: corev1.VolumeSource{
+									HostPath: &corev1.HostPathVolumeSource{
+										Path: hostPathXtablesLock,
+										Type: &fileOrCreate,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	)
+
+	if k.values.VPAEnabled {
+		daemonSet.Spec.Template.Spec.Containers[0].Resources.Limits = corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("2048Mi"),
+		}
+		daemonSet.Spec.Template.Spec.InitContainers[1].Resources.Limits = corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		}
+	}
+
+	utilruntime.Must(references.InjectAnnotations(daemonSet))
+
+	return registry.AddAllAndSerialize(daemonSet)
+}
+
+func (k *kubeProxy) computePoolResourcesDataForMajorMinorVersionOnly(pool WorkerPool) (map[string][]byte, error) {
+	var (
+		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
+
+		vpa *vpaautoscalingv1.VerticalPodAutoscaler
+	)
+
+	if k.values.VPAEnabled {
+		vpaUpdateMode := vpaautoscalingv1.UpdateModeInPlaceOrRecreate
+		controlledValues := vpaautoscalingv1.ContainerControlledValuesRequestsOnly
+		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name(pool, new(true)),
+				Namespace: metav1.NamespaceSystem,
+			},
+			Spec: vpaautoscalingv1.VerticalPodAutoscalerSpec{
+				TargetRef: &autoscalingv1.CrossVersionObjectReference{
+					APIVersion: appsv1.SchemeGroupVersion.String(),
+					Kind:       "DaemonSet",
+					Name:       name(pool, new(false)),
+				},
+				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
+					UpdateMode: &vpaUpdateMode,
+				},
+				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
+					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+						{
+							ContainerName: containerName,
+							MaxAllowed: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("10G"),
+							},
+							ControlledValues: &controlledValues,
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          new(vpaautoscalingv1.ContainerScalingModeOff),
+						},
+					},
+				},
+			},
+		}
+	}
+
+	return registry.AddAllAndSerialize(vpa)
+}
+
+// GetLabels returns the default labels for kube-proxy resources.
+func GetLabels() map[string]string {
+	return map[string]string{
+		v1beta1constants.LabelApp:  v1beta1constants.LabelKubernetes,
+		v1beta1constants.LabelRole: v1beta1constants.LabelProxy,
+	}
+}
+
+func getSystemComponentLabels() map[string]string {
+	return map[string]string{
+		managedresources.LabelKeyOrigin: managedresources.LabelValueGardener,
+		v1beta1constants.GardenRole:     v1beta1constants.GardenRoleSystemComponent,
+	}
+}
+
+func getPoolLabels(pool WorkerPool) map[string]string {
+	return utils.MergeStringMaps(GetLabels(), map[string]string{
+		"pool":    pool.Name,
+		"version": pool.KubernetesVersion.String(),
+	})
+}
+
+func (k *kubeProxy) getRawComponentConfig() (string, error) {
+	config := &kubeproxyconfigv1alpha1.KubeProxyConfiguration{
+		ClientConnection: componentbaseconfigv1alpha1.ClientConnectionConfiguration{
+			Kubeconfig: volumeMountPathKubeconfig + "/" + dataKeyKubeconfig,
+		},
+		MetricsBindAddress: fmt.Sprintf("0.0.0.0:%d", portMetrics),
+		Mode:               k.getMode(),
+		Conntrack: kubeproxyconfigv1alpha1.KubeProxyConntrackConfiguration{
+			MaxPerCore: new(int32(524288)),
+		},
+		FeatureGates: k.values.FeatureGates,
+	}
+
+	if k.values.ProxyMode != gardencore.ProxyModeIPVS && len(k.values.PodNetworkCIDRs) > 0 {
+		if err := netutils.CheckDualStackForKubeComponents(k.values.PodNetworkCIDRs, "pod"); err != nil {
+			return "", err
+		}
+
+		config.ClusterCIDR = netutils.JoinByComma(k.values.PodNetworkCIDRs)
+	}
+
+	return NewConfigCodec().Encode(config)
+}
+
+func (k *kubeProxy) getMode() kubeproxyconfigv1alpha1.ProxyMode {
+	switch k.values.ProxyMode {
+	case gardencore.ProxyModeIPTables:
+		return "iptables"
+	case gardencore.ProxyModeIPVS:
+		return "ipvs"
+	case gardencore.ProxyModeNFTables:
+		return "nftables"
+	default:
+		return "iptables"
+	}
+}
+
+func (k *kubeProxy) getInitContainers(image string, controlPlaneNode bool, kubernetesVersion *semver.Version) []corev1.Container {
+	initContainers := []corev1.Container{
+		{
+			Name:            "cleanup",
+			Image:           image,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Command: []string{
+				"sh",
+				"-c",
+				fmt.Sprintf("%s/%s %s", volumeMountPathCleanupScript, dataKeyCleanupScript, volumeMountPathMode),
+			},
+			Env: []corev1.EnvVar{
+				{
+					Name:  "KUBE_PROXY_MODE",
+					Value: string(k.getMode()),
+				},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				Privileged: new(true),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      volumeNameCleanupScript,
+					MountPath: volumeMountPathCleanupScript,
+				},
+				{
+					Name:      volumeNameKernelModules,
+					MountPath: volumeMountPathKernelModules,
+				},
+				{
+					Name:      volumeNameDir,
+					MountPath: volumeMountPathDir,
+				},
+				{
+					Name:      volumeNameMode,
+					MountPath: volumeMountPathMode,
+				},
+				{
+					Name:      volumeNameKubeconfig,
+					MountPath: volumeMountPathKubeconfig,
+				},
+				{
+					Name:      volumeNameConfig,
+					MountPath: volumeMountPathConfig,
+				},
+			},
+		},
+	}
+
+	initContainers = append(initContainers, k.getKubeProxyContainer(image, true, controlPlaneNode, kubernetesVersion))
+
+	return initContainers
+}
+
+func (k *kubeProxy) getKubeProxyContainer(image string, init, controlPlaneNode bool, kubernetesVersion *semver.Version) corev1.Container {
+	container := corev1.Container{
+		Name:            containerName,
+		Image:           image,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         k.computeCommand(init, controlPlaneNode, kubernetesVersion),
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("20m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: new(false),
+			Capabilities: &corev1.Capabilities{
+				Add: []corev1.Capability{"NET_ADMIN", "SYS_RESOURCE"},
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      volumeNameKubeconfig,
+				MountPath: volumeMountPathKubeconfig,
+			},
+			{
+				Name:      volumeNameConfig,
+				MountPath: volumeMountPathConfig,
+			},
+			{
+				Name:      volumeNameSSLCertsHosts,
+				MountPath: volumeMountPathSSLCertsHosts,
+				ReadOnly:  true,
+			},
+			{
+				Name:      volumeNameKernelModules,
+				MountPath: volumeMountPathKernelModules,
+			},
+			{
+				Name:      volumeNameXtablesLock,
+				MountPath: volumeMountPathXtablesLock,
+			},
+		},
+	}
+
+	if init {
+		container.Name += "-init"
+		container.SecurityContext = &corev1.SecurityContext{
+			Privileged: new(true),
+		}
+	} else {
+		container.Ports = []corev1.ContainerPort{{
+			Name:          portNameMetrics,
+			ContainerPort: portMetrics,
+			HostPort:      portMetrics,
+			Protocol:      corev1.ProtocolTCP,
+		}}
+
+		probeHandler := corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path:   "/livez",
+				Port:   intstr.FromInt32(portHealthz),
+				Scheme: corev1.URISchemeHTTP,
+			},
+		}
+
+		container.ReadinessProbe = &corev1.Probe{
+			ProbeHandler:        probeHandler,
+			InitialDelaySeconds: 15,
+			TimeoutSeconds:      15,
+			SuccessThreshold:    1,
+			FailureThreshold:    2,
+		}
+		// kube-proxy does not retry a failed initial sync, so it can stay unhealthy for up to an hour until its next
+		// periodic full sync, see https://github.com/gardener/gardener/issues/16003. Restart it in this case, which is what
+		// the `/livez` endpoint is meant for.
+		container.LivenessProbe = &corev1.Probe{
+			ProbeHandler:        probeHandler,
+			InitialDelaySeconds: 15,
+			TimeoutSeconds:      15,
+			SuccessThreshold:    1,
+			FailureThreshold:    6,
+		}
+	}
+
+	return container
+}
+
+func (k *kubeProxy) computeCommand(init, controlPlaneNode bool, kubernetesVersion *semver.Version) []string {
+	command := []string{
+		"/usr/local/bin/kube-proxy",
+		fmt.Sprintf("--config=%s/%s", volumeMountPathConfig, dataKeyConfig),
+	}
+
+	if controlPlaneNode {
+		// kube-proxy pods on control plane nodes should connect to the API server via localhost to avoid unnecessary
+		// network hops, i.e., they should not connect to the API server via the external exposure, which might not be
+		// available in a failure scenario.
+		// The --master flag overwrites the address specified in the kubeconfig, so that all kube-proxy DaemonSets can keep
+		// using the same kubeconfig secret.
+		command = append(command, fmt.Sprintf("--master=https://localhost:%d", kubeapiserverconstants.Port))
+	}
+
+	// kube-proxy versions in the range [1.33.0, 1.33.6) are affected by https://github.com/kubernetes/kubernetes/issues/132678.
+	// For a Service without endpoints, kube-proxy logs thousands log entries per second of type:
+	// "Ignoring same-zone topology hints for service since no hints were provided for zone"
+	// That's why we reduce the log verbosity level from --v=2 to --v=1 for the kube-proxy container
+	// when the kube-proxy version is in the range [1.33.0, 1.33.6).
+	if !init && constraintK8sGreaterEqual1330Less1336.Check(kubernetesVersion) {
+		command = append(command, "--v=1")
+	} else {
+		command = append(command, "--v=2")
+	}
+
+	if init {
+		command = append(command, "--init-only")
+	}
+
+	return command
+}

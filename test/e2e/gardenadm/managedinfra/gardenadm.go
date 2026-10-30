@@ -1,0 +1,424 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package managedinfra
+
+import (
+	"context"
+	"os"
+	"strings"
+	"time"
+
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
+	"github.com/onsi/gomega/gexec"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientcmdlatest "k8s.io/client-go/tools/clientcmd/api/latest"
+	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
+	cloudproviderapi "k8s.io/cloud-provider/api"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	. "sigs.k8s.io/controller-runtime/pkg/envtest/komega"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/provider-local/controller/infrastructure"
+	"github.com/gardener/gardener/pkg/provider-local/local"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	"github.com/gardener/gardener/pkg/utils/test"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+	"github.com/gardener/gardener/test/e2e/gardenadm"
+	shootmigration "github.com/gardener/gardener/test/utils/shoots/migration"
+)
+
+var _ = Describe("gardenadm managed infrastructure scenario tests", Label("gardenadm", "managed-infra"), func() {
+	BeforeEach(OncePerOrdered, func(SpecContext) {
+		SetupRuntimeClient()
+		PrepareBinary()
+	}, NodeTimeout(5*time.Minute))
+
+	const (
+		shootName      = "root"
+		shootNamespace = "garden"
+		technicalID    = "shoot--" + shootNamespace + "--" + shootName
+		configDir      = "../../../dev-setup/gardenadm/resources/generated/managed-infra"
+	)
+
+	var (
+		shoot           = &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: shootNamespace}}
+		shootClientSet  kubernetes.Interface
+		gardenClientSet kubernetes.Interface
+	)
+
+	runInMachine := func(ctx context.Context, ordinal int, cmd ...string) (*gbytes.Buffer, *gbytes.Buffer, error) {
+		return RunInMachine(ctx, technicalID, ordinal, cmd...)
+	}
+	runInNode := func(ctx context.Context, nodeName string, cmd ...string) (*gbytes.Buffer, *gbytes.Buffer, error) {
+		return RunInNode(ctx, technicalID, nodeName, cmd...)
+	}
+
+	Context("gardenadm bootstrap", Ordered, Label("bootstrap"), func() {
+		var (
+			session *gexec.Session
+
+			kubeconfigOutputFile string
+		)
+
+		BeforeAll(func() {
+			DeferCleanup(test.WithTempFile("", "kubeconfig", nil, &kubeconfigOutputFile))
+		})
+
+		AfterAll(func(ctx SpecContext) {
+			// Ensure that the gardenadm process is stopped at the end of the test, even in case it didn't finish successfully.
+			// Interrupting gardenadm should output the current error where it is stuck, if any.
+			Eventually(ctx, session.Interrupt()).Should(gexec.Exit())
+		}, NodeTimeout(time.Minute))
+
+		It("should start the bootstrap flow", func() {
+			// Start the gardenadm process but don't wait for it to complete so that we can asynchronously perform assertions
+			// on individual steps in the test specs below.
+			session = Run("bootstrap", "-d", configDir, "--kubeconfig-output", kubeconfigOutputFile,
+				// Override bastion ingress CIDR to a fixed value to avoid relying on public IP detection in e2e tests.
+				// Restricting bastion ingress traffic does not work in provider-local anyway.
+				"--bastion-ingress-cidr", "1.2.3.4/32",
+				// Keep the bastion in the first run, the second run below covers its deletion.
+				"--skip-bastion-deletion",
+			)
+		})
+
+		It("should find the cloud provider secret", func(ctx SpecContext) {
+			cloudProviderSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cloudprovider", Namespace: technicalID}}
+			Eventually(ctx, Object(cloudProviderSecret)).Should(HaveField("ObjectMeta.Labels", HaveKeyWithValue("gardener.cloud/purpose", "cloudprovider")))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy gardener-resource-manager", func(ctx SpecContext) {
+			deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.DeploymentNameGardenerResourceManager, Namespace: technicalID}}
+			Eventually(ctx, Object(deployment)).Should(BeHealthy(health.CheckDeployment))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy the provider extension", func(ctx SpecContext) {
+			deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "gardener-extension-" + local.Name, Namespace: "extension-" + local.Name}}
+			Eventually(ctx, Object(deployment)).Should(BeHealthy(health.CheckDeployment))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy the infrastructure", func(ctx SpecContext) {
+			infra := &extensionsv1alpha1.Infrastructure{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: technicalID}}
+			Eventually(ctx, Object(infra)).Should(BeHealthy(health.CheckExtensionObject))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy machine-controller-manager", func(ctx SpecContext) {
+			deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.DeploymentNameMachineControllerManager, Namespace: technicalID}}
+			Eventually(ctx, Object(deployment)).Should(BeHealthy(health.CheckDeployment))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy the worker with the control plane pool only", func(ctx SpecContext) {
+			worker := &extensionsv1alpha1.Worker{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: technicalID}}
+			Eventually(ctx, Object(worker)).Should(BeHealthy(health.CheckExtensionObject))
+
+			// `gardenadm bootstrap` only deploys the control plane worker pool reduced to a single machine, no matter how
+			// many control plane machines the shoot is configured with.
+			Expect(worker.Spec.Pools).To(ConsistOf(And(
+				HaveField("Name", "control-plane"),
+				HaveField("Minimum", BeEquivalentTo(1)),
+				HaveField("Maximum", BeEquivalentTo(1)),
+			)))
+		}, SpecTimeout(5*time.Minute))
+
+		var initialControlPlaneMachineName string
+		It("should deploy one control plane machine", func(ctx SpecContext) {
+			machineList := &machinev1alpha1.MachineList{}
+			Eventually(ctx, ObjectList(machineList, client.InNamespace(technicalID))).
+				Should(HaveField("Items", ConsistOf(HaveField("Status.CurrentStatus.Phase", machinev1alpha1.MachineAvailable))))
+			initialControlPlaneMachineName = machineList.Items[0].Name
+
+			podList := &corev1.PodList{}
+			Eventually(ctx, ObjectList(podList, client.InNamespace(infrastructure.NamespaceName(technicalID)), client.MatchingLabels{"app": "machine"})).
+				Should(HaveField("Items", ConsistOf(HaveField("Status.Phase", corev1.PodRunning))))
+		}, SpecTimeout(time.Minute))
+
+		It("should stop machine-controller-manager", func(ctx SpecContext) {
+			deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.DeploymentNameMachineControllerManager, Namespace: technicalID}}
+			Eventually(ctx, Object(deployment)).Should(HaveField("Spec.Replicas", HaveValue(BeEquivalentTo(0))))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy the DNSRecord", func(ctx SpecContext) {
+			dnsRecord := &extensionsv1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{Name: shootName + "-external", Namespace: technicalID}}
+			Eventually(ctx, Object(dnsRecord)).Should(BeHealthy(health.CheckExtensionObject))
+		}, SpecTimeout(time.Minute))
+
+		It("should prepare extension resources for migration", func(ctx SpecContext) {
+			extensionKinds := map[string]client.ObjectList{
+				extensionsv1alpha1.InfrastructureResource: &extensionsv1alpha1.InfrastructureList{},
+				extensionsv1alpha1.WorkerResource:         &extensionsv1alpha1.WorkerList{},
+				extensionsv1alpha1.DNSRecordResource:      &extensionsv1alpha1.DNSRecordList{},
+			}
+
+			for kind, list := range extensionKinds {
+				Eventually(ctx, ObjectList(list, client.InNamespace(technicalID))).Should(
+					HaveField("Items", HaveEach(
+						HaveField("Status.DefaultStatus.LastOperation", And(
+							HaveField("Type", gardencorev1beta1.LastOperationTypeMigrate),
+							HaveField("State", gardencorev1beta1.LastOperationStateSucceeded),
+						)),
+					)),
+					"should prepare %s resources for migration", kind,
+				)
+			}
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy a bastion with the configured ingress CIDRs", func(ctx SpecContext) {
+			bastion := &extensionsv1alpha1.Bastion{ObjectMeta: metav1.ObjectMeta{Name: "gardenadm-bootstrap", Namespace: technicalID}}
+			Eventually(ctx, Object(bastion)).Should(And(
+				HaveField("Spec.Ingress", ConsistOf(
+					HaveField("IPBlock.CIDR", "1.2.3.4/32"),
+				)),
+				BeHealthy(health.CheckExtensionObject),
+			), "should be healthy and not have default (open) ingress CIDRs")
+		}, SpecTimeout(time.Minute))
+
+		It("should copy the manifests to the first control plane machine", func(ctx SpecContext) {
+			Eventually(ctx, session.Err).Should(gbytes.Say("Copying manifests to the first control plane machine"))
+
+			for file, content := range map[string]string{
+				"manifests/shootstate.yaml":             "apiVersion: core.gardener.cloud/v1beta1\nkind: ShootState\n",
+				"manifests/manifests.yaml":              "apiVersion: core.gardener.cloud/v1beta1\nkind: Shoot\n",
+				"imagevector-overwrite.yaml":            "registry.local.gardener.cloud:5001/local-skaffold_gardenadm",
+				"imagevector-overwrite-components.yaml": "registry.local.gardener.cloud:5001/not-used",
+				"imagevector-overwrite-charts.yaml":     "registry.local.gardener.cloud:5001/local-skaffold_gardenlet_chart",
+			} {
+				Eventually(ctx, func(g Gomega) *gbytes.Buffer {
+					stdOut, _, err := RunInMachine(ctx, technicalID, 0, "cat", "/var/lib/gardenadm/"+file)
+					g.Expect(err).NotTo(HaveOccurred())
+					return stdOut
+				}).Should(gbytes.Say(content), "expected file %s to have the right content", file)
+			}
+		}, SpecTimeout(time.Minute))
+
+		It("should bootstrap the control plane", func(ctx SpecContext) {
+			Eventually(ctx, session.Err).Should(gbytes.Say("Bootstrapping control plane on the first control plane machine"))
+			Eventually(ctx, session.Out).Should(gbytes.Say("Your Shoot cluster control-plane has initialized successfully!"))
+		}, SpecTimeout(20*time.Minute))
+
+		It("should write the shoot kubeconfig to the specified file", func(ctx SpecContext) {
+			Eventually(ctx, session.Err).Should(gbytes.Say("Writing kubeconfig of the self-hosted shoot to file"))
+
+			// #nosec G304 -- kubeconfigOutputFile is controlled by the test
+			Expect(os.ReadFile(kubeconfigOutputFile)).To(ContainSubstring("server: https://api.root.garden.external.local.gardener.cloud"))
+		}, SpecTimeout(time.Minute))
+
+		var kubeconfig string
+		It("should store the shoot kubeconfig in the bootstrap cluster", func(ctx SpecContext) {
+			kubeconfigSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "kubeconfig", Namespace: technicalID}}
+			Eventually(ctx, Object(kubeconfigSecret)).Should(HaveField("Data", HaveKey("kubeconfig")))
+
+			kubeconfig = string(kubeconfigSecret.Data["kubeconfig"])
+		}, SpecTimeout(time.Minute))
+
+		var (
+			shootClientSet kubernetes.Interface
+			shootKomega    Komega
+		)
+
+		It("should connect to the shoot", func(ctx SpecContext) {
+			By("Create client set")
+			// The control plane is exposed via the SelfHostedShootExposure LoadBalancer (provisioned by
+			// cloud-controller-manager-local), so the kubeconfig's server address is reachable directly from the
+			// host and we can connect without port-forwarding to the machine pod.
+			Eventually(ctx, func() error {
+				var err error
+				shootClientSet, err = kubernetes.NewClientFromBytes([]byte(kubeconfig),
+					kubernetes.WithClientOptions(client.Options{Scheme: kubernetes.SeedScheme}),
+					kubernetes.WithDisabledCachedClient(),
+				)
+				return err
+			}).Should(Succeed())
+
+			shootKomega = New(shootClientSet.Client())
+		}, SpecTimeout(time.Minute))
+
+		It("should restore all persisted secrets in the shoot", func(ctx SpecContext) {
+			var persistedSecrets map[string]corev1.Secret
+			Eventually(ctx, func(g Gomega) {
+				var err error
+				persistedSecrets, err = shootmigration.GetPersistedSecrets(ctx, RuntimeClient.Client(), technicalID)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(persistedSecrets).NotTo(BeEmpty())
+			}).Should(Succeed(), "bootstrap cluster should have persisted secrets")
+
+			var shootSecrets map[string]corev1.Secret
+			Eventually(ctx, func(g Gomega) {
+				var err error
+				shootSecrets, err = shootmigration.GetPersistedSecrets(ctx, shootClientSet.Client(), "kube-system")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(persistedSecrets).NotTo(BeEmpty())
+			}).Should(Succeed())
+
+			Expect(shootmigration.ComparePersistedSecrets(persistedSecrets, shootSecrets)).To(Succeed())
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy/restore the infrastructure in the shoot", func(ctx SpecContext) {
+			infra := &extensionsv1alpha1.Infrastructure{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: "kube-system"}}
+			Eventually(ctx, shootKomega.Object(infra)).Should(BeHealthy(health.CheckExtensionObject))
+		}, SpecTimeout(time.Minute))
+
+		It("should create infrastructure resources in the bootstrap cluster", func(ctx SpecContext) {
+			// Verify that the infrastructure created in the shoot has corresponding resources in the bootstrap cluster, but
+			// not in the shoot itself. This is specific to provider-local as the infrastructure resources are managed in the
+			// bootstrap cluster. This check is unrelated to gardenadm functionality, but serves as an additional verification
+			// that the functionality of using the provider client of the "gardener-local" cluster works.
+			ipPool := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "crd.projectcalico.org/v1", Kind: "IPPool"}, ObjectMeta: metav1.ObjectMeta{Name: infrastructure.IPPoolName(technicalID, string(gardencorev1beta1.IPFamilyIPv4))}}
+			Consistently(ctx, shootKomega.Get(ipPool)).Should(BeNotFoundError())
+			Eventually(ctx, Get(ipPool)).Should(Succeed())
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy the SelfHostedShootExposure in the shoot", func(ctx SpecContext) {
+			exposure := &extensionsv1alpha1.SelfHostedShootExposure{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: "kube-system"}}
+			Eventually(ctx, shootKomega.Object(exposure)).Should(BeHealthy(health.CheckExtensionObject))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy/restore the DNSRecord in the shoot", func(ctx SpecContext) {
+			dnsRecord := &extensionsv1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{Name: shootName + "-external", Namespace: "kube-system"}}
+			Eventually(ctx, shootKomega.Object(dnsRecord)).Should(BeHealthy(health.CheckExtensionObject))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy/restore the Worker in the shoot", func(ctx SpecContext) {
+			worker := &extensionsv1alpha1.Worker{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: "kube-system"}}
+			Eventually(ctx, shootKomega.Object(worker)).Should(And(
+				BeHealthy(health.CheckExtensionObject),
+				HaveField("Status.DefaultStatus.State", BeNil()), // ensure machine state is removed after restoration
+			))
+		}, SpecTimeout(time.Minute))
+
+		It("should deploy the cluster-autoscaler in the shoot", func(ctx SpecContext) {
+			deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.DeploymentNameClusterAutoscaler, Namespace: "kube-system"}}
+			Eventually(ctx, shootKomega.Object(deployment)).Should(BeHealthy(health.CheckDeployment))
+		}, SpecTimeout(time.Minute))
+
+		It("should adopt and keep the initial control plane machine", func(ctx SpecContext) {
+			// This check verifies that the control plane machine that was created in the bootstrap cluster is adopted by
+			// gardenadm init and the machine-controller-manager running in the self-hosted shoot.
+			Eventually(ctx, shootKomega.Object(&machinev1alpha1.Machine{ObjectMeta: metav1.ObjectMeta{Name: initialControlPlaneMachineName, Namespace: "kube-system"}})).
+				Should(HaveField("Status.CurrentStatus.Phase", machinev1alpha1.MachineRunning))
+
+			Eventually(ctx, Object(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "machine-" + initialControlPlaneMachineName, Namespace: infrastructure.NamespaceName(technicalID)}})).
+				Should(HaveField("Status.Phase", corev1.PodRunning))
+		}, SpecTimeout(time.Minute))
+
+		It("should create machine pods in the bootstrap cluster", func(ctx SpecContext) {
+			// Similar to the infrastructure check above, this check is unrelated to gardenadm functionality, but verifies
+			// that provider-local correctly uses the kind kubeconfig in the cloudprovider secret to create a non-default
+			// provider client for managing machines.
+			podList := &corev1.PodList{}
+			Eventually(ctx, ObjectList(podList, client.InNamespace(infrastructure.NamespaceName(technicalID)), client.MatchingLabels{"app": "machine"})).
+				Should(HaveField("Items", ContainElements(
+					HaveField("ObjectMeta.Name", HavePrefix("machine-"+technicalID+"-control-plane-")),
+					HaveField("ObjectMeta.Name", HavePrefix("machine-"+technicalID+"-worker-")),
+				)))
+		}, SpecTimeout(time.Minute))
+
+		It("should initialize the nodes with the node controller of cloud-controller-manager-local", func(ctx SpecContext) {
+			// The node controller of cloud-controller-manager-local (running in the self-hosted shoot) must initialize all
+			// nodes by setting the provider ID and the topology labels and removing the "uninitialized" taint. The worker
+			// nodes (created by machine-controller-manager) register with the taint because kubelet runs with
+			// --cloud-provider=external. The first control plane node registers without the taint (the provider webhook is
+			// not running yet when it is bootstrapped), so gardenadm init adds the taint itself.
+			nodeList := &corev1.NodeList{}
+			Eventually(ctx, shootKomega.ObjectList(nodeList)).Should(HaveField("Items", And(
+				ContainElements(
+					HaveField("ObjectMeta.Name", HavePrefix("machine-"+technicalID+"-control-plane-")),
+					HaveField("ObjectMeta.Name", HavePrefix("machine-"+technicalID+"-worker-")),
+				),
+				HaveEach(And(
+					HaveField("Spec.ProviderID", Not(BeEmpty())),
+					HaveField("ObjectMeta.Labels", And(
+						// The region is used as fallback zone because the worker pools have no zones configured.
+						HaveKeyWithValue(corev1.LabelTopologyZone, "local"),
+						HaveKeyWithValue(corev1.LabelTopologyRegion, "local"),
+						HaveKeyWithValue(corev1.LabelInstanceTypeStable, "local"),
+					)),
+					HaveField("Spec.Taints", Not(ContainElement(HaveField("Key", cloudproviderapi.TaintExternalCloudProvider)))),
+				)),
+			)))
+
+			for _, node := range nodeList.Items {
+				// The provider ID is the name of the machine pod, which is also the node name.
+				Expect(node.Spec.ProviderID).To(Equal(node.Name), "node %s should have the provider ID set", node.Name)
+			}
+		}, SpecTimeout(time.Minute))
+
+		It("should finish successfully", func(ctx SpecContext) {
+			Wait(ctx, session)
+			Eventually(ctx, session.Out).Should(gbytes.Say("kubectl get nodes"))
+		}, SpecTimeout(time.Minute))
+
+		It("should keep the bastion and print a warning", func(ctx SpecContext) {
+			Eventually(ctx, session.Out).Should(gbytes.Say("the bastion host has been kept"))
+
+			bastion := &extensionsv1alpha1.Bastion{ObjectMeta: metav1.ObjectMeta{Name: "gardenadm-bootstrap", Namespace: technicalID}}
+			Consistently(ctx, Get(bastion)).WithTimeout(10 * time.Second).Should(Succeed())
+		}, SpecTimeout(time.Minute))
+
+		It("should run successfully a second time (should be idempotent)", func(ctx SpecContext) {
+			RunAndWait(ctx, "bootstrap", "-d", configDir, "--bastion-ingress-cidr", "1.2.3.4/32")
+		}, SpecTimeout(10*time.Minute))
+
+		It("should destroy the bastion in the second run", func(ctx SpecContext) {
+			Eventually(ctx, ObjectList(&extensionsv1alpha1.BastionList{}, client.InNamespace(technicalID))).Should(HaveField("Items", BeEmpty()))
+		}, SpecTimeout(time.Minute))
+	})
+
+	Context("gardenadm connect", Ordered, Label("connect"), func() {
+		var (
+			clusterAdminStaticToken string
+		)
+
+		gardenadm.ItShouldCreateShootClient(&shootClientSet)
+		gardenadm.ItShouldCreateGardenClient(&gardenClientSet)
+
+		It("should store the cluster-admin static token for later assertions", func(ctx SpecContext) {
+			kubeconfigSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "kubeconfig", Namespace: technicalID}}
+			Eventually(ctx, Object(kubeconfigSecret)).Should(HaveField("Data", HaveKey("kubeconfig")))
+
+			Expect(kubeconfigSecret.Data).To(HaveKey("kubeconfig"))
+
+			kubeconfig := &clientcmdv1.Config{}
+			_, _, err := clientcmdlatest.Codec.Decode(kubeconfigSecret.Data["kubeconfig"], nil, kubeconfig)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(kubeconfig.AuthInfos).ToNot(BeEmpty())
+			clusterAdminStaticToken = kubeconfig.AuthInfos[0].AuthInfo.Token
+		}, SpecTimeout(time.Minute))
+
+		It("should generate a bootstrap token and connect the self-hosted shoot to Gardener", func(ctx SpecContext) {
+			session := RunCommand(NewCommand(
+				[]string{"KUBECONFIG=" + gardenadm.GardenClusterKubeconfigPathOnHost},
+				"token", "create", "--print-connect-command", "--shoot-namespace", shootNamespace, "--shoot-name", shootName,
+			))
+			Wait(ctx, session)
+			connectCommand := strings.Fields(strings.ReplaceAll(string(session.Out.Contents()), `"`, ``))
+			Expect(len(connectCommand)).To(BeNumerically(">", 2))
+			Expect(connectCommand[:2]).To(Equal([]string{"gardenadm", "connect"}))
+
+			// In contrast to the unmanaged infrastructure scenario, run `gardenadm connect` from the host (outside the
+			// control plane machines) to verify that this is supported as well.
+			session = RunCommand(NewCommand(
+				[]string{"KUBECONFIG=" + gardenadm.ShootClusterKubeconfigPathOnHost},
+				append(connectCommand[1:], "--config-dir", configDir)...,
+			))
+			Wait(ctx, session)
+
+			Eventually(ctx, session.Out).Should(gbytes.Say("Your self-hosted shoot cluster has successfully been connected to Gardener!"))
+		}, SpecTimeout(5*time.Minute))
+
+		gardenadm.ItShouldVerifyAfterConnect(&gardenClientSet, shoot, runInMachine)
+		gardenadm.ItShouldBeReconciledByGardenlet(&gardenClientSet, &shootClientSet, shoot, clusterAdminStaticToken, runInMachine, runInNode)
+	})
+
+	gardenadm.ItShouldPromoteSelfHostedShootToSeed(&gardenClientSet, &shootClientSet, shoot)
+	gardenadm.ItShouldCreateHostedShootOnPromotedSeed(&gardenClientSet)
+})

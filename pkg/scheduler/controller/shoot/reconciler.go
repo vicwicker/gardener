@@ -1,0 +1,718 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package shoot
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"math"
+	"slices"
+	"strings"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/yaml"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	schedulerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/scheduler/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	cidrvalidation "github.com/gardener/gardener/pkg/utils/validation/cidr"
+)
+
+// Reconciler schedules shoots to seeds.
+type Reconciler struct {
+	Client          client.Client
+	Config          *schedulerconfigv1alpha1.ShootSchedulerConfiguration
+	GardenNamespace string
+	Recorder        events.EventRecorder
+}
+
+// Reconcile schedules shoots to seeds.
+func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
+	log := logf.FromContext(ctx)
+
+	shoot := &gardencorev1beta1.Shoot{}
+	if err := r.Client.Get(ctx, request.NamespacedName, shoot); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("Object is gone, stop reconciling")
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, fmt.Errorf("error retrieving object from store: %w", err)
+	}
+
+	if shoot.Spec.SeedName != nil {
+		log.Info("Shoot already scheduled onto seed, nothing left to do", "seed", *shoot.Spec.SeedName)
+		return reconcile.Result{}, nil
+	}
+
+	if shoot.DeletionTimestamp != nil {
+		log.Info("Ignoring shoot because it has been marked for deletion")
+		return reconcile.Result{}, nil
+	}
+
+	// If no Seed is referenced, we try to determine an adequate one.
+	seed, err := r.DetermineSeed(ctx, log, shoot)
+	if err != nil {
+		r.reportFailedScheduling(ctx, log, shoot, err)
+		return reconcile.Result{}, fmt.Errorf("failed to determine seed for shoot: %w", err)
+	}
+
+	shoot.Spec.SeedName = &seed.Name
+	if err = r.Client.SubResource("binding").Update(ctx, shoot); err != nil {
+		r.reportFailedScheduling(ctx, log, shoot, err)
+		return reconcile.Result{}, fmt.Errorf("failed to bind shoot to seed: %w", err)
+	}
+
+	log.Info(
+		"Shoot successfully scheduled to seed",
+		"cloudprofile", shoot.Spec.CloudProfileName,
+		"region", shoot.Spec.Region,
+		"seed", seed.Name,
+		"strategy", r.Config.Strategy,
+	)
+
+	r.reportEvent(shoot, corev1.EventTypeNormal, gardencorev1beta1.ShootEventSchedulingSuccessful, gardencorev1beta1.EventActionReconcile, "Scheduled to seed %q", seed.Name)
+	return reconcile.Result{}, nil
+}
+
+func (r *Reconciler) reportFailedScheduling(ctx context.Context, log logr.Logger, shoot *gardencorev1beta1.Shoot, err error) {
+	// Conflict errors are likely to occur during scheduling but will be retried by the controller.
+	// Skip reporting the event and updating the status, the error will still be logged.
+	if apierrors.IsConflict(err) {
+		return
+	}
+
+	description := "Failed to schedule Shoot: " + err.Error()
+	r.reportEvent(shoot, corev1.EventTypeWarning, gardencorev1beta1.ShootEventSchedulingFailed, gardencorev1beta1.EventActionReconcile, description)
+
+	patch := client.MergeFrom(shoot.DeepCopy())
+	if shoot.Status.LastOperation == nil {
+		shoot.Status.LastOperation = &gardencorev1beta1.LastOperation{}
+	}
+	shoot.Status.LastOperation.Type = gardencorev1beta1.LastOperationTypeCreate
+	shoot.Status.LastOperation.State = gardencorev1beta1.LastOperationStatePending
+	shoot.Status.LastOperation.LastUpdateTime = metav1.Now()
+	shoot.Status.LastOperation.Description = description
+	if err := r.Client.Status().Patch(ctx, shoot, patch); err != nil {
+		log.Error(err, "Failed to report scheduling failure to shoot status")
+	}
+}
+
+func (r *Reconciler) reportEvent(shoot *gardencorev1beta1.Shoot, eventType string, eventReason, action, messageFmt string, args ...any) {
+	r.Recorder.Eventf(shoot, nil, eventType, eventReason, action, messageFmt, args...)
+}
+
+// DetermineSeed returns an appropriate Seed cluster (or nil).
+func (r *Reconciler) DetermineSeed(
+	ctx context.Context,
+	log logr.Logger,
+	shoot *gardencorev1beta1.Shoot,
+) (
+	*gardencorev1beta1.Seed,
+	error,
+) {
+	seedList := &gardencorev1beta1.SeedList{}
+	if err := r.Client.List(ctx, seedList); err != nil {
+		return nil, err
+	}
+	sl := &gardencorev1beta1.ShootList{}
+	if err := r.Client.List(ctx, sl); err != nil {
+		return nil, err
+	}
+
+	shootList := v1beta1helper.ConvertShootList(sl.Items)
+
+	cloudProfile, err := gardenerutils.GetCloudProfile(ctx, r.Client, shoot)
+	if err != nil {
+		return nil, err
+	}
+	regionConfigMaps, err := gardenerutils.GetRegionConfigMaps(ctx, r.Client, r.GardenNamespace, cloudProfile.Name)
+	if err != nil {
+		return nil, err
+	}
+	var regionConfig *corev1.ConfigMap
+	switch len(regionConfigMaps) {
+	case 0:
+		log.Info("No region config found", "cloudProfileName", cloudProfile.Name)
+	case 1:
+		regionConfig = regionConfigMaps[0]
+	default:
+		regionConfig = regionConfigMaps[0]
+		log.Info("Multiple region configs found, using the first one", "cloudProfileName", cloudProfile.Name, "chosenConfigMap", client.ObjectKeyFromObject(regionConfig))
+	}
+	project, err := gardenerutils.ProjectForNamespaceFromReader(ctx, r.Client, shoot.Namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	filteredSeeds, err := filterUsableSeeds(seedList.Items)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsMatchingLabelSelector(filteredSeeds, cloudProfile.Spec.SeedSelector, "CloudProfile")
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsMatchingLabelSelector(filteredSeeds, shoot.Spec.SeedSelector, "Shoot")
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsMatchingProviders(cloudProfile, shoot, filteredSeeds)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsForZonalShootControlPlanes(filteredSeeds, shoot)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsForZoneSelection(filteredSeeds, shoot)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsForAccessRestrictions(filteredSeeds, shoot)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsMatchingDomain(filteredSeeds, shoot, project.Name)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsWithDisabledShootReconciliations(filteredSeeds)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterCandidates(shoot, shootList, filteredSeeds)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = applyStrategy(log, shoot, filteredSeeds, r.Config.Strategy, regionConfig)
+	if err != nil {
+		return nil, err
+	}
+	return getSeedWithLeastShootsDeployed(filteredSeeds, shootList)
+}
+
+func isUsableSeed(seed *gardencorev1beta1.Seed) bool {
+	return seed.DeletionTimestamp == nil && seed.Spec.Settings.Scheduling.Visible && verifySeedReadiness(seed)
+}
+
+func filterUsableSeeds(seedList []gardencorev1beta1.Seed) ([]gardencorev1beta1.Seed, error) {
+	var matchingSeeds []gardencorev1beta1.Seed
+
+	for _, seed := range seedList {
+		if isUsableSeed(&seed) {
+			matchingSeeds = append(matchingSeeds, seed)
+		}
+	}
+
+	if len(matchingSeeds) == 0 {
+		return nil, fmt.Errorf("none of the %d seeds is valid for scheduling (not deleting, visible and ready)", len(seedList))
+	}
+	return matchingSeeds, nil
+}
+
+func filterSeedsMatchingLabelSelector(seedList []gardencorev1beta1.Seed, seedSelector *gardencorev1beta1.SeedSelector, kind string) ([]gardencorev1beta1.Seed, error) {
+	if seedSelector == nil {
+		return seedList, nil
+	}
+	selector, err := metav1.LabelSelectorAsSelector(&seedSelector.LabelSelector)
+	if err != nil {
+		return nil, fmt.Errorf("label selector conversion failed: %v for seedSelector: %w", seedSelector.LabelSelector, err)
+	}
+
+	var matchingSeeds []gardencorev1beta1.Seed
+	for _, seed := range seedList {
+		if selector.Matches(labels.Set(seed.Labels)) {
+			matchingSeeds = append(matchingSeeds, seed)
+		}
+	}
+
+	if len(matchingSeeds) == 0 {
+		return nil, fmt.Errorf("none out of the %d seeds has the matching labels required by seed selector of '%s' (selector: '%s')", len(seedList), kind, selector.String())
+	}
+	return matchingSeeds, nil
+}
+
+func filterSeedsMatchingProviders(cloudProfile *gardencorev1beta1.CloudProfile, shoot *gardencorev1beta1.Shoot, seedList []gardencorev1beta1.Seed) ([]gardencorev1beta1.Seed, error) {
+	var possibleProviders []string
+	if cloudProfile.Spec.SeedSelector != nil {
+		possibleProviders = cloudProfile.Spec.SeedSelector.ProviderTypes
+	}
+
+	var matchingSeeds []gardencorev1beta1.Seed
+	for _, seed := range seedList {
+		if matchProvider(seed.Spec.Provider.Type, shoot.Spec.Provider.Type, possibleProviders) {
+			matchingSeeds = append(matchingSeeds, seed)
+		}
+	}
+
+	if len(matchingSeeds) == 0 {
+		return nil, fmt.Errorf("none out of the %d seeds has a matching provider for %q", len(seedList), shoot.Spec.Provider.Type)
+	}
+	return matchingSeeds, nil
+}
+
+// filterSeedsForZonalShootControlPlanes filters seeds with at least three zones in case the shoot's failure tolerance
+// type is 'zone'.
+func filterSeedsForZonalShootControlPlanes(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) ([]gardencorev1beta1.Seed, error) {
+	if v1beta1helper.IsMultiZonalShootControlPlane(shoot) {
+		var seedsWithAtLeastThreeZones []gardencorev1beta1.Seed
+		for _, seed := range seedList {
+			if len(seed.Spec.Provider.Zones) >= 3 {
+				seedsWithAtLeastThreeZones = append(seedsWithAtLeastThreeZones, seed)
+			}
+		}
+		if len(seedsWithAtLeastThreeZones) == 0 {
+			return nil, fmt.Errorf("none of the %d seeds has at least 3 zones for hosting a shoot control plane with failure tolerance type 'zone'", len(seedList))
+		}
+		return seedsWithAtLeastThreeZones, nil
+	}
+	return seedList, nil
+}
+
+// filterSeedsForZoneSelection filters seeds based on zone selection mode.
+// Seeds with `Enforce` mode are excluded when they have no zone overlap with the shoot's worker pools.
+// Seeds with `Prefer` mode that have matching zones are preferred over those without, but all are kept as fallback.
+// Zone selection only applies to non-HA shoots and HA shoots with failure tolerance type `node`.
+// For shoots with failure tolerance type `zone`, the control plane is spread across all zones anyway.
+func filterSeedsForZoneSelection(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) ([]gardencorev1beta1.Seed, error) {
+	if v1beta1helper.IsMultiZonalShootControlPlane(shoot) {
+		return seedList, nil
+	}
+
+	shootZones, explicit := controlPlaneZoneHints(shoot)
+
+	if explicit {
+		var eligibleSeeds []gardencorev1beta1.Seed
+		for _, seed := range seedList {
+			if sets.New(seed.Spec.Provider.Zones...).HasAll(shootZones...) {
+				eligibleSeeds = append(eligibleSeeds, seed)
+			}
+		}
+		if len(eligibleSeeds) == 0 {
+			return nil, fmt.Errorf("none of the %d seeds contains all requested control plane zones %v", len(seedList), shootZones)
+		}
+		return eligibleSeeds, nil
+	}
+
+	var matchingSeeds []gardencorev1beta1.Seed
+
+	// First pass: exclude `Enforce` seeds that have no zone overlap with the shoot's worker pools.
+	for _, seed := range seedList {
+		if v1beta1helper.SeedSettingZoneSelectionMode(seed.Spec.Settings) != gardencorev1beta1.ZoneSelectionModeEnforce {
+			matchingSeeds = append(matchingSeeds, seed)
+			continue
+		}
+		if len(shootZones) == 0 || sets.New(seed.Spec.Provider.Zones...).HasAny(shootZones...) {
+			matchingSeeds = append(matchingSeeds, seed)
+		}
+	}
+
+	if len(matchingSeeds) == 0 {
+		return nil, fmt.Errorf("none of the %d seeds has any zone overlap with the shoot's worker pool zones (zone selection mode: %s)", len(seedList), gardencorev1beta1.ZoneSelectionModeEnforce)
+	}
+
+	// Second pass: prefer `Prefer` seeds with matching zones. If any match, exclude `Prefer` seeds without overlap.
+	if len(shootZones) > 0 {
+		var preferredSeeds []gardencorev1beta1.Seed
+
+		for _, seed := range matchingSeeds {
+			if v1beta1helper.SeedSettingZoneSelectionMode(seed.Spec.Settings) != gardencorev1beta1.ZoneSelectionModePrefer {
+				preferredSeeds = append(preferredSeeds, seed)
+				continue
+			}
+			if sets.New(seed.Spec.Provider.Zones...).HasAny(shootZones...) {
+				preferredSeeds = append(preferredSeeds, seed)
+			}
+		}
+
+		if len(preferredSeeds) > 0 {
+			return preferredSeeds, nil
+		}
+	}
+
+	return matchingSeeds, nil
+}
+
+// controlPlaneZoneHints returns the shoot's explicit control plane zones when set,
+// otherwise falls back to worker-pool zones.
+func controlPlaneZoneHints(shoot *gardencorev1beta1.Shoot) (zones []string, explicit bool) {
+	if shoot.Spec.ControlPlane != nil && len(shoot.Spec.ControlPlane.Zones) > 0 {
+		return shoot.Spec.ControlPlane.Zones, true
+	}
+	return allShootZones(shoot.Spec.Provider.Workers), false
+}
+
+func allShootZones(workerPools []gardencorev1beta1.Worker) []string {
+	zones := sets.New[string]()
+	for _, pool := range workerPools {
+		zones.Insert(pool.Zones...)
+	}
+	return zones.UnsortedList()
+}
+
+// filterSeedsForAccessRestrictions filters seeds which do not support the access restrictions configured in the shoot.
+func filterSeedsForAccessRestrictions(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) ([]gardencorev1beta1.Seed, error) {
+	var seedsSupportingAccessRestrictions []gardencorev1beta1.Seed
+	for _, seed := range seedList {
+		if v1beta1helper.AccessRestrictionsAreSupported(seed.Spec.AccessRestrictions, shoot.Spec.AccessRestrictions) {
+			seedsSupportingAccessRestrictions = append(seedsSupportingAccessRestrictions, seed)
+		}
+	}
+
+	if len(seedsSupportingAccessRestrictions) == 0 {
+		return nil, fmt.Errorf("none of the %d seeds supports the access restrictions configured in the shoot specification", len(seedList))
+	}
+	return seedsSupportingAccessRestrictions, nil
+}
+
+// filterSeedsWithDisabledShootReconciliations filters seeds which have annotation set to temporarily disable shoot reconciliations.
+func filterSeedsWithDisabledShootReconciliations(seedList []gardencorev1beta1.Seed) ([]gardencorev1beta1.Seed, error) {
+	var seedsWithEnabledReconciliations []gardencorev1beta1.Seed
+	for _, seed := range seedList {
+		if !v1beta1helper.HasShootReconciliationsDisabledAnnotation(&seed) {
+			seedsWithEnabledReconciliations = append(seedsWithEnabledReconciliations, seed)
+		}
+	}
+
+	if len(seedsWithEnabledReconciliations) == 0 {
+		return nil, fmt.Errorf("none of the %d seeds have enabled shoot reconciliations currently", len(seedList))
+	}
+	return seedsWithEnabledReconciliations, nil
+}
+
+// filterSeedsMatchingDomain filters seeds that can support the shoot's domain configuration.
+// If the shoot uses a default domain, only seeds that have that domain configured in their DNS defaults are selected.
+// If the shoot uses a custom domain, all seeds are accepted.
+func filterSeedsMatchingDomain(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot, projectName string) ([]gardencorev1beta1.Seed, error) {
+	// If the shoot doesn't have a domain specified, all seeds are eligible
+	if shoot.Spec.DNS == nil || shoot.Spec.DNS.Domain == nil {
+		return seedList, nil
+	}
+
+	var (
+		shootDomain              = *shoot.Spec.DNS.Domain
+		supportingSeeds          []gardencorev1beta1.Seed
+		hasMatchedGardenerDomain bool
+	)
+
+	for _, seed := range seedList {
+		for _, defaultDomain := range seed.Spec.DNS.Defaults {
+			// if the domain matches a seed domain then we only accept it, if it is in a <name>.<project>.<domain> format
+			if strings.HasSuffix(shootDomain, "."+defaultDomain.Domain) {
+				hasMatchedGardenerDomain = true
+				if shootDomain == fmt.Sprintf("%s.%s.%s", shoot.Name, projectName, defaultDomain.Domain) {
+					supportingSeeds = append(supportingSeeds, seed)
+					break
+				}
+			}
+		}
+	}
+
+	if hasMatchedGardenerDomain {
+		if len(supportingSeeds) == 0 {
+			return nil, fmt.Errorf("none of the %d seeds support the domain %q configured in the shoot specification", len(seedList), shootDomain)
+		}
+		return supportingSeeds, nil
+	}
+
+	// we have not matched a gardener managed domain
+	// all seeds are eligible
+	return seedList, nil
+}
+
+func applyStrategy(log logr.Logger, shoot *gardencorev1beta1.Shoot, seedList []gardencorev1beta1.Seed, strategy schedulerconfigv1alpha1.CandidateDeterminationStrategy, regionConfig *corev1.ConfigMap) ([]gardencorev1beta1.Seed, error) {
+	var candidates []gardencorev1beta1.Seed
+
+	switch {
+	case shoot.Spec.Purpose != nil && *shoot.Spec.Purpose == gardencorev1beta1.ShootPurposeTesting:
+		candidates = determineCandidatesOfSameProvider(seedList, shoot)
+	case strategy == schedulerconfigv1alpha1.SameRegion:
+		candidates = determineCandidatesWithSameRegionStrategy(seedList, shoot)
+	case strategy == schedulerconfigv1alpha1.MinimalDistance:
+		var err error
+		candidates, err = determineCandidatesWithMinimalDistanceStrategy(log, shoot, seedList, regionConfig)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("failed to determine seed candidates. shoot purpose: '%s', strategy: '%s', valid strategies are: %v", *shoot.Spec.Purpose, strategy, schedulerconfigv1alpha1.Strategies)
+	}
+
+	if candidates == nil {
+		var cloudProfileName string
+		if shoot.Spec.CloudProfile != nil {
+			cloudProfileName = shoot.Spec.CloudProfile.Name
+		} else if shoot.Spec.CloudProfileName != nil {
+			cloudProfileName = *shoot.Spec.CloudProfileName
+		}
+		return nil, fmt.Errorf("no matching seed candidate found for Configuration (Cloud Profile '%s', Region '%s', SeedDeterminationStrategy '%s')", cloudProfileName, shoot.Spec.Region, strategy)
+	}
+	return candidates, nil
+}
+
+func filterCandidates(shoot *gardencorev1beta1.Shoot, shootList []*gardencorev1beta1.Shoot, seedList []gardencorev1beta1.Seed) ([]gardencorev1beta1.Seed, error) {
+	var (
+		candidates    []gardencorev1beta1.Seed
+		seedNameToErr = make(map[string]error)
+		seedUsage     = v1beta1helper.CalculateSeedUsage(shootList)
+	)
+
+	for _, seed := range seedList {
+		if shoot.Spec.Networking != nil {
+			if disjointed, err := networksAreDisjointed(&seed, shoot); !disjointed {
+				seedNameToErr[seed.Name] = err
+				continue
+			}
+		}
+
+		if !v1beta1helper.TaintsAreTolerated(seed.Spec.Taints, shoot.Spec.Tolerations) {
+			seedNameToErr[seed.Name] = errors.New("shoot does not tolerate the seed's taints")
+			continue
+		}
+
+		if allocatableShoots, ok := seed.Status.Allocatable[gardencorev1beta1.ResourceShoots]; ok && int64(seedUsage[seed.Name]) >= allocatableShoots.Value() {
+			seedNameToErr[seed.Name] = errors.New("seed does not have available capacity for shoots")
+			continue
+		}
+
+		candidates = append(candidates, seed)
+	}
+
+	if candidates == nil {
+		return nil, fmt.Errorf("0/%d seed cluster candidate(s) are eligible for scheduling: %v", len(seedList), errorMapToString(seedNameToErr))
+	}
+	return candidates, nil
+}
+
+// getSeedWithLeastShootsDeployed finds the best candidate (i.e. the one managing the smallest number of shoots right now).
+func getSeedWithLeastShootsDeployed(seedList []gardencorev1beta1.Seed, shootList []*gardencorev1beta1.Shoot) (*gardencorev1beta1.Seed, error) {
+	var (
+		bestCandidate gardencorev1beta1.Seed
+		minCount      *int
+		seedUsage     = v1beta1helper.CalculateSeedUsage(shootList)
+	)
+
+	for _, seed := range seedList {
+		if numberOfManagedShoots := seedUsage[seed.Name]; minCount == nil || numberOfManagedShoots < *minCount {
+			bestCandidate = seed
+			minCount = &numberOfManagedShoots
+		}
+	}
+
+	return &bestCandidate, nil
+}
+
+func matchProvider(seedProviderType, shootProviderType string, enabledProviderTypes []string) bool {
+	if len(enabledProviderTypes) == 0 {
+		return seedProviderType == shootProviderType
+	}
+	for _, p := range enabledProviderTypes {
+		if p == "*" || p == seedProviderType {
+			return true
+		}
+	}
+	return false
+}
+
+func determineCandidatesOfSameProvider(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) []gardencorev1beta1.Seed {
+	var candidates []gardencorev1beta1.Seed
+	// Determine all candidate seed clusters matching the shoot's provider and region.
+	for _, seed := range seedList {
+		if seed.Spec.Provider.Type == shoot.Spec.Provider.Type {
+			candidates = append(candidates, seed)
+		}
+	}
+	return candidates
+}
+
+// determineCandidatesWithSameRegionStrategy get all seed clusters matching the shoot's provider and region.
+func determineCandidatesWithSameRegionStrategy(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) []gardencorev1beta1.Seed {
+	var candidates []gardencorev1beta1.Seed
+	for _, seed := range seedList {
+		if seed.Spec.Provider.Type == shoot.Spec.Provider.Type && seed.Spec.Provider.Region == shoot.Spec.Region {
+			candidates = append(candidates, seed)
+		}
+	}
+	return candidates
+}
+
+func determineCandidatesWithMinimalDistanceStrategy(log logr.Logger, shoot *gardencorev1beta1.Shoot, seedList []gardencorev1beta1.Seed, regionConfig *corev1.ConfigMap) ([]gardencorev1beta1.Seed, error) {
+	candidates, err := regionConfigMinimalDistance(log, seedList, shoot, regionConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fall back to Levenshtein minimal distance in case we didn't find any candidates.
+	if len(candidates) == 0 {
+		log.Info("No candidates found with minimal distance of region config. Falling back to Levenshtein minimal distance")
+		candidates = levenshteinMinimalDistance(seedList, shoot)
+	}
+	return candidates, nil
+}
+
+func regionConfigMinimalDistance(log logr.Logger, seeds []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot, regionConfig *corev1.ConfigMap) ([]gardencorev1beta1.Seed, error) {
+	var candidates []gardencorev1beta1.Seed
+
+	if regionConfig == nil || regionConfig.Data[shoot.Spec.Region] == "" {
+		log.Info("Region ConfigMap not provided or Shoot region not available", "region", shoot.Spec.Region)
+		return candidates, nil
+	}
+
+	regionConfigData := make(map[string]int)
+	if err := yaml.Unmarshal([]byte(regionConfig.Data[shoot.Spec.Region]), &regionConfigData); err != nil {
+		return nil, fmt.Errorf("failed to determine seed candidates. Wrong format in region ConfigMap %s/%s, Region %q: %w", regionConfig.Namespace, regionConfig.Name, shoot.Spec.Region, err)
+	}
+
+	// If not configured otherwise, assume that a region has the smallest possible distance to itself.
+	if _, ok := regionConfigData[shoot.Spec.Region]; !ok {
+		regionConfigData[shoot.Spec.Region] = 0
+	}
+
+	minDistance := math.MaxInt32
+	for _, seed := range seeds {
+		dist, ok := regionConfigData[seed.Spec.Provider.Region]
+		if !ok {
+			log.Info("Seed region not available in scheduler region ConfigMap for shoot region", "seedName", seed.Name, "shootRegion", shoot.Spec.Region, "seedRegion", seed.Spec.Provider.Region)
+			continue
+		}
+
+		if dist == minDistance {
+			candidates = append(candidates, seed)
+			continue
+		}
+
+		if dist < minDistance {
+			minDistance = dist
+			candidates = []gardencorev1beta1.Seed{seed}
+		}
+	}
+
+	return candidates, nil
+}
+
+func levenshteinMinimalDistance(seeds []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) []gardencorev1beta1.Seed {
+	var (
+		minDistance   = 1000
+		shootRegion   = shoot.Spec.Region
+		shootProvider = shoot.Spec.Provider.Type
+		candidates    []gardencorev1beta1.Seed
+	)
+
+	for _, seed := range seeds {
+		seedRegion := seed.Spec.Provider.Region
+		dist := distance(seedRegion, shootRegion)
+
+		if shootProvider != seed.Spec.Provider.Type {
+			dist = dist + 2
+		}
+
+		if dist == minDistance {
+			candidates = append(candidates, seed)
+			continue
+		}
+
+		if dist < minDistance {
+			minDistance = dist
+			candidates = []gardencorev1beta1.Seed{seed}
+		}
+	}
+	return candidates
+}
+
+func networksAreDisjointed(seed *gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) (bool, error) {
+	var (
+		shootPodsNetwork     = shoot.Spec.Networking.Pods
+		shootServicesNetwork = shoot.Spec.Networking.Services
+
+		errorMessages []string
+		workerless    = v1beta1helper.IsWorkerless(shoot)
+	)
+
+	if seed.Spec.Networks.ShootDefaults != nil {
+		if shootPodsNetwork == nil && !workerless {
+			if defaultPods := cidrvalidation.NewCIDR(*seed.Spec.Networks.ShootDefaults.Pods, field.NewPath("spec", "networks", "shootDefaults", "pods")); defaultPods.IsIPv6() &&
+				slices.Contains(shoot.Spec.Networking.IPFamilies, gardencorev1beta1.IPFamilyIPv6) ||
+				defaultPods.IsIPv4() && slices.Contains(shoot.Spec.Networking.IPFamilies, gardencorev1beta1.IPFamilyIPv4) {
+				shootPodsNetwork = seed.Spec.Networks.ShootDefaults.Pods
+			}
+		}
+		if shootServicesNetwork == nil {
+			if defaultServices := cidrvalidation.NewCIDR(*seed.Spec.Networks.ShootDefaults.Services, field.NewPath("spec", "networks", "shootDefaults", "services")); defaultServices.IsIPv6() &&
+				slices.Contains(shoot.Spec.Networking.IPFamilies, gardencorev1beta1.IPFamilyIPv6) ||
+				defaultServices.IsIPv4() && slices.Contains(shoot.Spec.Networking.IPFamilies, gardencorev1beta1.IPFamilyIPv4) {
+				shootServicesNetwork = seed.Spec.Networks.ShootDefaults.Services
+			}
+		}
+	}
+
+	for _, e := range cidrvalidation.ValidateNetworkDisjointedness(
+		field.NewPath(""),
+		shoot.Spec.Networking.Nodes,
+		shootPodsNetwork,
+		shootServicesNetwork,
+		seed.Spec.Networks.Nodes,
+		seed.Spec.Networks.Pods,
+		seed.Spec.Networks.Services,
+	) {
+		errorMessages = append(errorMessages, e.ErrorBody())
+	}
+
+	if shoot.Status.Networking != nil {
+		for _, e := range cidrvalidation.ValidateMultiNetworkDisjointedness(
+			field.NewPath(""),
+			shoot.Status.Networking.Nodes,
+			shoot.Status.Networking.Pods,
+			shoot.Status.Networking.Services,
+			seed.Spec.Networks.Nodes,
+			seed.Spec.Networks.Pods,
+			seed.Spec.Networks.Services,
+			workerless,
+		) {
+			errorMessages = append(errorMessages, e.ErrorBody())
+		}
+	}
+
+	return len(errorMessages) == 0, fmt.Errorf("invalid networks: %s", errorMessages)
+}
+
+func errorMapToString(seedNameToErr map[string]error) string {
+	res := "{"
+	for _, seed := range slices.Sorted(maps.Keys(seedNameToErr)) {
+		res += fmt.Sprintf("%s => %s, ", seed, seedNameToErr[seed].Error())
+	}
+	res = strings.TrimSuffix(res, ", ") + "}"
+	return res
+}
+
+func verifySeedReadiness(seed *gardencorev1beta1.Seed) bool {
+	if seed.Status.LastOperation == nil {
+		return false
+	}
+
+	if cond := v1beta1helper.GetCondition(seed.Status.Conditions, gardencorev1beta1.GardenletReady); cond == nil || cond.Status != gardencorev1beta1.ConditionTrue {
+		return false
+	}
+
+	if seed.Spec.Backup != nil {
+		if cond := v1beta1helper.GetCondition(seed.Status.Conditions, gardencorev1beta1.SeedBackupBucketsReady); cond == nil || cond.Status != gardencorev1beta1.ConditionTrue {
+			return false
+		}
+	}
+
+	return true
+}

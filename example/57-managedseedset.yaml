@@ -1,0 +1,40 @@
+apiVersion: seedmanagement.gardener.cloud/v1alpha1
+kind: ManagedSeedSet
+metadata:
+  name: my-mss
+  namespace: garden # Must be garden
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: my-managed-seed-set
+  template:
+    # <See `55-managedseed-gardenlet.yaml` for more details>
+    metadata:
+      labels:
+        name: my-managed-seed-set
+    spec:
+      # shoot.name must not be specified
+      gardenlet:
+        config: # GardenletConfiguration resource
+          # <See `20-componentconfig-gardenlet.yaml` for more details>
+          apiVersion: gardenlet.config.gardener.cloud/v1alpha1
+          kind: GardenletConfiguration
+          seedConfig:
+            metadata:
+              labels:
+                name: my-managed-seed-set
+            spec:
+              dns:
+                ingress:
+                  # "replica-name" in DNS domains will be replaced by the actual replica name
+                  domain: replica-name.ingress.crazy-botany.core.my-custom-domain.com
+  shootTemplate:
+    # <See `90-shoot.yaml` for more details>
+    metadata:
+      labels:
+        name: my-managed-seed-set
+    spec:
+      dns:
+        # "replica-name" in DNS domains will be replaced by the actual replica name
+        domain: replica-name.crazy-botany.core.my-custom-domain.com

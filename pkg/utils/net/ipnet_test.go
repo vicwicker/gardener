@@ -1,0 +1,194 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package net_test
+
+import (
+	"net"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	gomegatypes "github.com/onsi/gomega/types"
+
+	. "github.com/gardener/gardener/pkg/utils/net"
+)
+
+var _ = DescribeTable("#JoinByComma",
+	func(cidrs []string, expected string) {
+		var networks []net.IPNet
+		for _, cidr := range cidrs {
+			_, ipNet, err := net.ParseCIDR(cidr)
+			Expect(err).ToNot(HaveOccurred())
+			networks = append(networks, *ipNet)
+		}
+		Expect(JoinByComma(networks)).To(Equal(expected))
+	},
+
+	Entry("should work with nil list", nil, ""),
+	Entry("should work with empty list", []string{}, ""),
+	Entry("should work with single list entry", []string{"10.250.0.0/16"}, "10.250.0.0/16"),
+	Entry("should concatenate CIDRs of the given networks with comma as separator",
+		[]string{"10.250.0.0/16", "192.168.0.0/24", "2001:db8:1::/64", "2001:db8:2::/64"},
+		"10.250.0.0/16,192.168.0.0/24,2001:db8:1::/64,2001:db8:2::/64"),
+)
+
+var _ = DescribeTable("#Join",
+	func(cidrs []string, sep string, expected string) {
+		var networks []net.IPNet
+		for _, cidr := range cidrs {
+			_, ipNet, err := net.ParseCIDR(cidr)
+			Expect(err).ToNot(HaveOccurred())
+			networks = append(networks, *ipNet)
+		}
+		Expect(Join(networks, sep)).To(Equal(expected))
+	},
+
+	Entry("should work with nil list", nil, ",", ""),
+	Entry("should work with empty list", []string{}, " ", ""),
+	Entry("should work with single list entry", []string{"10.250.0.0/16"}, "|", "10.250.0.0/16"),
+	Entry("should concatenate CIDRs of the given networks with plus as separator",
+		[]string{"10.250.0.0/16", "192.168.0.0/24", "2001:db8:1::/64", "2001:db8:2::/64"}, "+",
+		"10.250.0.0/16+192.168.0.0/24+2001:db8:1::/64+2001:db8:2::/64"),
+	Entry("should concatenate CIDRs of the given networks with *** as separator",
+		[]string{"10.250.0.0/16", "192.168.0.0/24", "2001:db8:1::/64", "2001:db8:2::/64"}, "***",
+		"10.250.0.0/16***192.168.0.0/24***2001:db8:1::/64***2001:db8:2::/64"),
+)
+
+var _ = DescribeTable("#CheckDualStackForKubeComponents",
+	func(cidrs []string, success bool, matcher gomegatypes.GomegaMatcher) {
+		var networks []net.IPNet
+		for _, cidr := range cidrs {
+			_, ipNet, err := net.ParseCIDR(cidr)
+			Expect(err).ToNot(HaveOccurred())
+			networks = append(networks, *ipNet)
+		}
+		if success {
+			Expect(CheckDualStackForKubeComponents(networks, "network")).To(Succeed())
+		} else {
+			Expect(CheckDualStackForKubeComponents(networks, "network")).To(matcher)
+		}
+	},
+
+	Entry("should succeed with nil list", nil, true, nil),
+	Entry("should succeed with empty list", []string{}, true, nil),
+	Entry("should succeed with single IPv4 entry", []string{"10.0.0.0/8"}, true, nil),
+	Entry("should succeed with single IPv6 entry", []string{"2001:db8::/64"}, true, nil),
+	Entry("should succeed with dual-stack list", []string{"10.0.0.0/8", "2001:db8::/64"}, true, nil),
+	Entry("should fail with three entries", []string{"10.0.0.0/8", "2001:db8::/64", "192.168.0.0/16"}, false, MatchError(ContainSubstring("network CIDRs must not contain more than two elements"))),
+	Entry("should fail with two IPv4 entries", []string{"10.0.0.0/8", "192.168.0.0/16"}, false, MatchError(ContainSubstring("network CIDRs must be of different IP family"))),
+	Entry("should fail with two IPv6 entries", []string{"2001:db8::/64", "2001:db8:1::/64"}, false, MatchError(ContainSubstring("network CIDRs must be of different IP family"))),
+)
+
+var _ = DescribeTable("#GetByIPFamily",
+	func(cidrs []string, ipFamily string, matcher gomegatypes.GomegaMatcher) {
+		var networks []net.IPNet
+		for _, cidr := range cidrs {
+			_, ipNet, err := net.ParseCIDR(cidr)
+			Expect(err).ToNot(HaveOccurred())
+			networks = append(networks, *ipNet)
+		}
+		Expect(GetByIPFamily(networks, ipFamily)).To(matcher)
+	},
+
+	Entry("should return empty list with nil list", nil, "", BeEmpty()),
+	Entry("should return empty list with empty list", []string{}, "", BeEmpty()),
+	Entry("should return one entry with single IPv4 entry + ipv4 match", []string{"10.0.0.0/8"}, IPv4Family, HaveLen(1)),
+	Entry("should return empty list with single IPv4 entry + ipv6 match", []string{"11.0.0.0/8"}, IPv6Family, BeEmpty()),
+	Entry("should return empty list with single IPv4 entry + bogus match", []string{"12.0.0.0/8"}, "bogus", BeEmpty()),
+	Entry("should return two entries with two IPv4 entries + ipv4 match", []string{"10.0.0.0/8", "11.0.0.0/8"}, IPv4Family, HaveLen(2)),
+	Entry("should return two entries with two IPv4 entries + IPv6 entry + ipv4 match", []string{"12.0.0.0/8", "13.0.0.0/8", "2001:db8:1::/64"}, IPv4Family, HaveLen(2)),
+	Entry("should return one entry with two IPv4 entries + IPv6 entry + ipv6 match", []string{"14.0.0.0/8", "15.0.0.0/8", "2001:db8:1::/64"}, IPv6Family, HaveLen(1)),
+	Entry("should return two entries with two IPv4 entries + two IPv6 entries + ipv6 match", []string{"16.0.0.0/8", "17.0.0.0/8", "2001:db8:1::/64", "2001:db8:2::/64"}, IPv6Family, HaveLen(2)),
+)
+
+var _ = DescribeTable("#Overlap",
+	func(cidr1, cidr2 string, expected bool) {
+		_, ipNet1, err := net.ParseCIDR(cidr1)
+		Expect(err).ToNot(HaveOccurred())
+		_, ipNet2, err := net.ParseCIDR(cidr2)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(Overlap(*ipNet1, *ipNet2)).To(Equal(expected))
+	},
+
+	Entry("should detect IPv4 overlap - same network", "10.0.0.0/8", "10.0.0.0/8", true),
+	Entry("should detect IPv4 overlap - subset network", "10.0.0.0/8", "10.0.0.0/16", true),
+	Entry("should detect IPv4 overlap - superset network", "10.0.0.0/16", "10.0.0.0/8", true),
+	Entry("should not detect IPv4 overlap - different networks", "10.0.0.0/8", "172.16.0.0/12", false),
+	Entry("should detect IPv6 overlap - same network", "2001:db8::/32", "2001:db8::/32", true),
+	Entry("should detect IPv6 overlap - subset network", "2001:db8::/32", "2001:db8:1::/48", true),
+	Entry("should detect IPv6 overlap - superset network", "2001:db8:1::/48", "2001:db8::/32", true),
+	Entry("should not detect IPv6 overlap - different networks", "2001:db8::/32", "2001:db9::/32", false),
+	Entry("should detect IPv4 overlap - subset", "10.245.152.0/22", "10.245.152.0/24", true),
+	Entry("should not detect IPv4 overlap - disjoint", "10.245.152.0/22", "10.246.150.0/24", false),
+	Entry("should detect IPv4 overlap - superset", "100.112.0.0/13", "100.112.0.0/16", true),
+	Entry("should not detect IPv4 overlap - different blocks", "100.64.0.0/12", "100.80.0.0/12", false),
+	Entry("should detect IPv4 overlap - partial overlap", "100.104.0.0/13", "100.112.0.0/13", false),
+	Entry("should detect IPv4 overlap - same network", "10.181.0.0/16", "10.181.0.0/16", true),
+	Entry("should not detect IPv4 overlap - disjoint", "10.180.0.0/16", "10.181.0.0/16", false),
+	Entry("should detect IPv6 overlap - subset", "2a10:afc0::/29", "2a10:afc0::/32", true),
+	Entry("should not detect IPv6 overlap - disjoint", "2a10:afc0::/29", "2a02:2ad0:910::/48", false),
+	Entry("should detect IPv6 overlap - superset", "2600:1f00::/24", "2600:1f00::/32", true),
+	Entry("should not detect IPv6 overlap - different blocks", "2620:107:4000::/44", "2604:1a00:50::/48", false),
+	Entry("should detect IPv6 overlap - same network", "2401:fa00:f2::/48", "2401:fa00:f2::/48", true),
+	Entry("should not detect IPv6 overlap - disjoint", "2603:1000::/24", "2600:1f00::/24", false),
+)
+
+var _ = DescribeTable("#OverlapAny",
+	func(cidr string, others []string, expected bool) {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		Expect(err).ToNot(HaveOccurred())
+		var otherNets []net.IPNet
+		for _, other := range others {
+			_, otherNet, err := net.ParseCIDR(other)
+			Expect(err).ToNot(HaveOccurred())
+			otherNets = append(otherNets, *otherNet)
+		}
+		Expect(OverLapAny(*ipNet, otherNets...)).To(Equal(expected))
+	},
+
+	Entry("should work with empty list", "10.0.0.0/8", []string{}, false),
+	Entry("should detect single IPv4 overlap", "10.0.0.0/8", []string{"10.0.0.0/16"}, true),
+	Entry("should not detect single IPv4 overlap", "10.0.0.0/8", []string{"172.16.0.0/12"}, false),
+	Entry("should detect IPv4 overlap in multiple networks", "10.0.0.0/8", []string{"172.16.0.0/12", "192.168.0.0/16", "10.10.0.0/16"}, true),
+	Entry("should not detect IPv4 overlap in multiple networks", "10.0.0.0/8", []string{"172.16.0.0/12", "192.168.0.0/16"}, false),
+	Entry("should detect IPv6 overlap in multiple networks", "2001:db8::/32", []string{"2001:db9::/32", "2001:db8:1::/48"}, true),
+	Entry("should not detect IPv6 overlap in multiple networks", "2001:db8::/32", []string{"2001:db9::/32", "2001:dba::/32"}, false),
+	Entry("should detect overlap with dual-stack: IPv4 input, IPv4+IPv6 list (overlap on IPv4)",
+		"10.0.0.0/8", []string{"2001:db8::/32", "10.0.0.0/16"}, true),
+	Entry("should detect overlap with dual-stack: IPv6 input, IPv4+IPv6 list (overlap on IPv6)",
+		"2001:db8::/32", []string{"10.0.0.0/8", "2001:db8:1::/48"}, true),
+	Entry("should not detect overlap with dual-stack: IPv4 input, IPv4+IPv6 list (no overlap)",
+		"10.0.0.0/8", []string{"192.168.0.0/16", "2001:db8::/32"}, false),
+	Entry("should not detect overlap with dual-stack: IPv6 input, IPv4+IPv6 list (no overlap)",
+		"2001:db8::/32", []string{"10.0.0.0/8", "2001:db9::/32"}, false),
+	Entry("should detect overlap with dual-stack: IPv4+IPv6 input, IPv4+IPv6 list (overlap on both)",
+		"10.0.0.0/8", []string{"10.0.0.0/16", "2001:db8::/32"}, true),
+	Entry("should detect overlap with dual-stack: IPv6 input, dual-stack list (overlap on IPv6)",
+		"2001:db8::/32", []string{"10.0.0.0/8", "2001:db8::/32"}, true),
+)
+
+var _ = DescribeTable("#ToCIDRStrings",
+	func(cidrs []net.IPNet, expected []string) {
+		Expect(ToCIDRStrings(cidrs...)).To(Equal(expected))
+	},
+	Entry("should work with nil list",
+		nil, []string{}),
+	Entry("should work with empty list",
+		[]net.IPNet{}, []string{}),
+	Entry("should work with a list",
+		[]net.IPNet{
+			{IP: net.ParseIP("10.0.0.0"), Mask: net.CIDRMask(8, 32)},
+			{IP: net.ParseIP("2001:db8::"), Mask: net.CIDRMask(64, 128)},
+		}, []string{"10.0.0.0/8", "2001:db8::/64"}),
+)
+
+var _ = DescribeTable("#DefaultNodeCIDRMaskSizeIPv6",
+	func(podCIDRMaskSize int, expected int32) {
+		Expect(DefaultNodeCIDRMaskSizeIPv6(podCIDRMaskSize)).To(Equal(expected))
+	},
+	Entry("should derive /80 from a /64 pod CIDR", 64, int32(80)),
+	Entry("should derive /64 from a /48 pod CIDR", 48, int32(64)),
+	Entry("should cap at /124 for a /112 pod CIDR", 112, int32(124)),
+	Entry("should cap at /124 for a /120 pod CIDR", 120, int32(124)),
+)

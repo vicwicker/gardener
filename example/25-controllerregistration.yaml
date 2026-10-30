@@ -1,0 +1,27 @@
+# ControllerRegistration object allows to register external controllers.
+# See https://github.com/gardener/enhancements/tree/main/geps/0001-gardener-extensibility.
+---
+apiVersion: core.gardener.cloud/v1beta1
+kind: ControllerRegistration
+metadata:
+  name: os-gardenlinux
+spec:
+  resources:
+  - kind: OperatingSystemConfig
+    type: gardenlinux
+  # primary: true|false
+  # autoEnable: # only valid if kind=Extension
+  # - shoot
+  # - seed
+  # clusterCompatibility: # only valid if kind=Extension
+  # - shoot
+  # - seed
+  # reconcileTimeout: 30s # only valid if kind=Extension
+  # workerlessSupported: true|false # only valid if kind=Extension
+  deployment:
+    deploymentRefs:
+    - name: os-gardenlinux # reference to ControllerDeployment
+  # policy: OnDemand|Always|AlwaysExceptNoShoots
+  # seedSelector:
+  #   matchLabels:
+  #     foo: bar

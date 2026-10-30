@@ -1,0 +1,373 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package opentelemetrycollector_test
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
+	. "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/opentelemetrycollector"
+	"github.com/gardener/gardener/pkg/utils"
+	"github.com/gardener/gardener/pkg/utils/imagevector"
+)
+
+var _ = Describe("OpenTelemetryCollector", func() {
+	Describe("#Config", func() {
+		var (
+			cABundle       = "exampleCABundle"
+			clusterDomain  = "exampleClusterDomain.com"
+			apiServerURL   = "https://api.example-cluster.com"
+			otelImageName  = "opentelemetry-collector"
+			otelRepository = "eu.gcr.io/gardener-project"
+			otelImageTag   = "v0.69.0"
+			otelImage      = &imagevector.Image{
+				Name:       otelImageName,
+				Repository: &otelRepository,
+				Tag:        &otelImageTag,
+			}
+			otelIngress = "ingress.otel.exampleClusterDomain"
+		)
+
+		It("should return the expected units and files when OpenTelemetry is enabled", func() {
+			ctx := components.Context{
+				CABundle:      cABundle,
+				ClusterDomain: clusterDomain,
+				Images: map[string]*imagevector.Image{
+					"opentelemetry-collector": otelImage,
+				},
+				OpenTelemetryCollectorLogShipperEnabled: true,
+				OpenTelemetryCollectorIngressHostName:   otelIngress,
+				APIServerURL:                            apiServerURL,
+			}
+
+			units, files, err := New().Config(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			unitContent := `[Unit]
+Description=opentelemetry-collector daemon
+Documentation=https://github.com/open-telemetry/opentelemetry-collector
+[Install]
+WantedBy=multi-user.target
+[Service]
+CPUAccounting=yes
+MemoryAccounting=yes
+CPUQuota=3%
+CPUQuotaPeriodSec=1000ms
+MemoryMin=29M
+MemoryHigh=400M
+MemoryMax=800M
+MemorySwapMax=0
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/environment
+Environment=KUBECONFIG=/var/lib/opentelemetry-collector/kubeconfig
+ExecStartPre=/bin/sh -c "systemctl set-environment HOSTNAME=$(hostname | tr [:upper:] [:lower:]) GOMEMLIMIT=1600MiB"
+ExecStartPre=/bin/sh -c "test -s /var/lib/opentelemetry-collector/auth-token"
+ExecStart=/opt/bin/opentelemetry-collector --config=` + PathConfig
+
+			otelDaemonUnit := extensionsv1alpha1.Unit{
+				Name:    UnitName,
+				Command: new(extensionsv1alpha1.CommandStart),
+				Enable:  new(true),
+				Content: new(unitContent),
+			}
+
+			otelConfigFile := extensionsv1alpha1.File{
+				Path:        "/var/lib/opentelemetry-collector/config/config",
+				Permissions: new(int32(0400)),
+				Content: extensionsv1alpha1.FileContent{
+					Inline: &extensionsv1alpha1.FileContentInline{
+						Encoding: "b64",
+						Data: utils.EncodeBase64([]byte(`# OpenTelemetry Collector configuration.
+#
+# https://opentelemetry.io/docs/collector/
+# https://opentelemetry.io/docs/collector/configuration/
+# https://opentelemetry.io/docs/collector/internal-telemetry/
+extensions:
+  file_storage:
+    directory: /var/log/otelcol
+    create_directory: true
+  bearertokenauth:
+    filename: /var/lib/opentelemetry-collector/auth-token
+  # TODO(rrhubenov): health check can be enabled when ` + "`sd_notify`" + ` integration is implemented: https://github.com/open-telemetry/opentelemetry-collector/issues/15128
+  # The 13133 port should be changed to something else in the future,
+  # since it's the default value and might conflict with other instances of
+  # otel collector from shoot owners.
+  # health_check:
+  #   endpoint: 0.0.0.0:13133
+  #   path: /healthz
+
+receivers:
+  journald/journal:
+    start_at: beginning
+    storage: file_storage
+    matches:
+      - SYSLOG_IDENTIFIER: kernel
+      - _SYSTEMD_UNIT: kubelet.service
+      - _SYSTEMD_UNIT: containerd.service
+      - _SYSTEMD_UNIT: gardener-node-agent.service
+    # A cleaner approach would be to use the 'identifier' field instead of the
+    # 'matches' field. However, the 'identifier' field uses the 'SYSLOG_IDENTIFIER'
+    # journal field, which does not include the '-service' suffix of systemd units.
+    # Due to backwards compatibility, we want to continue representing the 'unit'
+    # field with the full systemd unit name (including the '-service' suffix).
+    # Due to this, it is required we filter based on the '_SYSTEMD_UNIT' field.
+    # We can then rely on it to set the 'resource.unit' field correctly.
+    # TODO(rrhubenov): Reimplement this using the 'identifier' field once
+    # we move from 'Vali' to 'VictoriaLogs'. Revisit whether 
+    # - we still want to call the field 'unit'
+    # - we can remove the '-service' suffix
+    operators:
+      - type: move
+        if: 'body.SYSLOG_IDENTIFIER == "kernel"'
+        from: body.SYSLOG_IDENTIFIER
+        to:  body._SYSTEMD_UNIT
+      - type: move
+        from: body._SYSTEMD_UNIT
+        to: resource.unit
+      - type: move
+        from: body._HOSTNAME
+        to: resource.nodename
+      - type: move
+        from: body.MESSAGE
+        to: body
+
+  filelog/pods:
+    include: /var/log/pods/kube-system_*/*/*.log
+    storage: file_storage
+    include_file_path: true
+    operators:
+      - type: container
+        format: containerd
+        add_metadata_from_filepath: true
+
+processors:
+  batch:
+    send_batch_size: 2000
+    send_batch_max_size: 4000
+    timeout: 10s
+
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 2000
+
+  # Include resource attributes from the Kubernetes environment.
+  # The Shoot KAPI server is queried for pods in the kube-system namespace
+  # which are labeled with "resources.gardener.cloud/managed-by=gardener".
+  k8sattributes:
+    auth_type: "kubeConfig"
+    context: "shoot"
+    wait_for_metadata: true
+    wait_for_metadata_timeout: 30s
+    filter:
+        namespace: kube-system
+        labels:
+          - key: resources.gardener.cloud/managed-by
+            op: equals
+            value: gardener
+    pod_association:
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.name
+
+  # If the log came from a pod that is managed by Gardener, the 'k8sattributes' processor
+  # will successfully associate the datapoint (log) with the a pod. Since we only
+  # watch the kube-system namespace for pods that are managed by Gardener, we can
+  # simply drop all logs that do not have a specific label that we know should have been
+  # added by the 'k8sattributes' processor. In this case, we check for the
+  # existence of the 'k8s.node.name' attribute.
+  filter/drop_non_gardener:
+    error_mode: ignore
+    logs:
+      log_record:
+        - resource.attributes["k8s.node.name"] == nil
+
+  resource/journal:
+    attributes:
+      - action: insert
+        key: origin
+        value: systemd_journal
+
+  resource/pod_labels:
+    attributes:
+      - key: origin
+        value: "shoot_system"
+        action: insert
+      - key: namespace_name
+        value: "kube-system"
+        action: insert
+
+exporters:
+  otlp:
+    endpoint: ingress.otel.exampleClusterDomain:443
+    auth:
+      authenticator: bearertokenauth
+    tls:
+      ca_file: /var/lib/opentelemetry-collector/ca.crt
+
+service:
+  telemetry:
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 18888
+    logs:
+      level: INFO
+      encoding: json
+
+  extensions: [file_storage, bearertokenauth]
+  pipelines:
+    logs/journal:
+      receivers: [journald/journal]
+      processors: [memory_limiter, resource/journal, batch]
+      exporters: [otlp]
+    logs/pods:
+      receivers: [filelog/pods]
+      processors: [memory_limiter, k8sattributes, filter/drop_non_gardener, resource/pod_labels, batch]
+      exporters: [otlp]
+`)),
+					},
+				},
+			}
+
+			otelBinaryFile := extensionsv1alpha1.File{
+				Path:        "/opt/bin/opentelemetry-collector",
+				Permissions: new(int32(0700)),
+				Content: extensionsv1alpha1.FileContent{
+					ImageRef: &extensionsv1alpha1.FileContentImageRef{
+						Image:           ctx.Images["opentelemetry-collector"].String(),
+						FilePathInImage: "/bin/otelcol",
+					},
+				},
+			}
+
+			caBundleFile := extensionsv1alpha1.File{
+				Path:        "/var/lib/opentelemetry-collector/ca.crt",
+				Permissions: new(int32(0400)),
+				Content: extensionsv1alpha1.FileContent{
+					Inline: &extensionsv1alpha1.FileContentInline{
+						Encoding: "b64",
+						Data:     utils.EncodeBase64([]byte(cABundle)),
+					},
+				},
+			}
+			kubeconfig := extensionsv1alpha1.File{
+				Path:        "/var/lib/opentelemetry-collector/kubeconfig",
+				Permissions: new(int32(0600)),
+				Content: extensionsv1alpha1.FileContent{
+					Inline: &extensionsv1alpha1.FileContentInline{
+						Encoding: "",
+						Data: `apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority: /var/lib/opentelemetry-collector/ca.crt
+    server: https://api.example-cluster.com
+  name: shoot
+contexts:
+- context:
+    cluster: shoot
+    user: shoot
+  name: shoot
+current-context: shoot
+kind: Config
+users:
+- name: shoot
+  user:
+    tokenFile: /var/lib/opentelemetry-collector/auth-token
+`,
+					},
+				},
+			}
+
+			expectedFiles := []extensionsv1alpha1.File{otelConfigFile, caBundleFile, otelBinaryFile, kubeconfig}
+
+			otelDaemonUnit.FilePaths = []string{
+				"/var/lib/opentelemetry-collector/config/config",
+				"/var/lib/opentelemetry-collector/ca.crt",
+				"/opt/bin/opentelemetry-collector",
+				"/var/lib/opentelemetry-collector/kubeconfig",
+			}
+
+			otelHealthCheckUnit := extensionsv1alpha1.Unit{
+				Name:    UnitNameHealthCheck,
+				Command: new(extensionsv1alpha1.CommandStart),
+				Enable:  new(false),
+				Content: new(`[Unit]
+Description=Health check for opentelemetry-collector.service
+After=opentelemetry-collector.service
+Requisite=opentelemetry-collector.service
+[Service]
+Type=oneshot
+ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = "success" ] || systemctl restart opentelemetry-collector.service'
+# Note: We intentionally curl the /metrics endpoint rather than /healthz.
+# We know that /metrics reliably times out when there are issues such as file descriptor leaks.
+# If we can verify that /healthz behaves the same, we should switch to using it instead,
+# since health checks are typically expected to target /healthz rather than /metrics.
+ExecStart=/usr/bin/curl -fsS --max-time 15 http://127.0.0.1:18888/metrics -o /dev/null -w "opentelemetry-collector-healthcheck.service ended with HTTP %{response_code} in %{time_total}s\n"`),
+			}
+
+			otelTimerUnit := extensionsv1alpha1.Unit{
+				Name:    UnitNameHealthCheckTimer,
+				Command: new(extensionsv1alpha1.CommandStart),
+				Enable:  new(true),
+				Content: new(`[Unit]
+Description=Run opentelemetry-collector-healthcheck.service every 5 minutes to validate that opentelemetry-collector.service is working as expected
+[Install]
+WantedBy=timers.target
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Unit=opentelemetry-collector-healthcheck.service`),
+			}
+
+			expectedUnits := []extensionsv1alpha1.Unit{otelDaemonUnit, otelHealthCheckUnit, otelTimerUnit}
+
+			Expect(units).To(ConsistOf(expectedUnits))
+			Expect(files).To(ConsistOf(expectedFiles))
+		})
+
+		It("should return the expected units and files when OpenTelemetry is disabled", func() {
+			ctx := components.Context{
+				CABundle:      cABundle,
+				ClusterDomain: clusterDomain,
+				Images: map[string]*imagevector.Image{
+					"opentelemetry-collector": otelImage,
+				},
+				OpenTelemetryCollectorLogShipperEnabled: false,
+				OpenTelemetryCollectorIngressHostName:   otelIngress,
+			}
+
+			units, files, err := New().Config(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(units).To(BeEmpty())
+			Expect(files).To(BeEmpty())
+		})
+
+		It("should return error when OpenTelemetry ingress is not specified", func() {
+			ctx := components.Context{
+				CABundle:      cABundle,
+				ClusterDomain: clusterDomain,
+				Images: map[string]*imagevector.Image{
+					"opentelemetry-collector": otelImage,
+				},
+				OpenTelemetryCollectorLogShipperEnabled: true,
+				OpenTelemetryCollectorIngressHostName:   "",
+			}
+
+			units, files, err := New().Config(ctx)
+			Expect(err).To(MatchError(ContainSubstring("opentelemetry-collector ingress url is missing")))
+			Expect(units).To(BeNil())
+			Expect(files).To(BeNil())
+		})
+	})
+})

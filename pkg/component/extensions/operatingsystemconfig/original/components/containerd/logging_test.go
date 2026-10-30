@@ -1,0 +1,65 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package containerd_test
+
+import (
+	fluentbitv1alpha2 "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2"
+	fluentbitv1alpha2filter "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2/plugins/filter"
+	fluentbitv1alpha2input "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2/plugins/input"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	. "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/containerd"
+)
+
+var _ = Describe("Logging", func() {
+	Describe("#CentralLoggingConfiguration", func() {
+		It("should return the expected logging inputs and filters", func() {
+			loggingConfig, err := CentralLoggingConfiguration()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loggingConfig.Inputs).To(Equal(
+				[]*fluentbitv1alpha2.ClusterInput{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:   "systemd-containerd",
+							Labels: map[string]string{v1beta1constants.LabelKeyCustomLoggingResource: v1beta1constants.LabelValueCustomLoggingResource},
+						},
+						Spec: fluentbitv1alpha2.InputSpec{
+							Systemd: &fluentbitv1alpha2input.Systemd{
+								Tag:           "systemd.containerd",
+								ReadFromTail:  "on",
+								SystemdFilter: []string{"_SYSTEMD_UNIT=containerd.service"},
+								Path:          "/var/log/journal",
+							},
+						},
+					},
+				}))
+
+			Expect(loggingConfig.Filters).To(Equal(
+				[]*fluentbitv1alpha2.ClusterFilter{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:   "systemd-containerd",
+							Labels: map[string]string{v1beta1constants.LabelKeyCustomLoggingResource: v1beta1constants.LabelValueCustomLoggingResource},
+						},
+						Spec: fluentbitv1alpha2.FilterSpec{
+							Match: "systemd.containerd.*",
+							FilterItems: []fluentbitv1alpha2.FilterItem{
+								{
+									RecordModifier: &fluentbitv1alpha2filter.RecordModifier{
+										Records: []string{"hostname ${NODE_NAME}", "unit containerd"},
+									},
+								},
+							},
+						},
+					},
+				}))
+			Expect(loggingConfig.Parsers).To(BeNil())
+		})
+	})
+})

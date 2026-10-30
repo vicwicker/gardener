@@ -1,0 +1,334 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package credentialsbinding
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/utils"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+)
+
+const finalizerName = "gardener.cloud/credentialsbinding"
+
+// Reconciler reconciles CredentialsBinding.
+type Reconciler struct {
+	Client   client.Client
+	Config   controllermanagerconfigv1alpha1.CredentialsBindingControllerConfiguration
+	Recorder events.EventRecorder
+}
+
+// Reconcile reconciles CredentialsBinding.
+func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
+	log := logf.FromContext(ctx)
+
+	credentialsBinding := &securityv1alpha1.CredentialsBinding{}
+	if err := r.Client.Get(ctx, request.NamespacedName, credentialsBinding); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("Object is gone, stop reconciling")
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, fmt.Errorf("error retrieving object from store: %w", err)
+	}
+
+	// The deletionTimestamp labels a CredentialsBinding as intended to get deleted. Before deletion,
+	// it has to be ensured that no Shoots are depending on the CredentialsBinding anymore.
+	// When this happens the controller will remove the finalizers from the CredentialsBinding so that it can be garbage collected.
+	if credentialsBinding.DeletionTimestamp != nil {
+		return reconcile.Result{}, r.delete(ctx, credentialsBinding, log)
+	}
+
+	return reconcile.Result{}, r.reconcile(ctx, credentialsBinding, log)
+}
+
+func (r *Reconciler) reconcile(ctx context.Context, credentialsBinding *securityv1alpha1.CredentialsBinding, log logr.Logger) error {
+	if !controllerutil.ContainsFinalizer(credentialsBinding, gardencorev1beta1.GardenerName) {
+		log.Info("Adding finalizer")
+		if err := controllerutils.AddFinalizers(ctx, r.Client, credentialsBinding, gardencorev1beta1.GardenerName); err != nil {
+			return fmt.Errorf("could not add finalizer: %w", err)
+		}
+	}
+
+	// Add the Gardener finalizer to the referenced Secret/InternalSecret/WorkloadIdentity
+	// to protect it from deletion as long as the CredentialsBinding resource exists.
+	credential, err := kubernetesutils.GetCredentialsByObjectReference(ctx, r.Client, credentialsBinding.CredentialsRef)
+	if err != nil {
+		return err
+	}
+	gvk, err := apiutil.GVKForObject(credential, kubernetes.GardenScheme)
+	if err != nil {
+		return err
+	}
+	kind := gvk.Kind
+
+	if !controllerutil.ContainsFinalizer(credential, finalizerName) {
+		log.Info("Adding finalizer", "finalizer", finalizerName, kind, client.ObjectKeyFromObject(credential)) //nolint:logcheck
+		if err := controllerutils.AddFinalizers(ctx, r.Client, credential, finalizerName); err != nil {
+			return fmt.Errorf("could not add finalizer to %s: %w", kind, err)
+		}
+	}
+
+	// TODO(dimityrmirchev): Remove the ExternalGardenerName finalizer handling in a future release
+	if controllerutil.ContainsFinalizer(credential, gardencorev1beta1.ExternalGardenerName) {
+		log.Info("Removing finalizer", "finalizer", gardencorev1beta1.ExternalGardenerName, kind, client.ObjectKeyFromObject(credential)) //nolint:logcheck
+		if err := controllerutils.RemoveFinalizers(ctx, r.Client, credential, gardencorev1beta1.ExternalGardenerName); err != nil {
+			r.Recorder.Eventf(credential, nil, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, gardencorev1beta1.EventActionDelete, "failed to remove finalizer: %v", err)
+			return fmt.Errorf("could not remove finalizer from %s: %w", kind, err)
+		}
+	}
+
+	var (
+		providerTypeLabelKey = v1beta1constants.LabelShootProviderPrefix + credentialsBinding.Provider.Type
+
+		labels                           = credential.GetLabels()
+		_, hasProviderKeyLabel           = labels[providerTypeLabelKey]
+		_, hasCredentialsBindingRefLabel = labels[v1beta1constants.LabelCredentialsBindingReference]
+
+		secretNeedsLabel                  = !hasProviderKeyLabel && kind == "Secret"
+		internalSecretNeedsLabel          = !hasProviderKeyLabel && kind == "InternalSecret"
+		workloadIdentityNeedsLabelRemoval = hasProviderKeyLabel && kind == "WorkloadIdentity"
+	)
+
+	if secretNeedsLabel || internalSecretNeedsLabel || workloadIdentityNeedsLabelRemoval || !hasCredentialsBindingRefLabel {
+		patch := client.MergeFrom(credential.DeepCopyObject().(client.Object))
+		if secretNeedsLabel || internalSecretNeedsLabel {
+			credential.SetLabels(utils.MergeStringMaps(credential.GetLabels(), map[string]string{
+				providerTypeLabelKey: "true",
+			}))
+		} else if workloadIdentityNeedsLabelRemoval {
+			// TODO(dimityrmirchev): remove this handling in a future release
+			// workload identities do not need the provider shoot label
+			// they rely on the provider.extensions.gardener.cloud/<provider> label set by the extensionlabels admission plugin
+			labels := credential.GetLabels()
+			delete(labels, providerTypeLabelKey)
+			credential.SetLabels(labels)
+		}
+
+		if !hasCredentialsBindingRefLabel {
+			credential.SetLabels(utils.MergeStringMaps(credential.GetLabels(), map[string]string{
+				v1beta1constants.LabelCredentialsBindingReference: "true",
+			}))
+		}
+		if err := r.Client.Patch(ctx, credential, patch); err != nil {
+			return fmt.Errorf("failed to add provider type or/and referred labels to %s referenced in CredentialsBinding: %w", kind, err)
+		}
+	}
+
+	for _, objRef := range credentialsBinding.Quotas {
+		quota := &gardencorev1beta1.Quota{}
+		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: objRef.Namespace, Name: objRef.Name}, quota); err != nil {
+			return err
+		}
+
+		// Add 'referred by a credentials binding' label
+		if !metav1.HasLabel(quota.ObjectMeta, v1beta1constants.LabelCredentialsBindingReference) {
+			patch := client.MergeFrom(quota.DeepCopy())
+			metav1.SetMetaDataLabel(&quota.ObjectMeta, v1beta1constants.LabelCredentialsBindingReference, "true")
+			if err := r.Client.Patch(ctx, quota, patch); err != nil {
+				return fmt.Errorf("failed to add referred label to the quota referenced in CredentialsBinding, quota: %s , namespace: %s : %w", quota.Name, quota.Namespace, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (r *Reconciler) delete(ctx context.Context, credentialsBinding *securityv1alpha1.CredentialsBinding, log logr.Logger) error {
+	if !controllerutil.ContainsFinalizer(credentialsBinding, gardencorev1beta1.GardenerName) {
+		return nil
+	}
+
+	kind := credentialsBinding.CredentialsRef.Kind
+	credential, errCredentials := kubernetesutils.GetCredentialsByObjectReference(ctx, r.Client, credentialsBinding.CredentialsRef)
+	if errCredentials != nil && !apierrors.IsNotFound(errCredentials) {
+		return errCredentials
+	} else if errCredentials == nil {
+		// TODO(dimityrmirchev): remove this handling in a future release, the finalizer should be added by the reconcile function
+		// ensure the new finalizer is present on the referenced Secret/InternalSecret/WorkloadIdentity before removing the old finalizer
+		if !controllerutil.ContainsFinalizer(credential, finalizerName) && credential.GetDeletionTimestamp() == nil {
+			log.Info("Adding finalizer", "finalizer", finalizerName, kind, client.ObjectKeyFromObject(credential)) //nolint:logcheck
+			if err := controllerutils.AddFinalizers(ctx, r.Client, credential, finalizerName); err != nil {
+				return fmt.Errorf("could not add finalizer to %s: %w", kind, err)
+			}
+		}
+		if controllerutil.ContainsFinalizer(credential, gardencorev1beta1.ExternalGardenerName) {
+			log.Info("Removing finalizer", "finalizer", gardencorev1beta1.ExternalGardenerName, kind, client.ObjectKeyFromObject(credential)) //nolint:logcheck
+			if err := controllerutils.RemoveFinalizers(ctx, r.Client, credential, gardencorev1beta1.ExternalGardenerName); err != nil {
+				r.Recorder.Eventf(credential, nil, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, gardencorev1beta1.EventActionDelete, "failed to remove finalizer: %v", err)
+				return fmt.Errorf("failed to remove finalizer from %s: %w", kind, err)
+			}
+		}
+		// end TODO
+	}
+
+	associatedShoots, err := controllerutils.DetermineShootsAssociatedTo(ctx, r.Client, credentialsBinding)
+	if err != nil {
+		return err
+	}
+
+	if len(associatedShoots) != 0 {
+		message := fmt.Sprintf("Cannot delete CredentialsBinding, because the following Shoots are still referencing it: %+v", associatedShoots)
+		r.Recorder.Eventf(credentialsBinding, nil, corev1.EventTypeWarning, v1beta1constants.EventResourceReferenced, gardencorev1beta1.EventActionDelete, message)
+		return errors.New(message)
+	}
+
+	log.Info("No Shoots are referencing the CredentialsBinding, deletion accepted")
+	mayReleaseCredentials, err := r.mayReleaseCredentials(ctx, credentialsBinding)
+	if err != nil {
+		return err
+	}
+
+	if mayReleaseCredentials && errCredentials == nil {
+		// Remove shoot provider label and 'referred by a credentials binding' label
+		hasProviderLabel, providerLabel := getProviderLabel(credential.GetLabels())
+		_, hasCredentialsBindingRefLabel := credential.GetLabels()[v1beta1constants.LabelCredentialsBindingReference]
+		if hasProviderLabel || hasCredentialsBindingRefLabel {
+			patch := client.MergeFrom(credential.DeepCopyObject().(client.Object))
+
+			labels := credential.GetLabels()
+			delete(labels, v1beta1constants.LabelCredentialsBindingReference)
+
+			// We rely on the sync-provider-secret-labels.gardener.cloud webhook to re-add the provider label if needed
+			delete(labels, providerLabel)
+
+			credential.SetLabels(labels)
+			if err := r.Client.Patch(ctx, credential, patch); err != nil {
+				return fmt.Errorf("failed to remove referred label from %s: %w", kind, err)
+			}
+		}
+
+		// Remove finalizer from referenced credential resource
+		if controllerutil.ContainsFinalizer(credential, finalizerName) {
+			log.Info("Removing finalizer", "finalizer", finalizerName, kind, client.ObjectKeyFromObject(credential)) //nolint:logcheck
+			if err := controllerutils.RemoveFinalizers(ctx, r.Client, credential, finalizerName); err != nil {
+				r.Recorder.Eventf(credential, nil, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, gardencorev1beta1.EventActionDelete, "failed to remove finalizer: %v", err)
+				return fmt.Errorf("failed to remove finalizer from %s: %w", kind, err)
+			}
+		}
+	}
+
+	if err := r.removeLabelFromQuotas(ctx, credentialsBinding); err != nil {
+		return err
+	}
+
+	// Remove finalizer from CredentialsBinding
+	log.Info("Removing finalizer")
+	if err := controllerutils.RemoveFinalizers(ctx, r.Client, credentialsBinding, gardencorev1beta1.GardenerName); err != nil {
+		r.Recorder.Eventf(credentialsBinding, nil, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, gardencorev1beta1.EventActionDelete, "failed to remove finalizer: %v", err)
+		return fmt.Errorf("failed to remove finalizer: %w", err)
+	}
+
+	return nil
+}
+
+// We may only release a credential if there is no other credentials binding that references it (maybe in a different namespace).
+func (r *Reconciler) mayReleaseCredentials(ctx context.Context, binding *securityv1alpha1.CredentialsBinding) (bool, error) {
+	credentialsBindingList := &securityv1alpha1.CredentialsBindingList{}
+	if err := r.Client.List(ctx, credentialsBindingList); err != nil {
+		return false, err
+	}
+
+	for _, cb := range credentialsBindingList.Items {
+		// skip if it is one and the same credentials binding
+		if cb.Namespace == binding.Namespace && cb.Name == binding.Name {
+			continue
+		}
+
+		if cb.DeletionTimestamp != nil {
+			// credentials bindings that are already marked for deletion
+			// are not considered to be protecting the referenced credentials
+			continue
+		}
+
+		if cb.CredentialsRef.APIVersion == binding.CredentialsRef.APIVersion &&
+			cb.CredentialsRef.Kind == binding.CredentialsRef.Kind &&
+			cb.CredentialsRef.Namespace == binding.CredentialsRef.Namespace &&
+			cb.CredentialsRef.Name == binding.CredentialsRef.Name {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// Remove the label from the quota only if there is no other credentialsbindings that reference it (maybe in a different namespace).
+func (r *Reconciler) removeLabelFromQuotas(ctx context.Context, binding *securityv1alpha1.CredentialsBinding) error {
+	credentialsBindingList := &securityv1alpha1.CredentialsBindingList{}
+	if err := r.Client.List(ctx, credentialsBindingList); err != nil {
+		return err
+	}
+
+	for _, q := range binding.Quotas {
+		if quotaHasOtherRef(q, credentialsBindingList, binding.Namespace, binding.Name) {
+			continue
+		}
+
+		quota := &gardencorev1beta1.Quota{}
+		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: q.Namespace, Name: q.Name}, quota); err != nil {
+			return err
+		}
+
+		// Remove 'referred by a credentials binding' label
+		if metav1.HasLabel(quota.ObjectMeta, v1beta1constants.LabelCredentialsBindingReference) {
+			patch := client.MergeFromWithOptions(quota.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			delete(quota.Labels, v1beta1constants.LabelCredentialsBindingReference)
+			if err := r.Client.Patch(ctx, quota, patch); err != nil {
+				return fmt.Errorf("failed to remove referred label from Quota: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func quotaHasOtherRef(
+	quota corev1.ObjectReference,
+	credentialsBindingList *securityv1alpha1.CredentialsBindingList,
+	credentialsBindingNamespace,
+	credentialsBindingName string,
+) bool {
+	for _, cb := range credentialsBindingList.Items {
+		if cb.Namespace == credentialsBindingNamespace && cb.Name == credentialsBindingName {
+			continue
+		}
+		for _, q := range cb.Quotas {
+			if q.Name == quota.Name && q.Namespace == quota.Namespace {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func getProviderLabel(labels map[string]string) (bool, string) {
+	for label := range labels {
+		if strings.HasPrefix(label, v1beta1constants.LabelShootProviderPrefix) {
+			return true, label
+		}
+	}
+
+	return false, ""
+}

@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Contributors to the Gardener project
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -o errexit
+set -o pipefail
+
+GIND_COMPOSE_FILE="$(dirname "$0")/gind/docker-compose.yaml"
+
+COMMAND="${1:-up}"
+VALID_COMMANDS=("up" "down")
+
+SCENARIO="${SCENARIO:-default}"
+declare -A SCENARIO_LEVEL=(
+  [machines]=1 # Only start gind machine containers and installs gardenadm, but doesn't run it
+  [default]=2  # Like 'machines', but also runs `gardenadm init` and exports the kubeconfig for the self-hosted shoot
+  [join]=3     # Like 'default', but also runs `gardenadm join` on gind-machine-1 to join it as worker node
+  [connect]=4  # Like 'join', but also deploys Gardener into the self-hosted shoot and runs `gardenadm connect` to deploy gardenlet which registers the Shoot
+  [full]=5     # Like 'connect', but also registers the self-hosted shoot as a seed via a ManagedSeed
+)
+
+if [[ -z "${SCENARIO_LEVEL[$SCENARIO]+x}" ]]; then
+  echo "Error: Invalid scenario '${SCENARIO}'. Valid options are: ${!SCENARIO_LEVEL[*]}." >&2
+  exit 1
+fi
+
+level="${SCENARIO_LEVEL[$SCENARIO]}"
+
+case "$COMMAND" in
+  up)
+    "$(dirname "$0")/infra.sh" up
+
+    # Compute a checksum-based image tag so that `docker compose up` only rebuilds and recreates the machine containers
+    # when the Dockerfile or its build context actually changed.
+    GIND_BUILD_CONTEXT="$(dirname "$0")/../pkg/provider-local/machine-provider/node"
+    export GIND_MACHINE_IMAGE="gind-machine:$(find "$GIND_BUILD_CONTEXT" -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -c1-12)"
+    docker compose -f "$GIND_COMPOSE_FILE" up -d
+
+    make gardenadm-up SCENARIO=unmanaged-infra
+
+    for i in 0 1 2 3; do
+      service="machine-$i"
+      docker compose -f "$GIND_COMPOSE_FILE" exec "$service" bash -c 'mkdir -p /gardenadm/resources'
+      docker compose -f "$GIND_COMPOSE_FILE" cp "$(dirname "$0")/gardenadm/resources/generated/.skaffold-image"                    "$service:/gardenadm/.skaffold-image"
+      docker compose -f "$GIND_COMPOSE_FILE" cp "$(dirname "$0")/gardenadm/resources/generated/.imagevector-overwrite.yaml"        "$service:/gardenadm/imagevector-overwrite.yaml"
+      docker compose -f "$GIND_COMPOSE_FILE" cp "$(dirname "$0")/gardenadm/resources/generated/.imagevector-overwrite-charts.yaml" "$service:/gardenadm/imagevector-overwrite-charts.yaml"
+      docker compose -f "$GIND_COMPOSE_FILE" cp "$(dirname "$0")/gardenadm/resources/generated/unmanaged-infra/manifests.yaml"     "$service:/gardenadm/resources/manifests.yaml"
+
+      docker compose -f "$GIND_COMPOSE_FILE" cp "$(dirname "$0")/gind/install-gardenadm.sh" "$service:/install-gardenadm.sh"
+
+      # The gardenadm image is pulled over HTTPS from the local registry below, but the node-init script that installs
+      # the registry CA into the node's trust store only runs later during `gardenadm init`. Install the CA now so the
+      # bootstrap `ctr` pull can verify the registry certificate (mirrors the node-init logic).
+      docker compose -f "$GIND_COMPOSE_FILE" cp "$(dirname "$0")/infra/registry/tls/ca.crt" "$service:/usr/local/share/ca-certificates/gardener-local-registry-ca.crt"
+      docker compose -f "$GIND_COMPOSE_FILE" exec "$service" bash -c 'update-ca-certificates && systemctl restart containerd'
+
+      docker compose -f "$GIND_COMPOSE_FILE" exec "$service" bash -c '/install-gardenadm.sh $(cat /gardenadm/.skaffold-image)'
+    done
+
+    # Run `gardenadm init` and export the kubeconfig for the self-hosted shoot
+    if (( level >= 2 )); then
+      if [[ "${FAST:-}" == "true" ]]; then
+        GARDENADM_INIT_FLAGS="${GARDENADM_INIT_FLAGS:-} --use-bootstrap-etcd --use-host-network"
+      fi
+
+      # Skip `gardenadm init` if gardenlet is already running in the self-hosted shoot cluster (e.g., on a re-run of
+      # this script after a prior scenario reached level >= 4).Users can override this by passing `--force` via
+      # the `GARDENADM_INIT_FLAGS` env var.
+      skip_init=false
+      if [[ "${GARDENADM_INIT_FLAGS:-}" != *"--force"* ]] && \
+        docker compose -f "$GIND_COMPOSE_FILE" exec machine-0 bash -c 'kubectl --kubeconfig /etc/kubernetes/admin.conf -n kube-system get deployment gardenlet' &>/dev/null; then
+        echo "gardenlet is already running in the self-hosted shoot cluster - skipping 'gardenadm init' (pass '--force' via GARDENADM_INIT_FLAGS to override)"
+        skip_init=true
+      fi
+      if [[ "$skip_init" == "false" ]]; then
+        docker compose -f "$GIND_COMPOSE_FILE" exec machine-0 bash -c "gardenadm init -d /gardenadm/resources ${GARDENADM_INIT_FLAGS:-}"
+      fi
+
+      ./hack/usage/generate-kubeconfig.sh self-hosted-shoot > "$KUBECONFIG_SELFHOSTEDSHOOT_CLUSTER"
+      cp "$KUBECONFIG_SELFHOSTEDSHOOT_CLUSTER" "$(dirname "$0")/gardenconfig/components/credentials/secret-project-garden/kubeconfig/kubeconfig"
+      cp "$KUBECONFIG_SELFHOSTEDSHOOT_CLUSTER" "$(dirname "$0")/gardenconfig/components/credentials/secret-project-local/kubeconfig/kubeconfig"
+    fi
+
+    # Run `gardenadm join` on gind-machine-1 to join it as worker node
+    if (( level >= 3 )); then
+      join_command="$(docker compose -f "$GIND_COMPOSE_FILE" exec machine-0 bash -c 'gardenadm token create --print-join-command')"
+      docker compose -f "$GIND_COMPOSE_FILE" exec machine-1 bash -c "$join_command"
+    fi
+
+    # Deploy Gardener into the self-hosted shoot and run `gardenadm connect` to deploy gardenlet which registers the Shoot
+    if (( level >= 4 )); then
+      make gardenadm-up SCENARIO=connect # deploys gardener-operator, the 'Garden' resource, and waits for reconciliation
+      make gardenadm # builds gardenadm binary locally so that we can execute it against the virtual-garden-cluster
+      connect_command="$(KUBECONFIG=$KUBECONFIG_VIRTUAL_GARDEN_CLUSTER "$(dirname "$0")/../bin/gardenadm" token create --print-connect-command --shoot-namespace garden --shoot-name root)"
+      docker compose -f "$GIND_COMPOSE_FILE" exec machine-0 bash -c "$connect_command"
+    fi
+
+    # Register the self-hosted shoot as a seed via a ManagedSeed
+    if (( level >= 5 )); then
+      make seed-up KUBECONFIG="$KUBECONFIG_SELFHOSTEDSHOOT_CLUSTER"
+    fi
+    ;;
+
+  down)
+    if kubectl --kubeconfig "$KUBECONFIG_VIRTUAL_GARDEN_CLUSTER" -n garden get managedseed root &>/dev/null; then
+      make seed-down KUBECONFIG="$KUBECONFIG_SELFHOSTEDSHOOT_CLUSTER"
+    fi
+
+    make gardenadm-down SCENARIO=unmanaged-infra
+
+    docker compose -f "$GIND_COMPOSE_FILE" down --volumes
+
+    # Tear down the shared infra only once the 'gardener-local' kind cluster is gone, to allow the kind cluster and the
+    # Gardener control plane running on it to be reused across gind-up/gind-down cycles. If the kind cluster exists,
+    # `make kind-down` owns the infra teardown.
+    if kind get clusters 2>/dev/null | grep -q "^gardener-local$"; then
+      echo "Kind cluster 'gardener-local' still present; leaving shared infra intact. Run 'make kind-down' to remove it."
+    else
+      "$(dirname "$0")/infra.sh" down
+    fi
+    ;;
+
+  *)
+    echo "Error: Invalid command '${COMMAND}'. Valid options are: ${VALID_COMMANDS[*]}." >&2
+    exit 1
+   ;;
+esac

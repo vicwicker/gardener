@@ -1,0 +1,25 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package validation
+
+import (
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	"github.com/gardener/gardener/pkg/api/core/validation"
+	"github.com/gardener/gardener/plugin/pkg/shoot/dnsrewriting/apis/shootdnsrewriting"
+)
+
+// ValidateConfiguration validates the configuration.
+func ValidateConfiguration(config *shootdnsrewriting.Configuration) field.ErrorList {
+	var allErrs field.ErrorList
+
+	if config == nil {
+		return allErrs
+	}
+
+	allErrs = append(allErrs, validation.ValidateCoreDNSRewritingCommonSuffixes(config.CommonSuffixes, nil)...)
+
+	return allErrs
+}

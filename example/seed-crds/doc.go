@@ -1,0 +1,10 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//go:generate ../../hack/generate-crds.sh -p 10-crd- extensions.gardener.cloud resources.gardener.cloud monitoring.coreos.com_v1 monitoring.coreos.com_v1beta1 monitoring.coreos.com_v1alpha1 perses.dev_v1alpha2 machine.sapcloud.io operator.victoriametrics.com_v1 operator.victoriametrics.com_v1beta1 autoscaling.gardener.cloud
+//go:generate ../../hack/generate-crds.sh -p 10-crd- --allow-dangerous-types autoscaling.k8s.io fluentbit.fluent.io
+
+// Package seed_crds contains generated manifests for all CRDs that are present on a Seed cluster.
+// Useful for development purposes.
+package seed_crds

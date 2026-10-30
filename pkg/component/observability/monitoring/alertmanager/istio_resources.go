@@ -1,0 +1,122 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package alertmanager
+
+import (
+	"context"
+	"fmt"
+
+	istioapinetworkingv1beta1 "istio.io/api/networking/v1beta1"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	"github.com/gardener/gardener/pkg/component/networking/istiobasicauthserver"
+	"github.com/gardener/gardener/pkg/utils"
+	"github.com/gardener/gardener/pkg/utils/istio"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+)
+
+func (a *alertManager) istioResources(ctx context.Context) ([]client.Object, error) {
+	if a.values.ExternalExposure == nil {
+		return nil, nil
+	}
+
+	gatewayName := a.name()
+
+	if a.values.ExternalExposure.IsGardenCluster {
+		gatewayName = operatorv1alpha1.VirtualGardenNamePrefix + gatewayName
+	}
+
+	tlsSecretName := ptr.Deref(a.values.ExternalExposure.WildcardCertSecretName, "")
+	if tlsSecretName == "" && a.values.ExternalExposure.SecretsManager != nil {
+		ingressTLSSecret, err := a.values.ExternalExposure.SecretsManager.Generate(ctx, &secretsutils.CertificateSecretConfig{
+			Name:                        a.name() + "-tls",
+			CommonName:                  a.name(),
+			Organization:                []string{"gardener.cloud:monitoring:ingress"},
+			DNSNames:                    []string{a.values.ExternalExposure.Host},
+			CertType:                    secretsutils.ServerCert,
+			Validity:                    new(v1beta1constants.IngressTLSCertificateValidity),
+			SkipPublishingCACertificate: true,
+		}, secretsmanager.SignedByCA(a.values.ExternalExposure.SigningCA))
+		if err != nil {
+			return nil, err
+		}
+		tlsSecretName = ingressTLSSecret.Name
+	}
+
+	// Istio expects the secret in the istio ingress gateway namespace => copy certificate to istio namespace
+	tlsSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tlsSecretName,
+			Namespace: a.namespace,
+		},
+	}
+	if err := a.client.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret); err != nil {
+		return nil, fmt.Errorf("failed to get TLS secret %q: %w", tlsSecretName, err)
+	}
+
+	tlsSecretInIstioNamespace := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-%s-%s", a.namespace, a.name(), tlsSecretName),
+			Namespace: a.values.ExternalExposure.IstioIngressGatewayNamespace,
+			Labels:    a.getLabels(),
+		},
+		Data: tlsSecret.Data,
+	}
+
+	gateway := &istionetworkingv1beta1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: gatewayName, Namespace: a.namespace}}
+	if err := istio.GatewayWithTLSTermination(
+		gateway,
+		a.getLabels(),
+		a.values.ExternalExposure.IstioIngressGatewayLabels,
+		[]string{a.values.ExternalExposure.Host},
+		tlsSecretInIstioNamespace.Name,
+	)(); err != nil {
+		return nil, fmt.Errorf("failed to create gateway resource: %w", err)
+	}
+
+	destinationHost := kubernetesutils.FQDNForService(a.name(), a.namespace)
+	virtualService := &istionetworkingv1beta1.VirtualService{ObjectMeta: metav1.ObjectMeta{Name: gatewayName, Namespace: a.namespace}}
+	if err := istio.VirtualServiceForTLSTermination(
+		virtualService,
+		utils.MergeStringMaps(a.getLabels(), istiobasicauthserver.BasicAuthLabels(a.values.ExternalExposure.IsGardenCluster, a.values.ExternalExposure.AuthSecretName, a.values.ExternalExposure.AuthSecretManaged)),
+		[]string{a.values.ExternalExposure.IstioIngressGatewayNamespace},
+		[]string{a.values.ExternalExposure.Host},
+		gatewayName,
+		port,
+		destinationHost,
+		"",
+		"",
+	)(); err != nil {
+		return nil, fmt.Errorf("failed to create virtual service resource: %w", err)
+	}
+	virtualService.Spec.Http = append([]*istioapinetworkingv1beta1.HTTPRoute{{
+		Name: "reload-endpoint",
+		Match: []*istioapinetworkingv1beta1.HTTPMatchRequest{{
+			Uri: &istioapinetworkingv1beta1.StringMatch{
+				MatchType: &istioapinetworkingv1beta1.StringMatch_Prefix{
+					Prefix: "/-/reload",
+				},
+			},
+		}},
+		DirectResponse: &istioapinetworkingv1beta1.HTTPDirectResponse{
+			Status: 403,
+		},
+	}}, virtualService.Spec.Http...)
+
+	destinationRule := &istionetworkingv1beta1.DestinationRule{ObjectMeta: metav1.ObjectMeta{Name: gatewayName, Namespace: a.namespace}}
+	if err := istio.DestinationRuleWithLocalityPreference(destinationRule, a.getLabels(), []string{a.values.ExternalExposure.IstioIngressGatewayNamespace}, destinationHost)(); err != nil {
+		return nil, fmt.Errorf("failed to create destination rule resource: %w", err)
+	}
+
+	return []client.Object{tlsSecretInIstioNamespace, gateway, virtualService, destinationRule}, nil
+}

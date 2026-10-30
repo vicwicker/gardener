@@ -1,0 +1,98 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package namespaces
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+)
+
+const managedResourceName = "shoot-core-namespaces"
+
+// New creates a new instance of DeployWaiter for the namespaces.
+func New(
+	client client.Client,
+	namespace string,
+	workerPools []gardencorev1beta1.Worker,
+) component.DeployWaiter {
+	return &namespaces{
+		client:      client,
+		namespace:   namespace,
+		workerPools: workerPools,
+	}
+}
+
+type namespaces struct {
+	client      client.Client
+	namespace   string
+	workerPools []gardencorev1beta1.Worker
+}
+
+func (n *namespaces) Deploy(ctx context.Context) error {
+	data, err := n.computeResourcesData()
+	if err != nil {
+		return err
+	}
+
+	return managedresources.CreateForShoot(ctx, n.client, n.namespace, managedResourceName, managedresources.LabelValueGardener, true, data)
+}
+
+func (n *namespaces) Destroy(ctx context.Context) error {
+	return managedresources.DeleteForShoot(ctx, n.client, n.namespace, managedResourceName)
+}
+
+// TimeoutWaitForManagedResource is the timeout used while waiting for the ManagedResources to become healthy
+// or deleted.
+var TimeoutWaitForManagedResource = 2 * time.Minute
+
+func (n *namespaces) Wait(ctx context.Context) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, TimeoutWaitForManagedResource)
+	defer cancel()
+
+	return managedresources.WaitUntilHealthy(timeoutCtx, n.client, n.namespace, managedResourceName)
+}
+
+func (n *namespaces) WaitCleanup(ctx context.Context) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, TimeoutWaitForManagedResource)
+	defer cancel()
+
+	return managedresources.WaitUntilDeleted(timeoutCtx, n.client, n.namespace, managedResourceName)
+}
+
+func (n *namespaces) computeResourcesData() (map[string][]byte, error) {
+	var (
+		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
+
+		// For self-hosted shoots, the kube-system namespace is managed by Botanist.DeployControlPlaneNamespace instead of
+		// this component.
+		kubeSystemNamespace = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: metav1.NamespaceSystem,
+				Labels: map[string]string{
+					v1beta1constants.GardenerPurpose:                 metav1.NamespaceSystem,
+					resourcesv1alpha1.HighAvailabilityConfigConsider: "true",
+				},
+				Annotations: map[string]string{
+					resourcesv1alpha1.HighAvailabilityConfigZones: strings.Join(v1beta1helper.ZonesWithSystemComponents(n.workerPools), ","),
+				},
+			},
+		}
+	)
+
+	return registry.AddAllAndSerialize(kubeSystemNamespace)
+}

@@ -1,0 +1,47 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package updaterestriction
+
+import (
+	"context"
+	"fmt"
+
+	admissionv1 "k8s.io/api/admission/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+)
+
+// Handler handles resources that should not be modified from users other than the gardenlet.
+type Handler struct{}
+
+// Handle checks if the request is issued by a gardenlet and rejects the request if that is not the case.
+func (h *Handler) Handle(_ context.Context, req admission.Request) admission.Response {
+	// Allow the garbage-collector-controller to delete resources. This is required as KCM is used to GC resources that
+	// might be considered stale as their owner object is already gone.
+	if req.UserInfo.Username == "system:serviceaccount:kube-system:generic-garbage-collector" && req.Operation == admissionv1.Delete {
+		return admission.Allowed("generic-garbage-collector is allowed to delete system resources")
+	}
+
+	// Allow the gardener-internal service account to update resources. This service account is used by the
+	// gardener-operator to label all encrypted resources with the name of the current ETCD encryption key secret.
+	// TODO (shafeeqes): Remove this when we no longer support a kubernetes version in which the StorageVersionMigrator feature gate is not locked to true.
+	if req.UserInfo.Username == "system:serviceaccount:kube-system:gardener-internal" && req.Operation == admissionv1.Update {
+		return admission.Allowed("system:serviceaccount:kube-system:gardener-internal is allowed to update system resources")
+	}
+
+	// Allow the storage-version-migrator-controller service account to update resources. This service account rewrites
+	// encrypted resources during a StorageVersionMigration so they get re-encrypted with the current ETCD encryption key.
+	if req.UserInfo.Username == "system:serviceaccount:kube-system:storage-version-migrator-controller" && req.Operation == admissionv1.Update {
+		return admission.Allowed("system:serviceaccount:kube-system:storage-version-migrator-controller is allowed to update system resources")
+	}
+
+	if sets.New(req.UserInfo.Groups...).HasAny(v1beta1constants.SeedsGroup, v1beta1constants.ShootsGroup) {
+		return admission.Allowed("gardenlet is allowed to modify system resources")
+	}
+
+	return admission.Denied(fmt.Sprintf("user %q is not allowed to %s system %s", req.UserInfo.Username, req.Operation, req.Resource.Resource))
+}

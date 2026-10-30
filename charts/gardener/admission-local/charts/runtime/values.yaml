@@ -1,0 +1,35 @@
+gardener:
+  runtimeCluster:
+    priorityClassName: gardener-garden-system-400
+  virtualCluster: {}
+
+image: local-skaffold/gardener-extension-admission-local:latest
+imagePullPolicy: IfNotPresent
+replicaCount: 1
+resources: {}
+healthPort: 8081
+vpa:
+  enabled: true
+  resourcePolicy:
+    minAllowed:
+      memory: 64Mi
+  updatePolicy:
+    updateMode: "InPlaceOrRecreate"
+webhookConfig:
+  mode: url
+  serverPort: 10250
+  servicePort: 443
+service:
+  topologyAwareRouting:
+    enabled: false
+livenessProbe:
+  enable: true
+readinessProbe:
+  enable: true
+leaderElection:
+  enable: true
+highAvailability:
+  enable: true
+
+logLevel: info
+logFormat: json

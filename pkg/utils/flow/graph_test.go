@@ -1,0 +1,39 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package flow_test
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/gardener/gardener/pkg/utils/flow"
+)
+
+var _ = Describe("Graph", func() {
+	Describe("#Add", func() {
+		It("should fail due to a duplicate task id", func() {
+			graph := flow.NewGraph("foo")
+
+			graph.Add(flow.Task{Name: "x"})
+			Expect(func() { graph.Add(flow.Task{Name: "x"}) }).To(Panic())
+		})
+
+		It("should fail due to missing dependencies", func() {
+			graph := flow.NewGraph("foo")
+
+			Expect(func() {
+				graph.Add(flow.Task{Name: "x", Dependencies: flow.NewTaskIDs(flow.TaskID("y"))})
+			}).To(Panic())
+		})
+	})
+
+	Describe("Task", func() {
+		Describe("#ID", func() {
+			It("should return the task ID derived from the name", func() {
+				Expect((&flow.Task{Name: "foo"}).ID()).To(Equal(flow.TaskID("foo")))
+			})
+		})
+	})
+})

@@ -1,0 +1,569 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Contributors to the Gardener project
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -o errexit
+set -o pipefail
+
+COMMAND="${1:-up}"
+VALID_COMMANDS=("up" "down" "setup-loopback-devices" "cleanup-registry-ca")
+
+INFRA_COMPOSE_FILE="$(dirname "$0")/infra/docker-compose.yaml"
+DIR_BACKUP_BUCKET="$(dirname "$0")/../dev/local-backupbuckets"
+DIR_REGISTRY="$(dirname "$0")/../dev/local-registry"
+DIR_REGISTRY_TLS="$(dirname "$0")/infra/registry/tls"
+REGISTRY_HOST="registry.local.gardener.cloud"
+
+SUDO=""
+if [[ "$(id -u)" != "0" ]]; then
+  SUDO="sudo "
+fi
+
+cleanup_registry_ca() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "> Removing registry CA from macOS login keychain..."
+    local keychain="$HOME/Library/Keychains/login.keychain-db"
+    local certificates_file certificate_details fingerprints fingerprint
+
+    # Remove the current CA's trust entry, even if its certificate is missing from the keychain.
+    if [[ -f "$DIR_REGISTRY_TLS/ca.crt" ]]; then
+      security remove-trusted-cert -d "$DIR_REGISTRY_TLS/ca.crt" 2>/dev/null || true
+    fi
+
+    # Export all matching certificates and remove their trust entries.
+    certificates_file="$(mktemp)"
+    security find-certificate -a -c "Gardener Local Registry CA" -p "$keychain" > "$certificates_file" 2>/dev/null || true
+    security remove-trusted-cert -d "$certificates_file" 2>/dev/null || true
+    rm -f "$certificates_file"
+
+    # List the stored certificates. Each "SHA-1 hash: <fingerprint>" line identifies one certificate.
+    certificate_details="$(security find-certificate -a -c "Gardener Local Registry CA" -Z "$keychain" 2>/dev/null || true)"
+    fingerprints="$(awk '/SHA-1 hash:/ {print $3}' <<< "$certificate_details")"
+
+    # Read one fingerprint per line and delete that certificate from the keychain.
+    while read -r fingerprint; do
+      if [[ -z "$fingerprint" ]]; then
+        continue
+      fi
+      security delete-certificate -Z "$fingerprint" "$keychain" 2>/dev/null || true
+    done <<< "$fingerprints"
+
+  elif [[ "$(uname -s)" == "Linux" ]]; then
+    if command -v update-ca-certificates >/dev/null 2>&1; then
+      echo "> Removing registry CA from /usr/local/share/ca-certificates/..."
+      ${SUDO}rm -f /usr/local/share/ca-certificates/gardener-local-registry-ca.crt
+      ${SUDO}update-ca-certificates --fresh >/dev/null 2>&1 || true
+    elif command -v update-ca-trust >/dev/null 2>&1; then
+      echo "> Removing registry CA from /etc/pki/ca-trust/source/anchors/..."
+      ${SUDO}rm -f /etc/pki/ca-trust/source/anchors/gardener-local-registry-ca.pem
+      ${SUDO}update-ca-trust extract >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+case "$COMMAND" in
+  up)
+    check_shell_dependencies() {
+      errors=()
+
+      if ! sed --version >/dev/null 2>&1; then
+        errors+=("Current sed version does not support --version flag. Please ensure GNU sed is installed.")
+      fi
+
+      if tar --version 2>&1 | grep -q "bsdtar"; then
+        errors+=("BSD tar detected. Please ensure GNU tar is installed.")
+      fi
+
+      if grep --version 2>&1 | grep -q "BSD grep"; then
+        errors+=("BSD grep detected. Please ensure GNU grep is installed.")
+      fi
+
+      if [[ "$OSTYPE" == "darwin"* ]]; then
+        if ! date --version >/dev/null 2>&1; then
+          errors+=("Current date version does not support --version flag. Please ensure coreutils are installed.")
+        fi
+
+        if gzip --version 2>&1 | grep -q "Apple"; then
+          errors+=("Apple built-in gzip utility detected. Please ensure GNU gzip is installed.")
+        fi
+      fi
+
+      if [ "${#errors[@]}" -gt 0 ]; then
+        printf 'Error: Required shell dependencies not met. Please refer to https://github.com/gardener/gardener/blob/master/docs/development/local_setup.md#macos-only-install-gnu-core-utilities:\n'
+        printf '    - %s\n' "${errors[@]}"
+        exit 1
+      fi
+    }
+
+    # The local registry needs to be available from the host for pushing and from the containers for pulling.
+    # On the host, we bind the registry to localhost (see infra/docker-compose.yaml), because 127.0.0.1 and ::1
+    # are configured as HTTP-only (insecure-registries) by default in Docker, which allows `docker push` without
+    # changing the Docker daemon config.
+    # From within the containers (e.g., the kind nodes), the registry domain is resolved via Docker's built-in
+    # DNS server to the IP of the registry container because of the host alias configured in docker compose.
+    #
+    # We could also bind the registry to an 172.18.255.* address similar to bind9 to make the registry reachable
+    # from the host and containers via the same IP. This would be cleaner, because we wouldn't need to add entries
+    # to /etc/hosts for the registry domain and would resolve the domain from the host via bind9 just as all other
+    # domains.
+    # However, this would require changing the Docker daemon config to set registry.local.gardener.cloud as an
+    # insecure registry to allow pushing to it from the host. The insecureRegistries settings in the skaffold config
+    # doesn't apply here, because skaffold uses the Docker daemon/CLI under the hood for pushing images, which only
+    # considers the Docker daemon's registry configuration.
+    # The local registry serves its API over HTTPS using a self-signed CA (generated once and reused across restarts).
+    # The Go-based tools that push to it (skaffold, helm) verify the server certificate, so the CA is installed into
+    # the OS trust store below (macOS login keychain / Linux system trust store).
+    ensure_local_registry_tls() {
+      local ca_crt="$DIR_REGISTRY_TLS/ca.crt"
+      local ca_key="$DIR_REGISTRY_TLS/ca.key"
+      local tls_crt="$DIR_REGISTRY_TLS/registry.crt"
+      local tls_key="$DIR_REGISTRY_TLS/registry.key"
+
+      mkdir -p "$DIR_REGISTRY_TLS"
+
+      # Older versions used serial 1 for every CA. Keychain identifies certificates by issuer and serial,
+      # so different worktrees' CAs collided. Migrate these certificates to unique serials once.
+      if [[ -f "$ca_crt" ]] && [[ "$(openssl x509 -in "$ca_crt" -noout -serial 2>/dev/null)" == "serial=01" ]]; then
+        echo "> Registry CA uses a legacy non-unique serial number, regenerating..."
+        cleanup_registry_ca
+        rm -f "$ca_crt" "$ca_key" "$tls_crt" "$tls_key"
+      fi
+
+      # Also regenerate if any certificate is expired or expires within 30 days (certs are valid for 180 days).
+      for cert_file in "$ca_crt" "$tls_crt"; do
+        if [[ -f "$cert_file" ]] && ! openssl x509 -in "$cert_file" -noout -checkend 2592000 2>/dev/null; then
+          echo "> Registry certificate $cert_file is expired or expiring soon, regenerating..."
+          # Remove the old CA from the system trust store so the new one can be re-added below.
+          cleanup_registry_ca
+          rm -f "$ca_crt" "$ca_key" "$tls_crt" "$tls_key"
+          break
+        fi
+      done
+
+      if [[ ! -f "$ca_crt" || ! -f "$tls_crt" || ! -f "$tls_key" ]]; then
+        echo "> Generating self-signed CA and server certificate for $REGISTRY_HOST..."
+        local cnf
+        cnf="$(mktemp)"
+        cat > "$cnf" <<EOF
+[req]
+distinguished_name = dn
+[dn]
+[v3_ca]
+basicConstraints = critical,CA:TRUE
+subjectKeyIdentifier = hash
+keyUsage = critical,keyCertSign,cRLSign
+nameConstraints = critical,permitted;DNS:$REGISTRY_HOST,permitted;DNS:localhost,permitted;IP:127.0.0.1/255.255.255.255,permitted;IP:::1/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+[v3_server]
+basicConstraints = CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = $REGISTRY_HOST
+DNS.2 = localhost
+IP.1 = 127.0.0.1
+IP.2 = ::1
+EOF
+
+        openssl req -x509 -newkey rsa:4096 -sha256 -days 180 -nodes \
+          -set_serial "0x$(openssl rand -hex 16)" \
+          -keyout "$ca_key" -out "$ca_crt" \
+          -subj "/CN=Gardener Local Registry CA" \
+          -config "$cnf" -extensions v3_ca 2>/dev/null
+
+        local csr
+        csr="$(mktemp)"
+        openssl req -newkey rsa:4096 -sha256 -nodes \
+          -keyout "$tls_key" -out "$csr" \
+          -subj "/CN=$REGISTRY_HOST" -config "$cnf" 2>/dev/null
+        openssl x509 -req -in "$csr" -CA "$ca_crt" -CAkey "$ca_key" \
+          -set_serial 1 \
+          -out "$tls_crt" -days 180 -sha256 \
+          -extfile "$cnf" -extensions v3_server 2>/dev/null
+
+        rm -f "$cnf" "$csr"
+
+        # Restart the registry container if it is already running so it picks up the new cert immediately.
+        docker compose -f "$(dirname "$0")/infra/docker-compose.yaml" restart registry 2>/dev/null || true
+      else
+        echo "> Reusing existing registry TLS certificates in $DIR_REGISTRY_TLS."
+      fi
+
+      # On macOS, add the CA to the current user's login keychain so that Go tools (e.g. skaffold) trust the registry.
+      # This uses the login keychain (no sudo, current user only). The CA is constrained by nameConstraints to only
+      # sign for registry.local.gardener.cloud and localhost, so trusting it here carries negligible risk.
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        # Check that the CA is both trusted and stored for chain building. Verifying the CA file alone can
+        # succeed when only its trust settings were installed but its keychain import collided.
+        # Checking on every run retries the trust prompt if approval was dismissed previously.
+        if ! security verify-cert -c "$tls_crt" -p ssl -q >/dev/null 2>&1; then
+          echo "> Adding registry CA to macOS login keychain (current user only); you may be prompted for your login password... (run 'make cleanup-local-registry-ca' to undo)"
+          security add-trusted-cert -d -r trustRoot \
+            -k ~/Library/Keychains/login.keychain-db "$ca_crt"
+          if ! security verify-cert -c "$tls_crt" -p ssl -q >/dev/null 2>&1; then
+            echo "> ERROR: Failed to establish registry CA trust. Run 'make kind-up' again and approve the keychain trust prompt." >&2
+            return 1
+          fi
+        fi
+      # On Linux, install the CA into the system trust store so that Go tools (e.g. skaffold, kubectl) trust the
+      # registry. The CA is constrained by nameConstraints to only sign for registry.local.gardener.cloud and
+      # localhost, so trusting it system-wide carries negligible risk.
+      elif [[ "$(uname -s)" == "Linux" ]]; then
+        if [[ -n "$SUDO" ]]; then
+          echo "> Installing the registry CA into the system trust store may prompt for your sudo password... (run 'make cleanup-local-registry-ca' to undo)"
+        fi
+        if command -v update-ca-certificates >/dev/null 2>&1; then
+          # Debian/Ubuntu
+          local trust_anchor="/usr/local/share/ca-certificates/gardener-local-registry-ca.crt"
+          if ! cmp -s "$ca_crt" "$trust_anchor" 2>/dev/null; then
+            echo "> Installing registry CA into $trust_anchor..."
+            ${SUDO}cp "$ca_crt" "$trust_anchor"
+            ${SUDO}update-ca-certificates >/dev/null
+          fi
+        elif command -v update-ca-trust >/dev/null 2>&1; then
+          # RHEL/Fedora
+          local trust_anchor="/etc/pki/ca-trust/source/anchors/gardener-local-registry-ca.pem"
+          if ! cmp -s "$ca_crt" "$trust_anchor" 2>/dev/null; then
+            echo "> Installing registry CA into $trust_anchor..."
+            ${SUDO}cp "$ca_crt" "$trust_anchor"
+            ${SUDO}update-ca-trust extract >/dev/null
+          fi
+        else
+          echo "> WARNING: no supported CA trust tool (update-ca-certificates/update-ca-trust) found; skaffold may not trust the registry."
+        fi
+      fi
+    }
+
+    # Write the gardener-local-registry-ca Secret (referenced via caBundleSecretRef by the gardenlet and
+    # provider-local extension) from the current CA.
+    write_registry_ca_secrets() {
+      local ca_crt="$DIR_REGISTRY_TLS/ca.crt"
+      [[ -f "$ca_crt" ]] || return 0
+
+      local dest
+      for dest in \
+        "$(dirname "$0")/gardenlet/base/secret-registry-ca.yaml" \
+        "$(dirname "$0")/extensions/provider-local/components/extension/secret-registry-ca.yaml"; do
+        cat > "$dest" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gardener-local-registry-ca
+  namespace: garden
+  labels:
+    gardener.cloud/role: oci-ca-bundle
+type: Opaque
+stringData:
+  bundle.crt: |
+$(sed 's/^/    /' "$ca_crt")
+EOF
+      done
+    }
+
+    ensure_local_registry_hosts() {
+      local host="registry.local.gardener.cloud"
+
+      for ip in 127.0.0.1 ::1 ; do
+        if ! grep -Eq "^$ip $host$" /etc/hosts; then
+          echo "> Adding entry '$ip $host' to /etc/hosts..."
+          echo "$ip $host" | ${SUDO}tee -a /etc/hosts
+        else
+          echo "> /etc/hosts already contains entry '$ip $host', skipping..."
+        fi
+      done
+    }
+
+    setup_local_dns_resolver() {
+      local dns_ip=172.18.255.53
+      local dns_ipv6=fd00:ff::53
+
+      # Special handling in CI: we don't have a fully-fledged systemd-resolved or similar in the CI environment, so we set
+      # up dnsmasq as a local DNS resolver with conditional forwarding for the local.gardener.cloud domain to the local
+      # setup's DNS server (bind9).
+      # Setting bind9 as the nameserver in /etc/resolv.conf directly does not work, as bind9 itself forwards to the host's
+      # nameservers configured in resolv.conf, creating a cyclic dependency. With dnsmasq however, we can configure it to
+      # forward requests only for the local.gardener.cloud domain to the local setup's DNS server, and forward all other
+      # requests to the default nameservers (the Prow cluster's coredns), which works fine.
+      if [ -n "${CI:-}" -a -n "${ARTIFACTS:-}" ]; then
+        mkdir -p /etc/dnsmasq.d/
+        cp /etc/resolv.conf /etc/resolv-default.conf
+        tee /etc/dnsmasq.d/gardener-local.conf <<EOF
+# Force dnsmasq to listen ONLY on standard localhost and prevent it from scanning other interfaces/IPs.
+# Without this, it ignores the server directive for local.gardener.cloud because the IP is bound to the loopback
+# interface and assumes doing so would create an infinite loop.
+listen-address=127.0.0.1
+bind-interfaces
+
+# Configure conditional forwarding for local.gardener.cloud but use the resolv.conf from Kubernetes (coredns) as
+# upstream for all other requests, which is required for resolving the registry cache services in the Prow cluster.
+server=/local.gardener.cloud/$dns_ip
+resolv-file=/etc/resolv-default.conf
+
+# Export dnsmasq logs to a file for debugging purposes
+log-facility=/var/log/dnsmasq.log
+log-queries
+EOF
+
+        service dnsmasq start || service dnsmasq restart
+
+        echo "> Setting dnsmasq as nameserver in /etc/resolv.conf..."
+        # /etc/resolv.conf is shared between all containers in the pod, i.e., it will also be used by the injected sidecar
+        # containers (e.g., for uploading artifacts to GCS). Hence, we keep the previous nameservers as fallback if dnsmasq
+        # is not working, but set dnsmasq as the first entry to ensure it is used as primary resolver for the test job.
+        # We cannot use sed -i on the /etc/resolv.conf bind mount that Kubernetes adds, so we need to write to a temp file
+        # and then overwrite the resolv.conf with the combined content.
+        echo "nameserver 127.0.0.1" > /tmp/resolv.conf
+        cat /etc/resolv.conf >> /tmp/resolv.conf
+        cat /tmp/resolv.conf > /etc/resolv.conf
+        rm /tmp/resolv.conf
+
+        echo "> Content of /etc/resolv.conf after setting dnsmasq as nameserver"
+        cat /etc/resolv.conf
+
+        return 0
+      fi
+
+      if [[ "$OSTYPE" == "darwin"* ]]; then
+        if ! grep -q "$dns_ip" /etc/resolver/local.gardener.cloud || ! grep -q "$dns_ipv6" /etc/resolver/local.gardener.cloud ; then
+          echo "Configuring macOS to resolve the local.gardener.cloud zone using the local setup's DNS server"
+          ${SUDO}mkdir -p /etc/resolver
+          cat <<EOF | ${SUDO}tee /etc/resolver/local.gardener.cloud
+nameserver $dns_ip
+nameserver $dns_ipv6
+EOF
+        fi
+      elif [[ "$OSTYPE" == "linux"* && -f /etc/systemd/resolved.conf ]]; then
+        if [[ ! -d /etc/systemd/resolved.conf.d ]]; then
+          ${SUDO}mkdir -p /etc/systemd/resolved.conf.d
+        fi
+        if ! grep -q "$dns_ip" /etc/systemd/resolved.conf.d/gardener-local.conf || ! grep -q "$dns_ipv6" /etc/systemd/resolved.conf.d/gardener-local.conf ; then
+          echo "Configuring systemd-resolved to resolve the local.gardener.cloud zone using the local setup's DNS server"
+          cat <<EOF | ${SUDO}tee /etc/systemd/resolved.conf.d/gardener-local.conf
+[Resolve]
+DNS=$dns_ip $dns_ipv6
+Domains=~local.gardener.cloud
+EOF
+          echo "restarting systemd-resolved"
+          ${SUDO}systemctl restart systemd-resolved
+        fi
+      elif ! nslookup -type=ns local.gardener.cloud >/dev/null 2>/dev/null ; then
+        echo "Warning: Unknown OS. Make sure your host resolves the local.gardener.cloud zone using the local setup's DNS server at $dns_ip or $dns_ipv6 respectively."
+        return 0
+      fi
+    }
+
+    # setup_kind_network is similar to kind's network creation logic, ref https://github.com/kubernetes-sigs/kind/blob/23d2ac0e9c41028fa252dd1340411d70d46e2fd4/pkg/cluster/internal/providers/docker/network.go#L50
+    # In addition to kind's logic, we ensure stable CIDRs that we can rely on in our local setup manifests and code.
+    setup_kind_network() {
+      # check if network already exists
+      local existing_network_id
+      existing_network_id="$(docker network list --filter=name=^kind$ --format='{{.ID}}')"
+
+      if [ -n "$existing_network_id" ] ; then
+        # ensure the network is configured correctly
+        local network network_options network_ipam expected_network_ipam
+        network="$(docker network inspect $existing_network_id | yq '.[]')"
+        network_options="$(echo "$network" | yq '.EnableIPv6 + "," + .Options["com.docker.network.bridge.enable_ip_masquerade"]')"
+        network_ipam="$(echo "$network" | yq '.IPAM.Config' -o=json -I=0 | sed -E 's/"IPRange":"",//g')"
+        expected_network_ipam='[{"Subnet":"172.18.0.0/24","Gateway":"172.18.0.1"},{"Subnet":"fd00:10::/64","Gateway":"fd00:10::1"}]'
+
+        if [ "$network_options" = 'true,true' ] && [ "$network_ipam" = "$expected_network_ipam" ] ; then
+          # kind network is already configured correctly, nothing to do
+          return 0
+        else
+          echo "kind network is not configured correctly for local gardener setup, recreating network with correct configuration..."
+          docker network rm $existing_network_id
+        fi
+      fi
+
+      # (re-)create kind network with expected settings
+      docker network create kind --driver=bridge \
+        --subnet 172.18.0.0/24 --gateway 172.18.0.1 \
+        --ipv6 --subnet fd00:10::/64 --gateway fd00:10::1 \
+        --opt com.docker.network.bridge.enable_ip_masquerade=true
+    }
+
+    change_registry_upstream_urls_to_prow_caches() {
+      if [[ "${CI:-false}" != "true" ]]; then
+        return
+      fi
+
+      local mutated_compose_file="${INFRA_COMPOSE_FILE%.yaml}-prow.yaml"
+      cp "$INFRA_COMPOSE_FILE" "$mutated_compose_file"
+      INFRA_COMPOSE_FILE="$mutated_compose_file"
+
+      declare -A prow_registry_cache_urls=(
+        [gcr]="http://registry-gcr-io.kube-system.svc.cluster.local:5001"
+        [k8s]="http://registry-registry-k8s-io.kube-system.svc.cluster.local:5001"
+        [quay]="http://registry-quay-io.kube-system.svc.cluster.local:5001"
+        [europe-docker-pkg-dev]="http://registry-europe-docker-pkg-dev.kube-system.svc.cluster.local:5001"
+      )
+
+      echo "Running in CI. Checking availability of registry-cache instances in prow cluster"
+
+      for key in "${!prow_registry_cache_urls[@]}"; do
+        registry_cache_url="${prow_registry_cache_urls[$key]}"
+
+        # Extract DNS from URL (remove http:// and :5001)
+        registry_cache_dns="${registry_cache_url#http://}"
+        registry_cache_dns="${registry_cache_dns%:5001}"
+
+        registry_cache_ip=$(getent hosts "$registry_cache_dns" | awk '{ print $1 }' || true)
+        if [[ "$registry_cache_ip" == "" ]]; then
+          echo "Unable to resolve IP of $key registry cache in prow cluster ($registry_cache_dns). Not using it as upstream."
+          continue
+        fi
+
+        echo "Using $key registry cache in prow cluster ($registry_cache_dns) as upstream for local registry cache."
+        yq -i ".services.registry-cache-${key}.environment.REGISTRY_PROXY_REMOTEURL = \"${registry_cache_url}\"" "$INFRA_COMPOSE_FILE"
+      done
+    }
+
+    # Docker Desktop 4.89+ no longer installs its privileged helper (vmnetd) by default. Without it, binding bind9 and
+    # the load balancer containers to privileged ports on 172.18.255.* fails with "ports are not available".
+    # Install the helper if Docker Desktop is used on macOS and the helper socket is missing.
+    ensure_docker_desktop_vmnetd() {
+      if [[ "$OSTYPE" != "darwin"* ]]; then
+        return
+      fi
+      if [[ "$(docker info --format '{{.OperatingSystem}}' 2>/dev/null)" != "Docker Desktop" ]]; then
+        return
+      fi
+      if [[ -S /var/run/com.docker.vmnetd.sock ]]; then
+        return
+      fi
+
+      local installer="/Applications/Docker.app/Contents/MacOS/install"
+      if [[ ! -x "$installer" ]]; then
+        echo "Warning: Docker Desktop privileged helper (vmnetd) is missing and $installer was not found. Binding privileged ports may fail."
+        return
+      fi
+
+      echo "> Installing Docker Desktop privileged helper (vmnetd), this may prompt for your sudo password..."
+      ${SUDO}"$installer" vmnetd
+    }
+
+    check_shell_dependencies
+    ensure_docker_desktop_vmnetd
+
+    mkdir -m 0755 -p "$DIR_BACKUP_BUCKET" "$DIR_REGISTRY"
+
+    "$(dirname "$0")/infra.sh" setup-loopback-devices
+
+    setup_kind_network
+
+    change_registry_upstream_urls_to_prow_caches
+
+    ensure_local_registry_tls
+
+    write_registry_ca_secrets
+
+    docker compose -f "$INFRA_COMPOSE_FILE" up -d
+
+    ensure_local_registry_hosts
+    setup_local_dns_resolver
+
+    if [[ "$IPFAMILY" == "ipv6" ]] || [[ "$IPFAMILY" == "dual" ]]; then
+      # All outgoing traffic from the cluster is masqueraded to the host's IPv6 address. This is to ensure outgoing traffic
+      # can also be routed back to the cluster.
+      ip6tables -t nat -A POSTROUTING -o $(ip route | grep '^default' | awk '{print $5}') -s $(docker network inspect kind -f='{{json .IPAM.Config}}' | jq -r '.[1].Subnet') -j MASQUERADE
+    fi
+    ;;
+
+  down)
+    # Reset dynamic updates to the DNS zones by removing the volumes.
+    docker compose -f "$INFRA_COMPOSE_FILE" down --volumes
+
+    # Remove all load balancer containers (including the ones of shoot clusters) to get rid of any orphaned containers.
+    echo "Removing load balancer containers of all clusters"
+    for container in $(docker container ls -aq --filter network=kind --filter label=gardener.cloud/role=loadbalancer); do
+      docker container rm -f "$container"
+    done
+
+    # Delete the local backup bucket directory
+    # When deleting the secondary cluster, we might still need it for the other cluster.
+    # We need root privileges to clean the backup bucket directory, see https://github.com/gardener/gardener/issues/6752
+    docker run --rm --user root:root -v "$DIR_BACKUP_BUCKET":/dev/local-backupbuckets alpine rm -rf /dev/local-backupbuckets/garden-*
+    rm -rf "$DIR_BACKUP_BUCKET"
+    ;;
+
+  setup-loopback-devices)
+    # 172.18.255.53 exposes the bind9 DNS server
+    # 172.18.255.123 exposes the gind apiserver load balancer to the host
+    LOOPBACK_IP_ADDRESSES=(172.18.255.53 fd00:ff::53 172.18.255.123)
+
+    # load balancer range IPv4 (172.18.255.224/27)
+    LOOPBACK_IP_ADDRESSES+=( $(printf "172.18.255.%d\n" {224..255}) )
+    if [[ "$IPFAMILY" == "ipv6" ]] || [[ "$IPFAMILY" == "dual" ]]; then
+      # load balancer range IPv6 (fd00:ff::e0/123)
+      LOOPBACK_IP_ADDRESSES+=( $(printf "fd00:ff::e%x\n" {0..15}) $(printf "fd00:ff::f%x\n" {0..15}) )
+    fi
+
+    if ! command -v ip &>/dev/null; then
+      if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "'ip' command not found. Please install 'ip' command, refer https://github.com/gardener/gardener/blob/master/docs/development/local_setup.md#installing-iproute2" 1>&2
+        exit 1
+      fi
+      echo "Skipping loopback device setup because 'ip' command is not available..."
+      return
+    fi
+
+    # In some scenarios a developer might run the kind cluster with a docker daemon that is running inside a VM.
+    #
+    # Most people are using Docker Desktop which is able to mirror the IP addresses
+    # added to the loopback device on the host into it's managed VM running the docker daemon.
+    #
+    # However if people are not using this approach,
+    # docker might not be able to start the kind containers as the IP
+    # is not visible for it since it's only attached to the loopback device on the host.
+    #
+    # We test the loopback devices by checking on the host directly as well as checking
+    # the loopback on the docker host using an container that is running in the host network.
+
+    container_ip() {
+      docker run --rm --cap-add NET_ADMIN --network=host alpine ip $@
+    }
+
+    for ip_func in "ip" "container_ip"; do
+      if [[ ${ip_func} == "container_ip" ]] && docker info | grep -q 'Operating System: Docker Desktop' ; then
+        # For Docker Desktop, we don't need to add the IP addresses to the loopback device inside the VM, as Docker Desktop
+        # automatically mirrors the IPs of the host's loopback device into the VM.
+        continue
+      fi
+
+      LOOPBACK_DEVICE=$(${ip_func} address | grep LOOPBACK | sed "s/^[0-9]\+: //g" | awk '{print $1}' | sed "s/:$//g")
+      echo "Checking loopback device ${LOOPBACK_DEVICE} with ${ip_func}..."
+
+      for address in "${LOOPBACK_IP_ADDRESSES[@]}"; do
+        addr_output=$(${ip_func} address show dev ${LOOPBACK_DEVICE})
+        if echo "$addr_output" | grep -q "$address/"; then
+          echo "IP address $address already assigned to ${LOOPBACK_DEVICE}."
+        else
+          echo "Adding IP address $address to ${LOOPBACK_DEVICE}..."
+          if [[ ${ip_func} == "ip" ]]; then
+            sudo_ip_func=${SUDO}${ip_func}
+          else
+            sudo_ip_func=${ip_func}
+          fi
+          ${sudo_ip_func} address add "$address" dev "${LOOPBACK_DEVICE}"
+        fi
+      done
+
+      echo "Setting up loopback device ${LOOPBACK_DEVICE} with ${ip_func} completed."
+    done
+    ;;
+
+  cleanup-registry-ca)
+    cleanup_registry_ca
+    echo "> Removing registry TLS certificate files from $DIR_REGISTRY_TLS..."
+    rm -f "$DIR_REGISTRY_TLS/ca.crt" "$DIR_REGISTRY_TLS/ca.key" "$DIR_REGISTRY_TLS/registry.crt" "$DIR_REGISTRY_TLS/registry.key"
+    ;;
+
+  *)
+    echo "Error: Invalid command '${COMMAND}'. Valid options are: ${VALID_COMMANDS[*]}." >&2
+    exit 1
+    ;;
+esac

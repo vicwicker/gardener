@@ -1,0 +1,189 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package controller
+
+import (
+	"context"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
+	"github.com/gardener/gardener/pkg/controller/tokenrequestor"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/backupbucket"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/backupentry"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/bastion"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/controllerinstallation"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/gardenlet"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/managedseed"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/networkpolicy"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/seed"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/shoot"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/tokenrequestor/workloadidentity"
+	"github.com/gardener/gardener/pkg/gardenlet/controller/vpaevictionrequirements"
+	"github.com/gardener/gardener/pkg/healthz"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
+)
+
+// AddToManager adds all gardenlet controllers to the given manager.
+// selfHostedShoot is only needed to be non-nil when running in self-hosted shoot mode.
+func AddToManager(
+	ctx context.Context,
+	mgr manager.Manager,
+	gardenletCancel context.CancelFunc,
+	gardenCluster cluster.Cluster,
+	seedCluster cluster.Cluster,
+	seedClientSet kubernetes.Interface,
+	shootClientMap clientmap.ClientMap,
+	cfg *gardenletconfigv1alpha1.GardenletConfiguration,
+	healthManager healthz.Manager,
+	selfHostedShoot *gardencorev1beta1.Shoot,
+) error {
+	identity, err := gardenerutils.DetermineIdentity()
+	if err != nil {
+		return err
+	}
+
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.ClusterIdentity, Namespace: metav1.NamespaceSystem}}
+	if err := gardenCluster.GetClient().Get(ctx, client.ObjectKeyFromObject(configMap), configMap); err != nil {
+		return fmt.Errorf("failed getting cluster-identity ConfigMap in garden cluster: %w", err)
+	}
+	gardenClusterIdentity, ok := configMap.Data[v1beta1constants.ClusterIdentity]
+	if !ok {
+		return fmt.Errorf("cluster-identity ConfigMap data does not have %q key", v1beta1constants.ClusterIdentity)
+	}
+
+	seedIsSelfHostedShoot, err := gardenerutils.ClusterIsSelfHostedShoot(ctx, seedCluster.GetAPIReader())
+	if err != nil {
+		return fmt.Errorf("failed checking whether the seed is a self-hosted shoot cluster: %w", err)
+	}
+
+	if err := (&backupbucket.Reconciler{
+		Config:          *cfg.Controllers.BackupBucket,
+		SeedName:        seedName(cfg),
+		GardenNamespace: gardenNamespace(),
+	}).AddToManager(mgr, gardenCluster, seedCluster); err != nil {
+		return fmt.Errorf("failed adding BackupBucket controller: %w", err)
+	}
+
+	if err := (&backupentry.Reconciler{
+		Config:          *cfg.Controllers.BackupEntry,
+		SeedName:        seedName(cfg),
+		GardenNamespace: gardenNamespace(),
+	}).AddToManager(mgr, gardenCluster, seedCluster); err != nil {
+		return fmt.Errorf("failed adding BackupEntry controller: %w", err)
+	}
+
+	if err := (&bastion.Reconciler{
+		Config: *cfg.Controllers.Bastion,
+	}).AddToManager(mgr, gardenCluster, seedCluster); err != nil {
+		return fmt.Errorf("failed adding Bastion controller: %w", err)
+	}
+
+	if err := controllerinstallation.AddToManager(ctx, mgr, gardenCluster, seedCluster, seedClientSet, *cfg, identity, gardenClusterIdentity, seedIsSelfHostedShoot, selfHostedShoot, seedName(cfg), gardenNamespace()); err != nil {
+		return fmt.Errorf("failed adding ControllerInstallation controller: %w", err)
+	}
+
+	if err := (&gardenlet.Reconciler{
+		Config: *cfg,
+	}).AddToManager(mgr, gardenCluster, seedClientSet); err != nil {
+		return fmt.Errorf("failed adding Gardenlet controller: %w", err)
+	}
+
+	if err := (&managedseed.Reconciler{
+		Config:              *cfg,
+		ShootClientMap:      shootClientMap,
+		GardenNamespaceSeed: gardenNamespace(),
+	}).AddToManager(mgr, gardenCluster, seedCluster); err != nil {
+		return fmt.Errorf("failed adding ManagedSeed controller: %w", err)
+	}
+
+	if err := networkpolicy.AddToManager(ctx, mgr, gardenletCancel, seedCluster, *cfg.Controllers.NetworkPolicy, networkConfigForNetworkPolicyController(cfg, selfHostedShoot), nil); err != nil {
+		return fmt.Errorf("failed adding NetworkPolicy controller: %w", err)
+	}
+
+	if gardenletutils.IsResponsibleForSelfHostedShoot() || !seedIsSelfHostedShoot {
+		// The token requestor controller is only added when:
+		// (a) the gardenlet is responsible for a self-hosted shoot, or
+		// (b) the gardenlet is responsible for a seed that is not a self-hosted shoot (since here the shoot gardenlet already
+		//     runs the controller, see (a)).
+		if err := (&tokenrequestor.Reconciler{
+			ConcurrentSyncs: int(ptr.Deref(cfg.Controllers.TokenRequestorServiceAccount.ConcurrentSyncs, 0)),
+			Class:           new(resourcesv1alpha1.ResourceManagerClassGarden),
+			TargetNamespace: targetNamespaceForTokenRequestorController(cfg),
+		}).AddToManager(mgr, seedCluster, gardenCluster); err != nil {
+			return fmt.Errorf("failed adding TokenRequestorServiceAccount controller: %w", err)
+		}
+	}
+
+	if !gardenletutils.IsResponsibleForSelfHostedShoot() {
+		if err := seed.AddToManager(mgr, gardenCluster, seedCluster, seedClientSet, *cfg, identity, healthManager); err != nil {
+			return fmt.Errorf("failed adding Seed controller: %w", err)
+		}
+	}
+
+	if err := shoot.AddToManager(ctx, mgr, gardenCluster, seedCluster, seedClientSet, shootClientMap, *cfg, identity, gardenClusterIdentity, healthManager, seedName(cfg), selfHostedShoot); err != nil {
+		return fmt.Errorf("failed adding Shoot controller: %w", err)
+	}
+
+	if err := vpaevictionrequirements.AddToManager(ctx, mgr, gardenletCancel, *cfg.Controllers.VPAEvictionRequirements, seedCluster); err != nil {
+		return fmt.Errorf("failed adding VPAEvictionRequirements controller: %w", err)
+	}
+
+	if err := (&workloadidentity.Reconciler{
+		Config: cfg.Controllers.TokenRequestorWorkloadIdentity,
+	}).AddToManager(mgr, seedCluster, gardenCluster); err != nil {
+		return fmt.Errorf("failed adding TokenRequestorWorkloadIdentity controller: %w", err)
+	}
+
+	return nil
+}
+
+func gardenNamespace() string {
+	if gardenletutils.IsResponsibleForSelfHostedShoot() {
+		return metav1.NamespaceSystem
+	}
+	return v1beta1constants.GardenNamespace
+}
+
+func seedName(cfg *gardenletconfigv1alpha1.GardenletConfiguration) string {
+	if gardenletutils.IsResponsibleForSelfHostedShoot() {
+		return ""
+	}
+	return cfg.SeedConfig.Name
+}
+
+func targetNamespaceForTokenRequestorController(cfg *gardenletconfigv1alpha1.GardenletConfiguration) string {
+	if gardenletutils.IsResponsibleForSelfHostedShoot() {
+		// TargetNamespace is intentionally left empty when gardenlet is responsible for a self-hosted shoot: the
+		// ServiceAccount namespace is provided via the serviceaccount.resources.gardener.cloud/namespace annotation on the
+		// access token Secrets set by the AccessSecret.Reconcile() function.
+		return ""
+	}
+	return gardenerutils.ComputeGardenNamespace(cfg.SeedConfig.Name)
+}
+
+func networkConfigForNetworkPolicyController(cfg *gardenletconfigv1alpha1.GardenletConfiguration, selfHostedShoot *gardencorev1beta1.Shoot) gardencorev1beta1.SeedNetworks {
+	if selfHostedShoot != nil {
+		return gardencorev1beta1.SeedNetworks{
+			Nodes:      selfHostedShoot.Spec.Networking.Nodes,
+			Pods:       ptr.Deref(selfHostedShoot.Spec.Networking.Pods, ""),
+			Services:   ptr.Deref(selfHostedShoot.Spec.Networking.Services, ""),
+			IPFamilies: selfHostedShoot.Spec.Networking.IPFamilies,
+		}
+	}
+	return cfg.SeedConfig.Spec.Networks
+}

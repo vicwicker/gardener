@@ -1,0 +1,19 @@
+# Before introducing a new image, ensure it complies with the container image guidelines
+# in the component checklist: https://github.com/gardener/gardener/blob/master/docs/development/component-checklist.md#images
+images:
+- name: cloud-controller-manager-local
+  sourceRepository: github.com/gardener/gardener
+  repository: cloud-controller-manager-local
+  tag: v0.0.0
+- name: machine-controller-manager-provider-local
+  sourceRepository: github.com/gardener/gardener
+  repository: machine-controller-manager-provider-local
+  tag: v0.0.0
+- name: local-path-provisioner
+  sourceRepository: github.com/kubernetes-sigs/kind/tree/main/images/local-path-provisioner
+  repository: gcr.io/k8s-staging-kind/local-path-provisioner
+  tag: v20240513-b9bba138
+- name: local-path-helper
+  sourceRepository: github.com/kubernetes-sigs/kind/tree/main/images/local-path-helper
+  repository: gcr.io/k8s-staging-kind/local-path-helper
+  tag: v20240213-749005b2

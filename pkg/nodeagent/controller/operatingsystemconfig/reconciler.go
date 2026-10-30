@@ -1,0 +1,1324 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package operatingsystemconfig
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
+	"net/http"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	"github.com/go-logr/logr"
+	"github.com/google/go-cmp/cmp"
+	"github.com/spf13/afero"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
+	"github.com/gardener/gardener/pkg/api/indexer"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	kubeletcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
+	"github.com/gardener/gardener/pkg/gardenadm/staticpod"
+	"github.com/gardener/gardener/pkg/nodeagent"
+	nodeagentcontainerd "github.com/gardener/gardener/pkg/nodeagent/containerd"
+	healthcheckcontroller "github.com/gardener/gardener/pkg/nodeagent/controller/healthcheck"
+	"github.com/gardener/gardener/pkg/nodeagent/dbus"
+	filespkg "github.com/gardener/gardener/pkg/nodeagent/files"
+	"github.com/gardener/gardener/pkg/nodeagent/registry"
+	"github.com/gardener/gardener/pkg/utils/flow"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
+	retryutils "github.com/gardener/gardener/pkg/utils/retry"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
+)
+
+const (
+	annotationUpdatingOperatingSystemVersion = "node-agent.gardener.cloud/updating-operating-system-version"
+	pathKubeletCPUManagerPolicyState         = kubeletcomponent.PathKubeletDirectory + "/cpu_manager_state"
+)
+
+var (
+	retriableErrorPatternRegex    = regexp.MustCompile(`(?i)network problems`)
+	nonRetriableErrorPatternRegex = regexp.MustCompile(`(?i)invalid arguments|system failure`)
+
+	// KubeletHealthCheckRetryInterval is the interval at which the kubelet health check is retried.
+	// Exposed for testing.
+	KubeletHealthCheckRetryInterval = 5 * time.Second
+	// KubeletHealthCheckRetryTimeout is the timeout after which the kubelet health check is considered failed.
+	// Exposed for testing.
+	KubeletHealthCheckRetryTimeout = 5 * time.Minute
+
+	// OSUpdateRetryInterval is the interval between OS update retries. Exported for testing.
+	OSUpdateRetryInterval = 30 * time.Second
+	// OSUpdateRetryTimeout is the timeout for OS update retries. Exported for testing.
+	OSUpdateRetryTimeout = 5 * time.Minute
+	// RequeueAfterRestart defines whether RequeueAfter is supposed to be triggered on restart of gardener-node-agent.
+	// Exposed for testing.
+	RequeueAfterRestart time.Duration
+	// RequeueAfterWaitForStaticPods defines when to requeue in case static pods are not yet rolled out, healthy or
+	// ready.
+	// Exposed for testing.
+	RequeueAfterWaitForStaticPods = 5 * time.Second
+)
+
+// Reconciler decodes the OperatingSystemConfig resources from secrets and applies the systemd units and files to the
+// node.
+type Reconciler struct {
+	APIReader client.Reader
+	Client    client.Client
+	// LeaseClient is a cached client just for the leader election Lease in case the OperatingSystemConfig
+	// reconciliation is serialised.
+	LeaseClient      client.Client
+	ContainerdClient nodeagentcontainerd.Client
+	Config           nodeagentconfigv1alpha1.OperatingSystemConfigControllerConfig
+	Clock            clock.Clock
+	ConfigDir        string
+	Recorder         events.EventRecorder
+	DBus             dbus.DBus
+	FS               afero.Afero
+	Extractor        registry.Extractor
+	CancelContext    context.CancelFunc
+	HostName         string
+	NodeName         string
+	MachineName      string
+	// SkipWritingStateFiles is used by gardenadm when it deploys the provision OSC. In this case, both the "last
+	// applied configuration" and the "last computed changes" files should not be written. Otherwise,
+	// gardener-node-agent might delete files which exist in the provision OSC only after it comes up and reconciles the
+	// actual OSC, or not reconcile them at all.
+	SkipWritingStateFiles bool
+
+	// Channel and TokenSecretSyncConfigs are used by the reconciler to trigger events for the token reconciler during
+	// an in-place service-account-key rotation.
+	Channel                chan event.TypedGenericEvent[*corev1.Secret]
+	TokenSecretSyncConfigs []nodeagentconfigv1alpha1.TokenSecretSyncConfig
+}
+
+// Reconcile decodes the OperatingSystemConfig resources from secrets and applies the systemd units and files to the
+// node.
+func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
+	log := logf.FromContext(ctx)
+
+	secret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, request.NamespacedName, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("Object is gone, stop reconciling")
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, fmt.Errorf("error retrieving object from store: %w", err)
+	}
+
+	node, nodeCreated, err := r.getNode(ctx)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed getting node: %w", err)
+	}
+
+	if nodeCreated {
+		log.Info("Node registered by kubelet. Restarting myself (gardener-node-agent unit) to start Lease controller and watch my own node only. Canceling the context to initiate graceful shutdown")
+		r.CancelContext()
+		return reconcile.Result{}, nil
+	}
+
+	osc, oscChecksum, err := extractOSCFromSecret(secret)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed extracting OSC from secret: %w", err)
+	}
+
+	isControlPlaneNode := slices.ContainsFunc(osc.Spec.Files, func(file extensionsv1alpha1.File) bool {
+		return file.Path == filepath.Join(kubeletcomponent.FilePathKubernetesManifests, "kube-apiserver.yaml")
+	})
+
+	if node != nil {
+		nodeRole := "worker"
+		if isControlPlaneNode {
+			nodeRole = "control-plane"
+		}
+
+		log.Info("Setting node labels on Node object", "role", nodeRole)
+
+		patch := client.MergeFrom(node.DeepCopy())
+		metav1.SetMetaDataLabel(&node.ObjectMeta, "node-role.kubernetes.io/"+nodeRole, "")
+
+		if zone, err := r.FS.ReadFile(nodeagentconfigv1alpha1.ZoneFilePath); err != nil {
+			if !errors.Is(err, afero.ErrFileNotFound) {
+				return reconcile.Result{}, fmt.Errorf("failed to read zone file %q: %w", nodeagentconfigv1alpha1.ZoneFilePath, err)
+			}
+		} else {
+			metav1.SetMetaDataLabel(&node.ObjectMeta, corev1.LabelTopologyZone, strings.TrimSpace(string(zone)))
+		}
+
+		if err := r.Client.Patch(ctx, node, patch); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed adding node labels to node object: %w", err)
+		}
+	}
+
+	serialReconciliationLease := newLeaderElectorForSecret(log, r.LeaseClient, r.Clock, secret, r.HostName)
+
+	if node != nil && node.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig] == oscChecksum {
+		log.Info("Configuration on this node is up to date, nothing to be done")
+		return reconcile.Result{}, serialReconciliationLease.release(ctx)
+	}
+
+	if serialReconciliation(secret) {
+		log.Info("OperatingSystemConfig reconciliation is serial")
+
+		if err := serialReconciliationLease.reload(ctx); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed to reload Lease for serial reconciliation leader election: %w", err)
+		}
+
+		if serialReconciliationLease.acquiredByAnotherInstance() {
+			if serialReconciliationLease.renewedInTime() {
+				requeueAfter := serialReconciliationLease.durationUntilLeaseExpires()
+				serialReconciliationLease.logger().Info("Lease was acquired by another instance, exiting early and requeue when Lease expires", "requeueAfter", requeueAfter)
+				return reconcile.Result{RequeueAfter: requeueAfter}, nil
+			}
+
+			serialReconciliationLease.logger().Info("Lease was acquired by another instance, but it was not renewed in time")
+		}
+
+		if err := serialReconciliationLease.tryAcquireOrRenew(ctx); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed acquiring or renewing lease: %w", err)
+		}
+
+		log.Info("Lease acquired, starting reconciliation")
+	}
+
+	log.Info("Applying containerd configuration")
+	if err := r.ReconcileContainerdConfig(ctx, log, osc); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed reconciling containerd configuration: %w", err)
+	}
+
+	var secretsManager secretsmanager.Interface
+	if isControlPlaneNode {
+		secretsManager, err = secretsmanager.New(
+			ctx,
+			log.WithName("secretsmanager"),
+			r.Clock,
+			NewFilesystemSecretsManagerClient(r.FS),
+			v1beta1constants.SecretManagerIdentityPrefixNodeAgent+r.HostName,
+			secretsmanager.WithNamespaces(metav1.NamespaceSystem),
+			secretsmanager.WithoutAutomaticSecretRenewal(),
+		)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed to instantiate a new secrets manager: %w", err)
+		}
+
+		log.Info("Generating node-specific ETCD certificates if needed")
+		if err := r.generateNodeSpecificETCDCertificates(ctx, secretsManager, osc); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed generating node-specific ETCD certificates: %w", err)
+		}
+	}
+
+	osVersion, err := GetOSVersion(osc.Spec.InPlaceUpdates, r.FS)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed getting OS version: %w", err)
+	}
+
+	oscChanges, err := computeOperatingSystemConfigChanges(log, r.FS, osc, oscChecksum, osVersion, r.SkipWritingStateFiles, r.HostName)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed calculating the OSC changes: %w", err)
+	}
+
+	// Strip the gardener-node-agent unit from Units.Commands and route its restart through the
+	// MustRestartNodeAgent flag. This keeps the self-restart out of executeUnitCommands, where
+	// a failing third-party unit could otherwise return an error and block it.
+	if slices.ContainsFunc(oscChanges.Units.Commands, func(c unitCommand) bool {
+		return c.Name == nodeagentconfigv1alpha1.UnitName
+	}) {
+		if err := oscChanges.setMustRestartNodeAgent(true); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed setting MustRestartNodeAgent: %w", err)
+		}
+		if err := oscChanges.completedUnitCommand(nodeagentconfigv1alpha1.UnitName); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed clearing node-agent unit from commands list: %w", err)
+		}
+	}
+
+	// If the node-agent has restarted after OS update, we need to persist the change in oscChanges.
+	if osc.Spec.InPlaceUpdates != nil {
+		if osVersionUpToDate, err := IsOsVersionUpToDate(osVersion, osc); err != nil {
+			return reconcile.Result{}, err
+		} else if osVersionUpToDate {
+			if err := oscChanges.completeOSUpdate(); err != nil {
+				return reconcile.Result{}, fmt.Errorf("failed completing OS update: %w", err)
+			}
+		}
+	}
+
+	if isInPlaceUpdate(oscChanges) {
+		// In case of in-place update, we use retries for certain cases like OS update with higher timeouts,
+		// so we need to overwrite the context to use a longer timeout.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+
+		if !nodeHasInPlaceUpdateConditionWithReasonReadyForUpdate(node.Status.Conditions) {
+			if node.Labels[machinev1alpha1.LabelKeyNodeUpdateResult] != machinev1alpha1.LabelValueNodeUpdateFailed {
+				log.Info("Node is not ready for in-place update, will be requeued when the node has the ready-for-update condition", "node", node.Name)
+				return reconcile.Result{}, nil
+			}
+
+			log.Info("Node has label update-result with failed value, will continue retrying the update")
+		}
+
+		log.Info("In-place update is in progress", "osUpdate", oscChanges.InPlaceUpdates.OperatingSystem,
+			"kubeletMinorVersionUpdate", oscChanges.InPlaceUpdates.Kubelet.MinorVersion,
+			"kubeletConfigUpdate", oscChanges.InPlaceUpdates.Kubelet.Config || oscChanges.InPlaceUpdates.Kubelet.CPUManagerPolicy,
+			"certificateAuthoritiesRotation", oscChanges.InPlaceUpdates.CertificateAuthoritiesRotation, "serviceAccountKeyRotation", oscChanges.InPlaceUpdates.ServiceAccountKeyRotation,
+		)
+	}
+
+	log.Info("Applying new or changed inline and secretRef files")
+	if err := r.applyChangedInlineFiles(ctx, log, oscChanges); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed applying changed inline files: %w", err)
+	}
+
+	log.Info("Applying containerd registries")
+	waitForRegistries, err := r.ReconcileContainerdRegistries(ctx, log, oscChanges)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed reconciling containerd registries: %w", err)
+	}
+
+	log.Info("Applying new or changed imageRef files")
+	if err := r.applyChangedImageRefFiles(ctx, log, oscChanges); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed applying changed imageRef files: %w", err)
+	}
+
+	log.Info("Applying new or changed units", "changedUnits", len(oscChanges.Units.Changed))
+	if err := r.applyChangedUnits(ctx, log, oscChanges); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed applying changed units: %w", err)
+	}
+
+	log.Info("Removing no longer needed units", "deletedUnits", len(oscChanges.Units.Deleted))
+	if err := r.removeDeletedUnits(ctx, log, node, oscChanges); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed removing deleted units: %w", err)
+	}
+
+	log.Info("Reloading systemd daemon")
+	if err := r.DBus.DaemonReload(ctx); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed reloading systemd daemon: %w", err)
+	}
+
+	// Restart the node-agent before executeUnitCommands. A failing third-party unit there would
+	// otherwise return an error and prevent the restart from happening. The remaining steps
+	// (executeUnitCommands, waitForRegistries, removeDeletedFiles, in-place update) resume in
+	// the next reconcile pass from the persisted [operatingSystemConfigChanges] file.
+	if oscChanges.MustRestartNodeAgent && !r.SkipWritingStateFiles {
+		return r.restartNodeAgent(oscChanges, log)
+	}
+
+	log.Info("Executing unit commands (start/stop)", "unitCommands", len(oscChanges.Units.Commands))
+	if err := r.executeUnitCommands(ctx, log, node, oscChanges); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed executing unit commands: %w", err)
+	}
+
+	if isInPlaceKubeletUpdate(oscChanges) {
+		if err := r.completeKubeletInPlaceUpdate(ctx, log, oscChanges, node); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed completing kubelet in-place update: %w", err)
+		}
+	}
+
+	// After the node is prepared, we can wait for the registries to be configured.
+	// The ones with readiness probes should also succeed here since their cache/mirror pods
+	// can now start as workload in the cluster.
+	log.Info("Waiting for containerd registries to be configured")
+	if err := waitForRegistries(); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed configuring containerd registries: %w", err)
+	}
+
+	log.Info("Removing no longer needed files")
+	if err := r.removeDeletedFiles(log, oscChanges); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed removing deleted files: %w", err)
+	}
+
+	if err := r.performInPlaceUpdate(ctx, log, osc, oscChanges, node, osVersion); err != nil {
+		// If the error is retriable, we requeue with a delay.
+		if retriableErrorPatternRegex.MatchString(err.Error()) {
+			log.Error(err, "Update failed with retriable error, Requeuing with a delay")
+			return reconcile.Result{RequeueAfter: 10 * time.Minute}, nil
+		}
+		return reconcile.Result{}, err
+	}
+
+	log.Info("Successfully applied operating system config")
+
+	if !r.SkipWritingStateFiles {
+		log.Info("Persisting current operating system config as 'last-applied' file to the disk", "path", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath)
+		oscRaw, err := runtime.Encode(nodeagent.Codec, osc)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("unable to encode OSC: %w", err)
+		}
+
+		if err := r.FS.WriteFile(nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, oscRaw, 0600); err != nil {
+			return reconcile.Result{}, fmt.Errorf("unable to write current OSC to file path %q: %w", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, err)
+		}
+	}
+
+	// Second restart site: catches MustRestartNodeAgent set by the CA-rotation path inside
+	// performInPlaceUpdate, which can only flip the flag after the new kubeconfig is on disk.
+	if oscChanges.MustRestartNodeAgent && !r.SkipWritingStateFiles {
+		return r.restartNodeAgent(oscChanges, log)
+	}
+
+	if node == nil {
+		log.Info("Waiting for Node to get registered by kubelet, requeuing")
+		return reconcile.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	log.Info("Deleting kubelet bootstrap kubeconfig file (in case it still exists)")
+	if err := r.FS.Remove(kubeletcomponent.PathKubeconfigBootstrap); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+		return reconcile.Result{}, fmt.Errorf("failed removing kubelet bootstrap kubeconfig file %q: %w", kubeletcomponent.PathKubeconfigBootstrap, err)
+	}
+	if err := r.FS.Remove(nodeagentconfigv1alpha1.BootstrapTokenFilePath); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+		return reconcile.Result{}, fmt.Errorf("failed removing bootstrap token file %q: %w", nodeagentconfigv1alpha1.BootstrapTokenFilePath, err)
+	}
+
+	if done, err := r.ensureStaticPodsReconciledAndReady(ctx, log, node, osc); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed ensuring that static pods have been reconciled: %w", err)
+	} else if !done {
+		return reconcile.Result{RequeueAfter: RequeueAfterWaitForStaticPods}, nil
+	}
+
+	r.Recorder.Eventf(node, nil, corev1.EventTypeNormal, "OSCApplied", gardencorev1beta1.EventActionReconcile, "Operating system config has been applied successfully")
+	patch := client.MergeFrom(node.DeepCopy())
+	metav1.SetMetaDataLabel(&node.ObjectMeta, v1beta1constants.LabelWorkerKubernetesVersion, r.Config.KubernetesVersion.String())
+	metav1.SetMetaDataAnnotation(&node.ObjectMeta, nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig, oscChecksum)
+	if err := r.Client.Patch(ctx, node, patch); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed patching Node annotations after OSC was applied: %w", err)
+	}
+
+	if isControlPlaneNode {
+		if err := secretsManager.Cleanup(ctx); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed cleaning up no longer required secrets: %w", err)
+		}
+	}
+
+	return reconcile.Result{RequeueAfter: r.Config.SyncPeriod.Duration}, serialReconciliationLease.release(ctx)
+}
+
+func (r *Reconciler) getNode(ctx context.Context) (*corev1.Node, bool, error) {
+	if r.NodeName != "" {
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: r.NodeName}}
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(node), node); err != nil {
+			return nil, false, fmt.Errorf("unable to fetch node %q: %w", r.NodeName, err)
+		}
+		return node, false, nil
+	}
+
+	node, err := nodeagent.FetchNodeByHostName(ctx, r.Client, r.HostName)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var nodeCreated bool
+	if node != nil {
+		r.NodeName = node.Name
+		nodeCreated = true
+	}
+
+	return node, nodeCreated, nil
+}
+
+var (
+	etcSystemdSystem                   = path.Join("/", "etc", "systemd", "system")
+	defaultFilePermissions os.FileMode = 0600
+	defaultDirPermissions  os.FileMode = 0755
+)
+
+func getFilePermissions(file extensionsv1alpha1.File) os.FileMode {
+	permissions := defaultFilePermissions
+	if file.Permissions != nil {
+		permissions = fs.FileMode(uint32(*file.Permissions)) // #nosec G115 -- permissions are non-negative, enforced by +kubebuilder:validation:Minimum=0
+	}
+	return permissions
+}
+
+func (r *Reconciler) applyChangedImageRefFiles(ctx context.Context, log logr.Logger, changes *operatingSystemConfigChanges) error {
+	for _, file := range slices.Clone(changes.Files.Changed) {
+		if file.Content.ImageRef == nil {
+			continue
+		}
+
+		var (
+			permissions     = getFilePermissions(file)
+			filePathInImage = file.Content.ImageRef.FilePathInImage
+			fileLog         = log.WithValues("path", file.Path, "image", file.Content.ImageRef.Image)
+		)
+
+		err := r.Extractor.CopyFromImage(ctx, file.Content.ImageRef.Image, filePathInImage, file.Path, permissions)
+
+		// Fall back to /ko-app/gardener-node-agent if /gardener-node-agent doesn't exist in image to support images built
+		// with ko.
+		// TODO(timebertt): remove this fallback once https://github.com/ko-build/ko/pull/1403 has been released and is used
+		//  to build images in the skaffold-based setup (add a breaking release note!).
+		if errors.Is(err, fs.ErrNotExist) && filePathInImage == "/gardener-node-agent" {
+			filePathInImage = "/ko-app/gardener-node-agent"
+			fileLog.Info("Could not find gardener-node-agent in root directory of image, falling back to ko binary path")
+			err = r.Extractor.CopyFromImage(ctx, file.Content.ImageRef.Image, filePathInImage, file.Path, permissions)
+		}
+
+		if err != nil {
+			return fmt.Errorf("unable to copy file %q from image %q to %q: %w", filePathInImage, file.Content.ImageRef.Image, file.Path, err)
+		}
+
+		fileLog.Info("Successfully applied new or changed file from image", "filePathInImage", filePathInImage)
+		if err := changes.completedFileChanged(file.Path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// getFileContentData resolves the data for a file from its inline content or secretRef.
+// It returns ok=false if the file has neither (e.g., imageRef files handled separately).
+func (r *Reconciler) getFileContentData(ctx context.Context, file extensionsv1alpha1.File) ([]byte, bool, error) {
+	switch {
+	case file.Content.Inline != nil:
+		data, err := extensionsv1alpha1helper.Decode(file.Content.Inline.Encoding, []byte(file.Content.Inline.Data))
+		if err != nil {
+			return nil, false, fmt.Errorf("unable to decode inline data: %w", err)
+		}
+		return data, true, nil
+
+	case file.Content.SecretRef != nil:
+		// APIReader is a direct client (not cached) for reading Secrets referenced via secretRef in the
+		// OperatingSystemConfig. gardener-node-agent only has permissions to watch the OSC secret by name (via the
+		// node-agent-authorizer) and the manager cache for Secrets is accordingly restricted. Hence, secretRef targets are
+		// invisible to the cached client.
+		// Since we plan to use files with secretRef only for the control plane worker pool of self-hosted shoots, the
+		// network I/O impact should be negligible.
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: file.Content.SecretRef.Name, Namespace: metav1.NamespaceSystem}}
+		if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
+			return nil, false, fmt.Errorf("unable to read referenced secret %q: %w", file.Content.SecretRef.Name, err)
+		}
+
+		data, ok := secret.Data[file.Content.SecretRef.DataKey]
+		if !ok {
+			return nil, false, fmt.Errorf("secret %q does not contain key %q", file.Content.SecretRef.Name, file.Content.SecretRef.DataKey)
+		}
+		return data, true, nil
+
+	default:
+		return nil, false, nil
+	}
+}
+
+func (r *Reconciler) applyChangedInlineFiles(ctx context.Context, log logr.Logger, changes *operatingSystemConfigChanges) error {
+	tmpDir, err := r.FS.TempDir(nodeagentconfigv1alpha1.TempDir, "osc-reconciliation-file-")
+	if err != nil {
+		return fmt.Errorf("unable to create temporary directory: %w", err)
+	}
+
+	defer func() { utilruntime.HandleError(r.FS.RemoveAll(tmpDir)) }()
+
+	for _, file := range slices.Clone(changes.Files.Changed) {
+		data, ok, err := r.getFileContentData(ctx, file)
+		if err != nil {
+			return fmt.Errorf("unable to get data of file %q: %w", file.Path, err)
+		}
+		if !ok {
+			continue
+		}
+
+		if err := r.FS.MkdirAll(filepath.Dir(file.Path), defaultDirPermissions); err != nil {
+			return fmt.Errorf("unable to create directory %q: %w", file.Path, err)
+		}
+
+		tmpFilePath := filepath.Join(tmpDir, filepath.Base(file.Path))
+		if err := r.FS.WriteFile(tmpFilePath, data, getFilePermissions(file)); err != nil {
+			return fmt.Errorf("unable to create temporary file %q: %w", tmpFilePath, err)
+		}
+
+		if err := filespkg.Move(r.FS, tmpFilePath, file.Path); err != nil {
+			return fmt.Errorf("unable to rename temporary file %q to %q: %w", tmpFilePath, file.Path, err)
+		}
+
+		log.Info("Successfully applied new or changed file", "path", file.Path)
+		if err := changes.completedFileChanged(file.Path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *Reconciler) removeDeletedFiles(log logr.Logger, changes *operatingSystemConfigChanges) error {
+	for _, file := range slices.Clone(changes.Files.Deleted) {
+		if err := r.FS.Remove(file.Path); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+			return fmt.Errorf("unable to delete no longer needed file %q: %w", file.Path, err)
+		}
+
+		log.Info("Successfully removed no longer needed file", "path", file.Path)
+		r.triggerTokenResyncForDeletedFile(log, file.Path)
+		if err := changes.completedFileDeleted(file.Path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *Reconciler) triggerTokenResyncForDeletedFile(log logr.Logger, path string) {
+	for _, config := range r.TokenSecretSyncConfigs {
+		if config.Path == path {
+			r.triggerTokenResync(log, config.SecretName)
+		}
+	}
+}
+
+func (r *Reconciler) applyChangedUnits(ctx context.Context, log logr.Logger, changes *operatingSystemConfigChanges) error {
+	for _, unit := range slices.Clone(changes.Units.Changed) {
+		unitFilePath := path.Join(etcSystemdSystem, unit.Name)
+
+		if unit.Content != nil {
+			oldUnitContent, err := r.FS.ReadFile(unitFilePath)
+			if err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+				return fmt.Errorf("unable to read existing unit file %q for %q: %w", unitFilePath, unit.Name, err)
+			}
+
+			newUnitContent := []byte(*unit.Content)
+			if !bytes.Equal(newUnitContent, oldUnitContent) {
+				if err := r.FS.WriteFile(unitFilePath, newUnitContent, defaultFilePermissions); err != nil {
+					return fmt.Errorf("unable to write unit file %q for %q: %w", unitFilePath, unit.Name, err)
+				}
+				log.Info("Successfully applied new or changed unit file", "path", unitFilePath)
+			}
+
+			// ensure file permissions are restored in case somebody changed them manually
+			if err := r.FS.Chmod(unitFilePath, defaultFilePermissions); err != nil {
+				return fmt.Errorf("unable to ensure permissions for unit file %q for %q: %w", unitFilePath, unit.Name, err)
+			}
+		}
+
+		dropInDirectory := unitFilePath + ".d"
+
+		if len(unit.DropIns) == 0 {
+			if err := r.FS.RemoveAll(dropInDirectory); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+				return fmt.Errorf("unable to delete systemd drop-in folder for unit %q: %w", unit.Name, err)
+			}
+		} else {
+			if err := r.FS.MkdirAll(dropInDirectory, defaultDirPermissions); err != nil {
+				return fmt.Errorf("unable to create drop-in directory %q for unit %q: %w", dropInDirectory, unit.Name, err)
+			}
+
+			for _, dropIn := range slices.Clone(unit.DropInsChanges.Changed) {
+				dropInFilePath := path.Join(dropInDirectory, dropIn.Name)
+
+				oldDropInContent, err := r.FS.ReadFile(dropInFilePath)
+				if err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+					return fmt.Errorf("unable to read existing drop-in file %q for unit %q: %w", dropInFilePath, unit.Name, err)
+				}
+
+				newDropInContent := []byte(dropIn.Content)
+				if !bytes.Equal(newDropInContent, oldDropInContent) {
+					if err := r.FS.WriteFile(dropInFilePath, newDropInContent, defaultFilePermissions); err != nil {
+						return fmt.Errorf("unable to write drop-in file %q for unit %q: %w", dropInFilePath, unit.Name, err)
+					}
+					log.Info("Successfully applied new or changed drop-in file for unit", "path", dropInFilePath, "unit", unit.Name)
+				}
+
+				// ensure file permissions are restored in case somebody changed them manually
+				if err := r.FS.Chmod(dropInFilePath, defaultFilePermissions); err != nil {
+					return fmt.Errorf("unable to ensure permissions for drop-in file %q for unit %q: %w", unitFilePath, unit.Name, err)
+				}
+				if err := changes.completedUnitDropInChanged(unit.Name, dropIn.Name); err != nil {
+					return err
+				}
+			}
+
+			for _, dropIn := range slices.Clone(unit.DropInsChanges.Deleted) {
+				dropInFilePath := path.Join(dropInDirectory, dropIn.Name)
+				if err := r.FS.Remove(dropInFilePath); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+					return fmt.Errorf("unable to delete drop-in file %q for unit %q: %w", dropInFilePath, unit.Name, err)
+				}
+				log.Info("Successfully removed no longer needed drop-in file for unit", "path", dropInFilePath, "unitName", unit.Name)
+				if err := changes.completedUnitDropInDeleted(unit.Name, dropIn.Name); err != nil {
+					return err
+				}
+			}
+		}
+
+		if unit.Name == nodeagentconfigv1alpha1.UnitName || ptr.Deref(unit.Enable, true) {
+			if err := r.DBus.Enable(ctx, unit.Name); err != nil {
+				return fmt.Errorf("unable to enable unit %q: %w", unit.Name, err)
+			}
+			log.Info("Successfully enabled unit", "unitName", unit.Name)
+		} else {
+			if err := r.DBus.Disable(ctx, unit.Name); err != nil {
+				return fmt.Errorf("unable to disable unit %q: %w", unit.Name, err)
+			}
+			log.Info("Successfully disabled unit", "unitName", unit.Name)
+		}
+
+		if err := changes.completedUnitChanged(unit.Name); err != nil {
+			return err
+		}
+
+		if unit.Name == v1beta1constants.OperatingSystemConfigUnitNameKubeletService && changes.InPlaceUpdates.Kubelet.CPUManagerPolicy {
+			// See https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/#changing-the-cpu-manager-policy
+			log.Info("Removing kubelet cpu manager policy state file", "path", pathKubeletCPUManagerPolicyState)
+			if err := r.FS.Remove(pathKubeletCPUManagerPolicyState); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+				return fmt.Errorf("failed removing kubelet cpu manager policy state file %q: %w", kubeletcomponent.PathKubeconfigReal, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (r *Reconciler) removeDeletedUnits(ctx context.Context, log logr.Logger, node client.Object, changes *operatingSystemConfigChanges) error {
+	for _, unit := range slices.Clone(changes.Units.Deleted) {
+		// The unit has been created by gardener-node-agent if it has content.
+		// Otherwise, it might be a default OS unit which was enabled/disabled or where drop-ins were added.
+		unitCreatedByNodeAgent := unit.Content != nil
+
+		unitFilePath := path.Join(etcSystemdSystem, unit.Name)
+
+		unitFileExists, err := r.FS.Exists(unitFilePath)
+		if err != nil {
+			return fmt.Errorf("unable to check whether unit file %q exists: %w", unitFilePath, err)
+		}
+
+		// Only stop and remove the unit file if it was created by gardener-node-agent. Otherwise, this could affect
+		// default OS units where we add and remove drop-ins only. If operators want to stop and disable units,
+		// they can do it by adding a unit to OSC which applies the `stop` command.
+		if unitFileExists && unitCreatedByNodeAgent {
+			if err := r.DBus.Disable(ctx, unit.Name); err != nil {
+				return fmt.Errorf("unable to disable deleted unit %q: %w", unit.Name, err)
+			}
+
+			if err := r.DBus.Stop(ctx, r.Recorder, node, unit.Name); err != nil {
+				return fmt.Errorf("unable to stop deleted unit %q: %w", unit.Name, err)
+			}
+
+			if err := r.FS.Remove(unitFilePath); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+				return fmt.Errorf("unable to delete systemd unit file of deleted unit %q: %w", unit.Name, err)
+			} else {
+				log.Info("Unit was not created by gardener-node-agent, skipping deletion of unit file", "unitName", unit.Name)
+			}
+		}
+
+		dropInFolder := unitFilePath + ".d"
+
+		if exists, err := r.FS.Exists(dropInFolder); err != nil {
+			return fmt.Errorf("unable to check whether drop-in folder %q exists: %w", dropInFolder, err)
+		} else if exists {
+			for _, dropIn := range unit.DropIns {
+				dropInFilePath := path.Join(dropInFolder, dropIn.Name)
+				if err := r.FS.Remove(dropInFilePath); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+					return fmt.Errorf("unable to delete drop-in file %q of deleted unit %q: %w", dropInFilePath, unit.Name, err)
+				}
+			}
+
+			if empty, err := r.FS.IsEmpty(dropInFolder); err != nil {
+				return fmt.Errorf("unable to check whether drop-in folder %q is empty: %w", dropInFolder, err)
+			} else if empty {
+				if err := r.FS.RemoveAll(dropInFolder); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+					return fmt.Errorf("unable to delete systemd drop-in folder of deleted unit %q: %w", unit.Name, err)
+				}
+			}
+		}
+
+		// If the unit was not created by gardener-node-agent, but it exists on the node and was removed from OSC. Restart it to apply changes.
+		if unitFileExists && !unitCreatedByNodeAgent {
+			if err := r.DBus.Restart(ctx, r.Recorder, node, unit.Name); err != nil {
+				return fmt.Errorf("unable to restart unit %q removed from OSC but not created by gardener-node-agent: %w", unit.Name, err)
+			}
+		}
+
+		log.Info("Successfully removed no longer needed unit", "unitName", unit.Name)
+		if err := changes.completedUnitDeleted(unit.Name); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *Reconciler) executeUnitCommands(ctx context.Context, log logr.Logger, node client.Object, oscChanges *operatingSystemConfigChanges) error {
+	var (
+		fns []flow.TaskFn
+
+		restart = func(ctx context.Context, unitName string) error {
+			if err := r.DBus.Restart(ctx, r.Recorder, node, unitName); err != nil {
+				return fmt.Errorf("unable to restart unit %q: %w", unitName, err)
+			}
+			log.Info("Successfully restarted unit", "unitName", unitName)
+
+			if unitName == v1beta1constants.OperatingSystemConfigUnitNameContainerDService {
+				if err := oscChanges.completedContainerdConfigFileChange(); err != nil {
+					return err
+				}
+			}
+
+			return oscChanges.completedUnitCommand(unitName)
+		}
+
+		stop = func(ctx context.Context, unitName string) error {
+			if err := r.DBus.Stop(ctx, r.Recorder, node, unitName); err != nil {
+				return fmt.Errorf("unable to stop unit %q: %w", unitName, err)
+			}
+			log.Info("Successfully stopped unit", "unitName", unitName)
+			return oscChanges.completedUnitCommand(unitName)
+		}
+	)
+
+	var containerdChanged bool
+	for _, unit := range slices.Clone(oscChanges.Units.Commands) {
+		if unit.Name == v1beta1constants.OperatingSystemConfigUnitNameContainerDService {
+			containerdChanged = true
+		}
+
+		fns = append(fns, func(ctx context.Context) error {
+			switch unit.Command {
+			case extensionsv1alpha1.CommandStop:
+				return stop(ctx, unit.Name)
+			case extensionsv1alpha1.CommandRestart:
+				return restart(ctx, unit.Name)
+			case "":
+				return oscChanges.completedUnitCommand(unit.Name)
+			}
+			return fmt.Errorf("unknown unit command %q", unit.Command)
+		})
+	}
+
+	if oscChanges.Containerd.ConfigFileChanged && !containerdChanged {
+		fns = append(fns, func(ctx context.Context) error {
+			return restart(ctx, v1beta1constants.OperatingSystemConfigUnitNameContainerDService)
+		})
+	}
+
+	return flow.Parallel(fns...)(ctx)
+}
+
+func isInPlaceUpdate(changes *operatingSystemConfigChanges) bool {
+	return changes.InPlaceUpdates.OperatingSystem ||
+		changes.InPlaceUpdates.Kubelet.MinorVersion ||
+		changes.InPlaceUpdates.Kubelet.Config ||
+		changes.InPlaceUpdates.Kubelet.CPUManagerPolicy ||
+		changes.InPlaceUpdates.CertificateAuthoritiesRotation.Kubelet ||
+		changes.InPlaceUpdates.CertificateAuthoritiesRotation.NodeAgent ||
+		changes.InPlaceUpdates.ServiceAccountKeyRotation
+}
+
+func (r *Reconciler) performInPlaceUpdate(ctx context.Context, log logr.Logger, osc *extensionsv1alpha1.OperatingSystemConfig, oscChanges *operatingSystemConfigChanges, node *corev1.Node, osVersion *string) error {
+	// Node can be nil during the first reconciliation loop.
+	if node == nil {
+		return nil
+	}
+
+	if osc.Spec.InPlaceUpdates == nil {
+		return nil
+	}
+
+	// Perform credentials rotation before the OS update, never after.
+	//
+	// An in-place OS update is supposed to wipe the node's /etc overlay on reboot, which takes
+	// last-applied-osc.yaml and last-computed-osc-changes.yaml with it. That is intentional: it forces
+	// gardener-node-agent to re-apply the whole OperatingSystemConfig from scratch onto the fresh /etc.
+	// The side effect is that any pending credentials rotation recorded in that state is lost across the
+	// reboot. By rotating first, the rotation is completed and its result is captured when the post-update
+	// reconcile writes the new last-applied-osc.yaml, so nothing is dropped by the wipe.
+	if err := r.performCredentialsRotationInPlace(ctx, log, oscChanges, node); err != nil {
+		return fmt.Errorf("failed to perform certificate rotation in-place: %w", err)
+	}
+
+	// This means that the OS was not updated in-place and it rolled back to the previous version but a newer version is not yet applied.
+	if lastAttemptedUpdateVersion, osUpdateAnnotationExists := node.Annotations[annotationUpdatingOperatingSystemVersion]; osUpdateAnnotationExists && oscChanges.InPlaceUpdates.OperatingSystem {
+		lastAttemptedUpdateVersionIsSameAsDesired, err := versionutils.CompareVersions(lastAttemptedUpdateVersion, "=", osc.Spec.InPlaceUpdates.OperatingSystemVersion)
+		if err != nil {
+			return fmt.Errorf("failed comparing last attempted update version %q with desired OS version %q: %w", lastAttemptedUpdateVersion, osc.Spec.InPlaceUpdates.OperatingSystemVersion, err)
+		}
+
+		if lastAttemptedUpdateVersionIsSameAsDesired {
+			reason, ok := node.Annotations[machinev1alpha1.AnnotationKeyMachineUpdateFailedReason]
+			// If there is already a annotation with the update failed reason, don't overwrite it.
+			if !ok {
+				if err := r.patchNodeUpdateFailed(ctx, log, node, fmt.Sprintf("OS update might have failed and rolled back to the previous version. Desired version: %q, Current version: %q", osc.Spec.InPlaceUpdates.OperatingSystemVersion, *osVersion)); err != nil {
+					return err
+				}
+
+				// No point in requeuing the node for the same version, wait for the newer version to be applied.
+				return reconcile.TerminalError(fmt.Errorf("OS update might have failed and rolled back to the previous version. Desired version: %q, Current version: %q", osc.Spec.InPlaceUpdates.OperatingSystemVersion, *osVersion))
+			}
+
+			return reconcile.TerminalError(fmt.Errorf("OS update has failed with error: %s", reason))
+		}
+	}
+
+	if err := r.updateOSInPlace(ctx, log, oscChanges, osc, node); err != nil {
+		return fmt.Errorf("failed to update OS in-place: %w", err)
+	}
+
+	if oscChanges.InPlaceUpdates.OperatingSystem {
+		// It can so happen that the updateOSInPlace function returns nil error, because calling the update command succeeded,
+		// but the OS is not yet rebooted. We should not proceed the reconciliation until the node-agent is restarted after the OS update.
+		currentOSVersion, err := GetOSVersion(osc.Spec.InPlaceUpdates, r.FS)
+		if err != nil {
+			return fmt.Errorf("failed to get current OS version: %w", err)
+		}
+
+		if osVersionUpToDate, err := IsOsVersionUpToDate(currentOSVersion, osc); err != nil {
+			return err
+		} else if !osVersionUpToDate {
+			return reconcile.TerminalError(fmt.Errorf("stopping reconciliation until gardener-node-agent is restarted after the OS update. Current version: %q, Desired version: %q", *currentOSVersion, osc.Spec.InPlaceUpdates.OperatingSystemVersion))
+		}
+	}
+
+	if (nodeHasInPlaceUpdateConditionWithReasonReadyForUpdate(node.Status.Conditions) && !kubernetesutils.HasMetaDataLabel(node, machinev1alpha1.LabelKeyNodeUpdateResult, machinev1alpha1.LabelValueNodeUpdateSuccessful)) || kubernetesutils.HasMetaDataLabel(node, machinev1alpha1.LabelKeyNodeUpdateResult, machinev1alpha1.LabelValueNodeUpdateFailed) {
+		if err := r.deleteRemainingPods(ctx, log, node); err != nil {
+			return fmt.Errorf("failed to delete remaining pods: %w", err)
+		}
+
+		// If this point is reached, which means all the in-place updates are done, we can label the node with the update-successful label.
+		if err := r.patchNodeUpdateSuccessful(ctx, log, node); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func isInPlaceKubeletUpdate(changes *operatingSystemConfigChanges) bool {
+	return changes.InPlaceUpdates.Kubelet.MinorVersion || changes.InPlaceUpdates.Kubelet.Config || changes.InPlaceUpdates.Kubelet.CPUManagerPolicy
+}
+
+func (r *Reconciler) checkKubeletHealth(ctx context.Context, log logr.Logger, node *corev1.Node) error {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, healthcheckcontroller.DefaultKubeletHealthEndpoint, nil)
+	if err != nil {
+		log.Error(err, "Creating request to kubelet health endpoint failed")
+		return err
+	}
+
+	if err := retryutils.UntilTimeout(ctx, KubeletHealthCheckRetryInterval, KubeletHealthCheckRetryTimeout, func(_ context.Context) (bool, error) {
+		if response, err2 := httpClient.Do(request); err2 != nil { // #nosec: G704 -- URL is kubelet health endpoint, not user input.
+			return retryutils.MinorError(fmt.Errorf("HTTP request to kubelet health endpoint failed: %w", err2))
+		} else if response.StatusCode == http.StatusOK {
+			log.Info("Kubelet is healthy after in-place update")
+			return retryutils.Ok()
+		}
+
+		return retryutils.NotOk()
+	}); err != nil {
+		if patchErr := r.patchNodeUpdateFailed(ctx, log, node, fmt.Sprintf("kubelet is not healthy after in-place update: %s", err.Error())); patchErr != nil {
+			return patchErr
+		}
+
+		return fmt.Errorf("kubelet is not healthy after in-place update: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Reconciler) completeKubeletInPlaceUpdate(ctx context.Context, log logr.Logger, changes *operatingSystemConfigChanges, node *corev1.Node) error {
+	if err := r.checkKubeletHealth(ctx, log, node); err != nil {
+		return fmt.Errorf("kubelet is not healthy after minor version/config update: %w", err)
+	}
+
+	if err := changes.completeKubeletMinorVersionUpdate(); err != nil {
+		return fmt.Errorf("failed completing kubelet minor version update: %w", err)
+	}
+
+	if err := changes.completeKubeletConfigUpdate(); err != nil {
+		return fmt.Errorf("failed completing kubelet config update: %w", err)
+	}
+
+	if err := changes.completeKubeletCPUManagerPolicyUpdate(); err != nil {
+		return fmt.Errorf("failed completing kubelet cpu manager policy update: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Reconciler) triggerTokenResync(log logr.Logger, secretName string) {
+	r.Channel <- event.TypedGenericEvent[*corev1.Secret]{Object: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: metav1.NamespaceSystem}}}
+	log.Info("Triggered an event for the token controller", "secret", secretName)
+}
+
+func (r *Reconciler) performCredentialsRotationInPlace(ctx context.Context, log logr.Logger, oscChanges *operatingSystemConfigChanges, node *corev1.Node) error {
+	if oscChanges.InPlaceUpdates.ServiceAccountKeyRotation {
+		// Generate events for the token sync controller to update the SA tokens.
+		for _, config := range r.TokenSecretSyncConfigs {
+			r.triggerTokenResync(log, config.SecretName)
+		}
+
+		if err := oscChanges.completeSAKeyRotation(); err != nil {
+			return fmt.Errorf("failed completing SA key rotation: %w", err)
+		}
+	}
+
+	if oscChanges.InPlaceUpdates.CertificateAuthoritiesRotation.Kubelet || oscChanges.InPlaceUpdates.CertificateAuthoritiesRotation.NodeAgent {
+		if oscChanges.InPlaceUpdates.CertificateAuthoritiesRotation.NodeAgent {
+			if err := r.requestNewKubeConfigForNodeAgent(ctx, log); err != nil {
+				return fmt.Errorf("failed requesting new certificate for node agent: %w", err)
+			}
+
+			if err := oscChanges.completeCARotationNodeAgent(); err != nil {
+				return fmt.Errorf("failed completing CA key rotation: %w", err)
+			}
+
+			log.Info("Successfully requested new kubeconfig for node agent after CA rotation")
+		}
+
+		if oscChanges.InPlaceUpdates.CertificateAuthoritiesRotation.Kubelet {
+			apiServerConfig, err := nodeagent.GetAPIServerConfig(r.FS, r.ConfigDir)
+			if err != nil {
+				return fmt.Errorf("failed reading the API server config: %w", err)
+			}
+
+			if err := r.rebootstrapKubelet(ctx, log, apiServerConfig, node); err != nil {
+				return fmt.Errorf("failed to rebootstrap kubelet: %w", err)
+			}
+
+			if err := r.checkKubeletHealth(ctx, log, node); err != nil {
+				return fmt.Errorf("kubelet is not healthy after CA rotation: %w", err)
+			}
+
+			if err := oscChanges.completeCARotationKubelet(); err != nil {
+				return fmt.Errorf("failed completing CA key rotation for Kubelet: %w", err)
+			}
+
+			log.Info("Successfully rebootstrapped kubelet after CA rotation")
+		}
+	}
+
+	return nil
+}
+
+func (r *Reconciler) rebootstrapKubelet(ctx context.Context, log logr.Logger, apiServerConfig *nodeagentconfigv1alpha1.APIServer, node *corev1.Node) error {
+	log.Info("Rebootstrapping kubelet after CA rotation")
+
+	kubeletClientCertificatePath := filepath.Join(kubeletcomponent.PathKubeletDirectory, "pki", "kubelet-client-current.pem")
+	kubeletClientCertificate, err := r.FS.ReadFile(kubeletClientCertificatePath)
+	if err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+		return fmt.Errorf("failed checking whether kubelet client certificate file %q exists: %w", kubeletClientCertificatePath, err)
+	}
+
+	kubeConfigFile, err := r.FS.ReadFile(kubeletcomponent.PathKubeconfigReal)
+	if err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+		return fmt.Errorf("failed checking whether kubeconfig file %q exists: %w", kubeletcomponent.PathKubeconfigReal, err)
+	} else if err == nil {
+		kubeConfig, err := clientcmd.Load(kubeConfigFile)
+		if err != nil {
+			return fmt.Errorf("unable to load kubeconfig file %q: %w", kubeletcomponent.PathKubeconfigReal, err)
+		}
+
+		kubeConfig.Clusters = map[string]*clientcmdapi.Cluster{
+			"default-cluster": {
+				CertificateAuthority: apiServerConfig.CAFile,
+				Server:               apiServerConfig.Server,
+			},
+		}
+
+		kubeConfig.AuthInfos = map[string]*clientcmdapi.AuthInfo{
+			"default-auth": {
+				ClientCertificateData: kubeletClientCertificate,
+				ClientKeyData:         kubeletClientCertificate,
+			},
+		}
+
+		content, err := clientcmd.Write(*kubeConfig)
+		if err != nil {
+			return fmt.Errorf("unable to serialize kubeconfig: %w", err)
+		}
+
+		if err := r.FS.WriteFile(kubeletcomponent.PathKubeconfigBootstrap, content, 0600); err != nil {
+			return fmt.Errorf("unable to write kubeconfig file %q: %w", kubeletcomponent.PathKubeconfigBootstrap, err)
+		}
+	}
+
+	if _, err := r.FS.Stat(kubeletcomponent.PathKubeconfigBootstrap); err != nil {
+		if !errors.Is(err, afero.ErrFileNotFound) {
+			return fmt.Errorf("failed checking whether kubeconfig file %q exists: %w", kubeletcomponent.PathKubeconfigBootstrap, err)
+		}
+
+		return fmt.Errorf("kubeconfig file %q does not exist, cannot proceed with rebootstrap", kubeletcomponent.PathKubeconfigBootstrap)
+	}
+
+	if err := r.FS.Remove(kubeletcomponent.PathKubeconfigReal); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+		return fmt.Errorf("failed removing kubeconfig file %q: %w", kubeletcomponent.PathKubeconfigReal, err)
+	}
+
+	kubeletClientCertificateDir := filepath.Join(kubeletcomponent.PathKubeletDirectory, "pki")
+	if err := r.FS.RemoveAll(kubeletClientCertificateDir); err != nil && !errors.Is(err, afero.ErrFileNotFound) {
+		return fmt.Errorf("unable to delete kubelet client certificate directory %q: %w", kubeletClientCertificateDir, err)
+	}
+
+	if err := r.DBus.Restart(ctx, r.Recorder, node, v1beta1constants.OperatingSystemConfigUnitNameKubeletService); err != nil {
+		return fmt.Errorf("unable to restart unit %q: %w", v1beta1constants.OperatingSystemConfigUnitNameKubeletService, err)
+	}
+
+	log.Info("Successfully restarted kubelet after CA rotation", "node", node.Name)
+	return nil
+}
+
+// RequestAndStoreKubeconfig is an alias for `nodeagent.RequestAndStoreKubeconfig`. Exposed for tests.
+var RequestAndStoreKubeconfig = nodeagent.RequestAndStoreKubeconfig
+
+func (r *Reconciler) requestNewKubeConfigForNodeAgent(ctx context.Context, log logr.Logger) error {
+	log.Info("Requesting new kubeconfig for node agent after CA rotation")
+
+	kubeConfigFile, err := r.FS.ReadFile(nodeagentconfigv1alpha1.KubeconfigFilePath)
+	if err != nil {
+		return fmt.Errorf("failed reading kubeconfig file %q: %w", nodeagentconfigv1alpha1.KubeconfigFilePath, err)
+	}
+	restConfig, err := kubernetes.RESTConfigFromKubeconfig(kubeConfigFile)
+	if err != nil {
+		return fmt.Errorf("failed creating REST config from kubeconfig file %q: %w", nodeagentconfigv1alpha1.KubeconfigFilePath, err)
+	}
+
+	return RequestAndStoreKubeconfig(ctx, log, r.FS, restConfig, r.MachineName)
+}
+
+// The machine-controller-manager drains the node and marks it unschedulable before marking the node ready for in-place updates.
+// Despite this, DaemonSet pods and pods with local storage are recreated on the node during the update,
+// requiring an additional deletion step after the completion of update.
+func (r *Reconciler) deleteRemainingPods(ctx context.Context, log logr.Logger, node *corev1.Node) error {
+	// List all pods running on the node and delete them.
+	// This should recreate daemonset pods and pods with local storage.
+	log.Info("Deleting pods running on the node", "node", node.Name)
+	podList := &corev1.PodList{}
+	if err := r.Client.List(ctx, podList, client.MatchingFields{indexer.PodNodeName: node.Name}); err != nil {
+		return fmt.Errorf("failed listing pods for node %s: %w", node.Name, err)
+	}
+
+	return kubernetesutils.DeleteObjectsFromListConditionally(ctx, r.Client, podList, nil)
+}
+
+// Logic copied from https://github.com/google/cadvisor/blob/5b649021c2dab9db34c8c37596f8f73c48548350/machine/operatingsystem_unix.go#L29-L54
+// This is how kubelet gets the OS name and version. This function needs to be adapted and tested when an OS wants to support in-place updates.
+var rex = regexp.MustCompile("(PRETTY_NAME)=(.*)")
+
+// getOperatingSystem gets the name of the current operating system.
+func getOperatingSystem(fs afero.Afero) (string, error) {
+	fileName := "/etc/os-release"
+	bytes, err := fs.ReadFile(fileName)
+	if err != nil {
+		return "", fmt.Errorf("error opening file %q: %v", fileName, err)
+	}
+
+	line := rex.FindAllStringSubmatch(string(bytes), -1)
+	if len(line) > 0 {
+		return strings.Trim(line[0][2], "\""), nil
+	}
+
+	return "", nil
+}
+
+// GetOSVersion returns the current operating system version.
+var GetOSVersion = func(inPlaceUpdates *extensionsv1alpha1.InPlaceUpdates, fs afero.Afero) (*string, error) {
+	if inPlaceUpdates == nil {
+		return nil, nil
+	}
+
+	os, err := getOperatingSystem(fs)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get operating system name: %w", err)
+	}
+
+	version := nodeagentconfigv1alpha1.OSVersionRegex.FindString(os)
+	if version == "" {
+		return nil, fmt.Errorf("unable to find version in %q with regex: %s", os, nodeagentconfigv1alpha1.OSVersionRegex.String())
+	}
+	return new(version), nil
+}
+
+// ExecCommandCombinedOutput executes the given command with the given arguments and returns the combined output. Exposed for testing.
+var ExecCommandCombinedOutput = func(ctx context.Context, command string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, command, args...).CombinedOutput() // #nosec: G204 -- Command and args are controlled internally.
+}
+
+func (r *Reconciler) updateOSInPlace(ctx context.Context, log logr.Logger, oscChanges *operatingSystemConfigChanges, osc *extensionsv1alpha1.OperatingSystemConfig, node *corev1.Node) error {
+	if !oscChanges.InPlaceUpdates.OperatingSystem {
+		return nil
+	}
+
+	if osc.Status.InPlaceUpdates == nil || osc.Status.InPlaceUpdates.OSUpdate == nil || osc.Status.InPlaceUpdates.OSUpdate.Command ==
+		"" {
+		return fmt.Errorf("update command is not provided in OSC, cannot proceed with in-place update")
+	}
+
+	if osc.Spec.InPlaceUpdates == nil || osc.Spec.InPlaceUpdates.OperatingSystemVersion == "" {
+		return fmt.Errorf("operating system version is not provided in OSC, cannot proceed with in-place update")
+	}
+
+	log.Info("Adding annotation on node for OS update", "key", annotationUpdatingOperatingSystemVersion, "value", osc.Spec.InPlaceUpdates.OperatingSystemVersion)
+	patch := client.MergeFrom(node.DeepCopy())
+	metav1.SetMetaDataAnnotation(&node.ObjectMeta, annotationUpdatingOperatingSystemVersion, osc.Spec.InPlaceUpdates.OperatingSystemVersion)
+	if err := r.Client.Patch(ctx, node, patch); err != nil {
+		return fmt.Errorf("failed to patch node with annotation for OS update: %w", err)
+	}
+
+	log.Info("Executing update script", "command", osc.Status.InPlaceUpdates.OSUpdate.Command, "args", strings.Join(osc.Status.InPlaceUpdates.OSUpdate.Args, " "))
+	if err := retryutils.UntilTimeout(ctx, OSUpdateRetryInterval, OSUpdateRetryTimeout, func(ctx context.Context) (bool, error) {
+		if output, err2 := ExecCommandCombinedOutput(ctx, osc.Status.InPlaceUpdates.OSUpdate.Command, osc.Status.InPlaceUpdates.OSUpdate.Args...); err2 != nil {
+			if retriableErrorPatternRegex.MatchString(string(output)) {
+				log.Error(err2, "Retriable error detected while executing OS update command: retrying", "output", strings.ReplaceAll(string(output), "\n", " "))
+				return retryutils.MinorError(fmt.Errorf("retriable error detected: %w, output: %s", err2, string(output)))
+			} else if nonRetriableErrorPatternRegex.MatchString(string(output)) {
+				return retryutils.SevereError(fmt.Errorf("non-retriable error detected: %w, output: %s", err2, string(output)))
+			}
+
+			return retryutils.SevereError(fmt.Errorf("no specific error detected: %w, output: %s", err2, string(output)))
+		}
+
+		return retryutils.Ok()
+	}); err != nil {
+		if patchErr := r.patchNodeUpdateFailed(ctx, log, node, fmt.Sprintf("failed to execute OS update command: %v", err)); patchErr != nil {
+			return patchErr
+		}
+
+		return fmt.Errorf("failed to execute OS update command: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Reconciler) patchNodeUpdateSuccessful(ctx context.Context, log logr.Logger, node *corev1.Node) error {
+	log.Info("Marking the node with in-place update successful label", "node", node.Name)
+
+	patch := client.MergeFrom(node.DeepCopy())
+	metav1.SetMetaDataLabel(&node.ObjectMeta, machinev1alpha1.LabelKeyNodeUpdateResult, machinev1alpha1.LabelValueNodeUpdateSuccessful)
+	delete(node.Annotations, machinev1alpha1.AnnotationKeyMachineUpdateFailedReason)
+	delete(node.Annotations, annotationUpdatingOperatingSystemVersion)
+	if err := r.Client.Patch(ctx, node, patch); err != nil {
+		return fmt.Errorf("failed patching node with update-successful label: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Reconciler) patchNodeUpdateFailed(ctx context.Context, log logr.Logger, node *corev1.Node, reason string) error {
+	log.Info("Marking the node with in-place update failed label", "node", node.Name, "reason", strings.ReplaceAll(reason, "\n", " "))
+
+	patch := client.MergeFrom(node.DeepCopy())
+	metav1.SetMetaDataLabel(&node.ObjectMeta, machinev1alpha1.LabelKeyNodeUpdateResult, machinev1alpha1.LabelValueNodeUpdateFailed)
+	metav1.SetMetaDataAnnotation(&node.ObjectMeta, machinev1alpha1.AnnotationKeyMachineUpdateFailedReason, reason)
+
+	if err := r.Client.Patch(ctx, node, patch); err != nil {
+		return fmt.Errorf("failed patching node with update-failed label: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Reconciler) restartNodeAgent(oscChanges *operatingSystemConfigChanges, log logr.Logger) (reconcile.Result, error) {
+	log.Info("Must restart myself (gardener-node-agent unit), canceling the context to initiate graceful shutdown")
+	if err := oscChanges.setMustRestartNodeAgent(false); err != nil {
+		return reconcile.Result{}, err
+	}
+	r.CancelContext()
+	return reconcile.Result{RequeueAfter: RequeueAfterRestart}, nil
+}
+
+func (r *Reconciler) ensureStaticPodsReconciledAndReady(ctx context.Context, log logr.Logger, node *corev1.Node, osc *extensionsv1alpha1.OperatingSystemConfig) (done bool, err error) {
+	staticPodNameToDesiredHash, err := r.getDesiredStaticPodHashes(ctx, log, osc)
+	if err != nil {
+		return false, fmt.Errorf("failed to retrieve desired static pod hashes from OperatingSystemConfig: %w", err)
+	}
+
+	if len(staticPodNameToDesiredHash) == 0 {
+		return true, nil
+	}
+
+	log.Info("Detected desired static pods in OperatingSystemConfig, ensuring they are rolled out and ready", "numberOfDesiredStaticPods", len(staticPodNameToDesiredHash))
+
+	staticPodNameToActualHash, staticPodList, err := r.getActualStaticPodHashes(ctx, log, node.Name)
+	if err != nil {
+		return false, fmt.Errorf("failed to retrieve actual static pod hashes from cluster: %w", err)
+	}
+
+	if !maps.Equal(staticPodNameToDesiredHash, staticPodNameToActualHash) {
+		log.Info("Not all static pods have been rolled out to the desired state yet, requeuing", "hashDifferences", cmp.Diff(staticPodNameToDesiredHash, staticPodNameToActualHash))
+		return false, nil
+	}
+
+	for _, pod := range staticPodList.Items {
+		if health.CheckPod(&pod) != nil {
+			log.Info("Static pod is not healthy yet, requeuing", "pod", client.ObjectKeyFromObject(&pod))
+			return false, nil //nolint:nilerr
+		}
+
+		if !health.IsPodReady(&pod) {
+			log.Info("Static pod is not ready yet, requeuing", "pod", client.ObjectKeyFromObject(&pod))
+			return false, nil
+		}
+	}
+
+	log.Info("All static pods have been rolled out and are healthy and ready")
+	return true, nil
+}
+
+func (r *Reconciler) getDesiredStaticPodHashes(ctx context.Context, log logr.Logger, osc *extensionsv1alpha1.OperatingSystemConfig) (map[string]string, error) {
+	staticPodFiles := slices.DeleteFunc(append(osc.Spec.Files, osc.Status.ExtensionFiles...), func(file extensionsv1alpha1.File) bool {
+		return !strings.HasPrefix(file.Path, kubeletcomponent.FilePathKubernetesManifests) ||
+			(file.HostName != nil && *file.HostName != r.HostName)
+	})
+
+	staticPodNameToHash := make(map[string]string)
+	for _, file := range staticPodFiles {
+		data, ok, err := r.getFileContentData(ctx, file)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get data of file %q: %w", file.Path, err)
+		}
+		if !ok {
+			continue
+		}
+
+		pod := &corev1.Pod{}
+		if _, _, err := kubernetes.ShootCodec.UniversalDecoder(corev1.SchemeGroupVersion).Decode(data, nil, pod); err != nil {
+			return nil, fmt.Errorf("unable to decode static pod from file data %q: %w", file.Path, err)
+		}
+
+		log.Info("Found static pod in the OperatingSystemConfig", "pod", client.ObjectKeyFromObject(pod), "hash", pod.Annotations[staticpod.AnnotationKeyHash])
+		staticPodNameToHash[pod.Name] = pod.Annotations[staticpod.AnnotationKeyHash]
+	}
+
+	return staticPodNameToHash, nil
+}
+
+func (r *Reconciler) getActualStaticPodHashes(ctx context.Context, log logr.Logger, nodeName string) (map[string]string, *corev1.PodList, error) {
+	staticPodList := &corev1.PodList{}
+	if err := r.Client.List(ctx, staticPodList, client.MatchingFields{indexer.PodNodeName: nodeName}, client.MatchingLabels{staticpod.LabelKeyIsStaticPod: staticpod.LabelValueIsStaticPod}); err != nil {
+		return nil, nil, fmt.Errorf("failed listing static pods for node %s: %w", nodeName, err)
+	}
+
+	staticPodNameToHash := make(map[string]string)
+	for _, pod := range staticPodList.Items {
+		log.Info("Found static pod in the system", "pod", client.ObjectKeyFromObject(&pod), "hash", pod.Annotations[staticpod.AnnotationKeyHash])
+		staticPodNameToHash[strings.TrimSuffix(pod.Name, "-"+pod.Spec.NodeName)] = pod.Annotations[staticpod.AnnotationKeyHash]
+	}
+
+	return staticPodNameToHash, staticPodList, nil
+}

@@ -1,0 +1,120 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package mutator
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	extensionswebhook "github.com/gardener/gardener/extensions/pkg/webhook"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	localv1alpha1 "github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
+	"github.com/gardener/gardener/pkg/utils"
+)
+
+// NewNamespacedCloudProfileMutator returns a new instance of a NamespacedCloudProfile mutator.
+func NewNamespacedCloudProfileMutator(mgr manager.Manager) extensionswebhook.Mutator {
+	return &namespacedCloudProfile{
+		client:  mgr.GetClient(),
+		decoder: serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(),
+	}
+}
+
+type namespacedCloudProfile struct {
+	client  client.Client
+	decoder runtime.Decoder
+}
+
+// Mutate mutates the given NamespacedCloudProfile object.
+func (p *namespacedCloudProfile) Mutate(_ context.Context, newObj, _ client.Object) error {
+	profile, ok := newObj.(*gardencorev1beta1.NamespacedCloudProfile)
+	if !ok {
+		return fmt.Errorf("wrong object type %T", newObj)
+	}
+
+	// Ignore NamespacedCloudProfiles being deleted and wait for core mutator to patch the status.
+	if profile.DeletionTimestamp != nil || profile.Generation != profile.Status.ObservedGeneration ||
+		profile.Spec.ProviderConfig == nil || profile.Status.CloudProfileSpec.ProviderConfig == nil {
+		return nil
+	}
+
+	specConfig := &localv1alpha1.CloudProfileConfig{}
+	if _, _, err := p.decoder.Decode(profile.Spec.ProviderConfig.Raw, nil, specConfig); err != nil {
+		return fmt.Errorf("could not decode providerConfig of namespacedCloudProfile spec for '%s': %w", profile.Name, err)
+	}
+	statusConfig := &localv1alpha1.CloudProfileConfig{}
+	if _, _, err := p.decoder.Decode(profile.Status.CloudProfileSpec.ProviderConfig.Raw, nil, statusConfig); err != nil {
+		return fmt.Errorf("could not decode providerConfig of namespacedCloudProfile status for '%s': %w", profile.Name, err)
+	}
+
+	// TODO(Roncossek): Remove TransformProviderConfigToParentFormat once all CloudProfiles have been migrated to use CapabilityFlavors and the Architecture fields are effectively forbidden or have been removed.
+	uniformSpecConfig := TransformProviderConfigToParentFormat(specConfig, profile.Status.CloudProfileSpec.MachineCapabilities)
+
+	statusConfig.MachineImages = mergeMachineImages(uniformSpecConfig.MachineImages, statusConfig.MachineImages)
+
+	modifiedStatusConfig, err := json.Marshal(statusConfig)
+	if err != nil {
+		return err
+	}
+	profile.Status.CloudProfileSpec.ProviderConfig.Raw = modifiedStatusConfig
+
+	return nil
+}
+
+// TransformProviderConfigToParentFormat supports the migration from the deprecated architecture fields to architecture capabilities during a transition period.
+// Depending on whether the parent CloudProfile is in capability format or not, it transforms the given config to
+// the capability format or the deprecated architecture fields format respectively.
+// It assumes that the given config is either completely in the capability format or in the deprecated architecture fields format.
+func TransformProviderConfigToParentFormat(cloudProfileConfig *localv1alpha1.CloudProfileConfig, capabilityDefinitions []gardencorev1beta1.CapabilityDefinition) *localv1alpha1.CloudProfileConfig {
+	isParentInCapabilityFormat := len(capabilityDefinitions) != 0
+	for idx, machineImage := range cloudProfileConfig.MachineImages {
+		cloudProfileConfig.MachineImages[idx].Versions = make([]localv1alpha1.MachineImageVersion, 0, len(machineImage.Versions))
+		for _, version := range machineImage.Versions {
+			isVersionInCapabilityFormat := len(version.CapabilityFlavors) != 0
+			transformedVersion := localv1alpha1.MachineImageVersion{Version: version.Version}
+			if isParentInCapabilityFormat && !isVersionInCapabilityFormat {
+				// transform to capability format
+				transformedVersion.CapabilityFlavors = []localv1alpha1.MachineImageFlavor{{Image: version.Image}}
+			} else if !isParentInCapabilityFormat && isVersionInCapabilityFormat {
+				// transform to old format
+				transformedVersion.Image = version.CapabilityFlavors[0].Image
+			} else {
+				transformedVersion = version
+			}
+			cloudProfileConfig.MachineImages[idx].Versions = append(cloudProfileConfig.MachineImages[idx].Versions, transformedVersion)
+		}
+	}
+	return cloudProfileConfig
+}
+
+func mergeMachineImages(specMachineImages, statusMachineImages []localv1alpha1.MachineImages) []localv1alpha1.MachineImages {
+	specImages := utils.CreateMapFromSlice(specMachineImages, func(mi localv1alpha1.MachineImages) string { return mi.Name })
+	statusImages := utils.CreateMapFromSlice(statusMachineImages, func(mi localv1alpha1.MachineImages) string { return mi.Name })
+	for _, specMachineImage := range specImages {
+		if _, exists := statusImages[specMachineImage.Name]; !exists {
+			statusImages[specMachineImage.Name] = specMachineImage
+		} else {
+			statusImageVersions := utils.CreateMapFromSlice(statusImages[specMachineImage.Name].Versions, func(v localv1alpha1.MachineImageVersion) string { return v.Version })
+			specImageVersions := utils.CreateMapFromSlice(specImages[specMachineImage.Name].Versions, func(v localv1alpha1.MachineImageVersion) string { return v.Version })
+			for _, version := range specImageVersions {
+				statusImageVersions[version.Version] = version
+			}
+
+			statusImages[specMachineImage.Name] = localv1alpha1.MachineImages{
+				Name:     specMachineImage.Name,
+				Versions: slices.Collect(maps.Values(statusImageVersions)),
+			}
+		}
+	}
+	return slices.Collect(maps.Values(statusImages))
+}

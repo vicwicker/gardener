@@ -1,0 +1,138 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package networkpolicy_test
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"path/filepath"
+	"testing"
+
+	"github.com/go-logr/logr"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	controllerconfig "sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	"github.com/gardener/gardener/pkg/api/indexer"
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/logger"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/networkpolicy"
+	"github.com/gardener/gardener/pkg/utils"
+	"github.com/gardener/gardener/test/utils/namespacefinalizer"
+)
+
+func TestNetworkPolicy(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Test Integration ResourceManager NetworkPolicy Suite")
+}
+
+const (
+	// testID is used for generating test namespace names and other IDs
+	testID    = "networkpolicy-controller-test"
+	finalizer = "test.gardener.cloud/integration"
+)
+
+var (
+	ctx       = context.Background()
+	log       logr.Logger
+	logBuffer bytes.Buffer
+
+	restConfig *rest.Config
+	testEnv    *envtest.Environment
+	testClient client.Client
+	mgrClient  client.Client
+
+	testRunID string
+
+	ingressControllerNamespace   = "ingress-ctrl-ns"
+	ingressControllerPodSelector = metav1.LabelSelector{MatchLabels: map[string]string{"app": "ingress-controller"}}
+
+	istioNamespace   = "istio-ingress-ns"
+	istioPodSelector = metav1.LabelSelector{MatchLabels: map[string]string{"istio": "ingressgateway"}}
+)
+
+var _ = BeforeSuite(func() {
+	logf.SetLogger(logger.MustNewZapLogger(logger.DebugLevel, logger.FormatJSON, zap.WriteTo(io.MultiWriter(GinkgoWriter, &logBuffer))))
+	log = logf.Log.WithName(testID)
+
+	By("Start test environment")
+	testEnv = &envtest.Environment{
+		CRDInstallOptions: envtest.CRDInstallOptions{
+			Paths: []string{filepath.Join("..", "..", "..", "..", "pkg", "component", "networking", "istio", "charts", "istio", "istio-crds", "crd-all.gen.yaml")},
+		},
+		ErrorIfCRDPathMissing: true,
+	}
+
+	var err error
+	restConfig, err = testEnv.Start()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(restConfig).NotTo(BeNil())
+
+	DeferCleanup(func() {
+		By("Stop test environment")
+		Expect(testEnv.Stop()).To(Succeed())
+	})
+
+	By("Create test clients")
+	testRunID = utils.ComputeSHA256Hex([]byte(uuid.NewUUID()))[:16]
+	log.Info("Using test run ID for test", "testRunID", testRunID)
+
+	testClient, err = client.New(restConfig, client.Options{Scheme: kubernetes.SeedScheme})
+	Expect(err).NotTo(HaveOccurred())
+
+	By("Setup manager")
+	mgr, err := manager.New(restConfig, manager.Options{
+		Scheme:  kubernetes.SeedScheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+		Controller: controllerconfig.Controller{
+			SkipNameValidation: new(true),
+		},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	mgrClient = mgr.GetClient()
+
+	By("Add field indexes")
+	Expect(indexer.AddServiceNamespaceSelectors(ctx, mgr.GetFieldIndexer())).To(Succeed())
+
+	By("Register controller")
+	Expect((&networkpolicy.Reconciler{
+		Config: resourcemanagerconfigv1alpha1.NetworkPolicyControllerConfig{
+			ConcurrentSyncs:    new(int32(5)),
+			NamespaceSelectors: []metav1.LabelSelector{{MatchLabels: map[string]string{testID: testRunID}}},
+			IngressControllerSelector: &resourcemanagerconfigv1alpha1.IngressControllerSelector{
+				Namespace:   ingressControllerNamespace,
+				PodSelector: ingressControllerPodSelector,
+			},
+		},
+	}).AddToManager(ctx, mgr, mgr)).To(Succeed())
+
+	// We create and delete namespace in every test, so let's ensure they get finalized.
+	Expect((&namespacefinalizer.Reconciler{Exceptions: sets.New(finalizer)}).AddToManager(mgr)).To(Succeed())
+
+	By("Start manager")
+	mgrContext, mgrCancel := context.WithCancel(ctx)
+
+	go func() {
+		defer GinkgoRecover()
+		Expect(mgr.Start(mgrContext)).To(Succeed())
+	}()
+
+	DeferCleanup(func() {
+		By("Stop manager")
+		mgrCancel()
+	})
+})

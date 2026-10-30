@@ -1,0 +1,178 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "name" . }}
+  labels:
+{{ include "labels" . | indent 4 }}
+rules:
+- apiGroups:
+  - extensions.gardener.cloud
+  resources:
+  - backupbuckets
+  - backupbuckets/status
+  - backupentries
+  - backupentries/status
+  - bastions
+  - bastions/status
+  - clusters
+  - controlplanes
+  - controlplanes/status
+  - extensions
+  - extensions/status
+  - infrastructures
+  - infrastructures/status
+  - operatingsystemconfigs
+  - operatingsystemconfigs/status
+  - selfhostedshootexposures
+  - selfhostedshootexposures/status
+  - workers
+  - workers/status
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - extensions.gardener.cloud
+  resources:
+  - dnsrecords
+  - dnsrecords/status
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - resources.gardener.cloud
+  resources:
+  - managedresources
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - patch
+  - update
+  - delete
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  resourceNames:
+  - provider-local-leader-election
+  verbs:
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  resourceNames:
+  - gardener-extension-heartbeat
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - ""
+  - apps
+  - batch
+  - policy
+  - rbac.authorization.k8s.io
+  - admissionregistration.k8s.io
+  - apiextensions.k8s.io
+  - networking.k8s.io
+  - discovery.k8s.io
+  - crd.projectcalico.org
+  resources:
+  - namespaces
+  - namespaces/finalizers
+  - events
+  - secrets
+  - configmaps
+  - endpoints
+  - endpointslices
+  - deployments
+  - deployments/scale
+  - services
+  - services/status
+  - nodes
+  - nodes/status
+  - serviceaccounts
+  - clusterroles
+  - clusterrolebindings
+  - roles
+  - rolebindings
+  - jobs
+  - pods
+  - pods/log
+  - pods/exec
+  - mutatingwebhookconfigurations
+  - customresourcedefinitions
+  - networkpolicies
+  - poddisruptionbudgets
+  - ippools
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - patch
+  - update
+  - delete
+  - deletecollection
+- apiGroups:
+  - machine.sapcloud.io
+  resources:
+  - machineclasses
+  - machinedeployments
+  - machines
+  - machinesets
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - patch
+  - update
+  - delete
+  - deletecollection
+- apiGroups:
+  - autoscaling.k8s.io
+  resources:
+  - verticalpodautoscalers
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - patch
+  - update
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "name" . }}
+  labels:
+{{ include "labels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "name" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "name" . }}
+  namespace: {{ .Release.Namespace }}

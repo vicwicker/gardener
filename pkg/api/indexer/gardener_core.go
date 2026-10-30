@@ -1,0 +1,417 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package indexer
+
+import (
+	"context"
+	"fmt"
+
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/apis/core"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+)
+
+// ProjectNamespaceIndexerFunc extracts the .spec.namespace field of a Project.
+func ProjectNamespaceIndexerFunc(obj client.Object) []string {
+	project, ok := obj.(*gardencorev1beta1.Project)
+	if !ok {
+		return []string{""}
+	}
+	return []string{ptr.Deref(project.Spec.Namespace, "")}
+}
+
+// BackupBucketSeedNameIndexerFunc extracts the .spec.seedName field of a BackupBucket.
+func BackupBucketSeedNameIndexerFunc(obj client.Object) []string {
+	backupBucket, ok := obj.(*gardencorev1beta1.BackupBucket)
+	if !ok {
+		return []string{""}
+	}
+	return []string{ptr.Deref(backupBucket.Spec.SeedName, "")}
+}
+
+// BackupBucketShootRefNameIndexerFunc extracts the .spec.shootRef.Name field of a BackupBucket.
+func BackupBucketShootRefNameIndexerFunc(obj client.Object) []string {
+	backupBucket, ok := obj.(*gardencorev1beta1.BackupBucket)
+	if !ok || backupBucket.Spec.ShootRef == nil {
+		return []string{""}
+	}
+	return []string{backupBucket.Spec.ShootRef.Name}
+}
+
+// BackupBucketShootRefNamespaceIndexerFunc extracts the .spec.shootRef.Namespace field of a BackupBucket.
+func BackupBucketShootRefNamespaceIndexerFunc(obj client.Object) []string {
+	backupBucket, ok := obj.(*gardencorev1beta1.BackupBucket)
+	if !ok || backupBucket.Spec.ShootRef == nil {
+		return []string{""}
+	}
+	return []string{backupBucket.Spec.ShootRef.Namespace}
+}
+
+// BackupEntryBucketNameIndexerFunc extracts the .spec.bucketName field of a BackupEntry.
+func BackupEntryBucketNameIndexerFunc(obj client.Object) []string {
+	backupEntry, ok := obj.(*gardencorev1beta1.BackupEntry)
+	if !ok {
+		return []string{""}
+	}
+	return []string{backupEntry.Spec.BucketName}
+}
+
+// BackupEntryShootRefNameIndexerFunc extracts the .spec.shootRef.Name field of a BackupEntry.
+func BackupEntryShootRefNameIndexerFunc(obj client.Object) []string {
+	backupEntry, ok := obj.(*gardencorev1beta1.BackupEntry)
+	if !ok || backupEntry.Spec.ShootRef == nil {
+		return []string{""}
+	}
+	return []string{backupEntry.Spec.ShootRef.Name}
+}
+
+// BackupEntryShootRefNamespaceIndexerFunc extracts the .spec.shootRef.Namespace field of a BackupEntry.
+func BackupEntryShootRefNamespaceIndexerFunc(obj client.Object) []string {
+	backupEntry, ok := obj.(*gardencorev1beta1.BackupEntry)
+	if !ok || backupEntry.Spec.ShootRef == nil {
+		return []string{""}
+	}
+	return []string{backupEntry.Spec.ShootRef.Namespace}
+}
+
+// ControllerInstallationSeedRefNameIndexerFunc extracts the .spec.seedRef.name field of a ControllerInstallation.
+func ControllerInstallationSeedRefNameIndexerFunc(obj client.Object) []string {
+	controllerInstallation, ok := obj.(*gardencorev1beta1.ControllerInstallation)
+	if !ok || controllerInstallation.Spec.SeedRef == nil {
+		return []string{""}
+	}
+	return []string{controllerInstallation.Spec.SeedRef.Name}
+}
+
+// ControllerInstallationShootRefNameIndexerFunc extracts the .spec.shootRef.name field of a ControllerInstallation.
+func ControllerInstallationShootRefNameIndexerFunc(obj client.Object) []string {
+	controllerInstallation, ok := obj.(*gardencorev1beta1.ControllerInstallation)
+	if !ok || controllerInstallation.Spec.ShootRef == nil {
+		return []string{""}
+	}
+	return []string{controllerInstallation.Spec.ShootRef.Name}
+}
+
+// ControllerInstallationShootRefNamespaceIndexerFunc extracts the .spec.shootRef.namespace field of a ControllerInstallation.
+func ControllerInstallationShootRefNamespaceIndexerFunc(obj client.Object) []string {
+	controllerInstallation, ok := obj.(*gardencorev1beta1.ControllerInstallation)
+	if !ok || controllerInstallation.Spec.ShootRef == nil {
+		return []string{""}
+	}
+	return []string{controllerInstallation.Spec.ShootRef.Namespace}
+}
+
+// ControllerInstallationRegistrationRefNameIndexerFunc extracts the .spec.registrationRef.name field of a ControllerInstallation.
+func ControllerInstallationRegistrationRefNameIndexerFunc(obj client.Object) []string {
+	controllerInstallation, ok := obj.(*gardencorev1beta1.ControllerInstallation)
+	if !ok {
+		return []string{""}
+	}
+	return []string{controllerInstallation.Spec.RegistrationRef.Name}
+}
+
+// InternalSecretTypeIndexerFunc extracts the .type field of an InternalSecret.
+func InternalSecretTypeIndexerFunc(obj client.Object) []string {
+	internalSecret, ok := obj.(*gardencorev1beta1.InternalSecret)
+	if !ok {
+		return []string{""}
+	}
+	return []string{string(internalSecret.Type)}
+}
+
+// NamespacedCloudProfileParentRefNameIndexerFunc extracts the .spec.parent.name field of a NamespacedCloudProfile.
+func NamespacedCloudProfileParentRefNameIndexerFunc(obj client.Object) []string {
+	namespacedCloudProfile, ok := obj.(*gardencorev1beta1.NamespacedCloudProfile)
+	if !ok {
+		return []string{""}
+	}
+	return []string{namespacedCloudProfile.Spec.Parent.Name}
+}
+
+// AddProjectNamespace adds an index for core.ProjectNamespace to the given indexer.
+func AddProjectNamespace(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.Project{}, core.ProjectNamespace, ProjectNamespaceIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to Project Informer: %w", core.ProjectNamespace, err)
+	}
+	return nil
+}
+
+// ShootAuditPolicyConfigMapNameIndexerFunc extracts the audit policy ConfigMap name from a Shoot.
+func ShootAuditPolicyConfigMapNameIndexerFunc(obj client.Object) []string {
+	shoot, ok := obj.(*gardencorev1beta1.Shoot)
+	if !ok {
+		return []string{""}
+	}
+	return []string{v1beta1helper.GetShootAuditPolicyConfigMapName(shoot.Spec.Kubernetes.KubeAPIServer)}
+}
+
+// ShootAuthenticationConfigMapNameIndexerFunc extracts the authentication configuration ConfigMap name from a Shoot.
+func ShootAuthenticationConfigMapNameIndexerFunc(obj client.Object) []string {
+	shoot, ok := obj.(*gardencorev1beta1.Shoot)
+	if !ok {
+		return []string{""}
+	}
+	return []string{v1beta1helper.GetShootAuthenticationConfigurationConfigMapName(shoot.Spec.Kubernetes.KubeAPIServer)}
+}
+
+// ShootAuthorizationConfigMapNameIndexerFunc extracts the authorization configuration ConfigMap name from a Shoot.
+func ShootAuthorizationConfigMapNameIndexerFunc(obj client.Object) []string {
+	shoot, ok := obj.(*gardencorev1beta1.Shoot)
+	if !ok {
+		return []string{""}
+	}
+	return []string{v1beta1helper.GetShootAuthorizationConfigurationConfigMapName(shoot.Spec.Kubernetes.KubeAPIServer)}
+}
+
+// AddShootAuditPolicyConfigMapName adds an index for core.ShootAuditPolicyConfigMapName to the given indexer.
+func AddShootAuditPolicyConfigMapName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.Shoot{}, core.ShootAuditPolicyConfigMapName, ShootAuditPolicyConfigMapNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to Shoot Informer: %w", core.ShootAuditPolicyConfigMapName, err)
+	}
+	return nil
+}
+
+// AddShootAuthenticationConfigMapName adds an index for core.ShootAuthenticationConfigMapName to the given indexer.
+func AddShootAuthenticationConfigMapName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.Shoot{}, core.ShootAuthenticationConfigMapName, ShootAuthenticationConfigMapNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to Shoot Informer: %w", core.ShootAuthenticationConfigMapName, err)
+	}
+	return nil
+}
+
+// AddShootAuthorizationConfigMapName adds an index for core.ShootAuthorizationConfigMapName to the given indexer.
+func AddShootAuthorizationConfigMapName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.Shoot{}, core.ShootAuthorizationConfigMapName, ShootAuthorizationConfigMapNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to Shoot Informer: %w", core.ShootAuthorizationConfigMapName, err)
+	}
+	return nil
+}
+
+// ShootAdmissionPluginKubeconfigSecretNameIndexerFunc extracts the kubeconfig Secret names referenced by the
+// admission plugins of a Shoot.
+func ShootAdmissionPluginKubeconfigSecretNameIndexerFunc(obj client.Object) []string {
+	var secretNames []string
+	shoot, ok := obj.(*gardencorev1beta1.Shoot)
+	if !ok || shoot.Spec.Kubernetes.KubeAPIServer == nil {
+		return secretNames
+	}
+
+	for _, plugin := range shoot.Spec.Kubernetes.KubeAPIServer.AdmissionPlugins {
+		if plugin.KubeconfigSecretName != nil && *plugin.KubeconfigSecretName != "" {
+			secretNames = append(secretNames, *plugin.KubeconfigSecretName)
+		}
+	}
+
+	return secretNames
+}
+
+// ShootStructuredAuthorizationKubeconfigSecretNameIndexerFunc extracts the kubeconfig Secret names referenced by
+// the structured authorization configuration of a Shoot.
+func ShootStructuredAuthorizationKubeconfigSecretNameIndexerFunc(obj client.Object) []string {
+	var secretNames []string
+	shoot, ok := obj.(*gardencorev1beta1.Shoot)
+	if !ok || shoot.Spec.Kubernetes.KubeAPIServer == nil || shoot.Spec.Kubernetes.KubeAPIServer.StructuredAuthorization == nil {
+		return secretNames
+	}
+
+	for _, kubeconfig := range shoot.Spec.Kubernetes.KubeAPIServer.StructuredAuthorization.Kubeconfigs {
+		if kubeconfig.SecretName != "" {
+			secretNames = append(secretNames, kubeconfig.SecretName)
+		}
+	}
+
+	return secretNames
+}
+
+// AddShootAdmissionPluginKubeconfigSecretName adds an index for core.ShootAdmissionPluginKubeconfigSecretName to the given indexer.
+func AddShootAdmissionPluginKubeconfigSecretName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.Shoot{}, core.ShootAdmissionPluginKubeconfigSecretName, ShootAdmissionPluginKubeconfigSecretNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to Shoot Informer: %w", core.ShootAdmissionPluginKubeconfigSecretName, err)
+	}
+	return nil
+}
+
+// AddShootStructuredAuthorizationKubeconfigSecretName adds an index for core.ShootStructuredAuthorizationKubeconfigSecretName to the given indexer.
+func AddShootStructuredAuthorizationKubeconfigSecretName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.Shoot{}, core.ShootStructuredAuthorizationKubeconfigSecretName, ShootStructuredAuthorizationKubeconfigSecretNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to Shoot Informer: %w", core.ShootStructuredAuthorizationKubeconfigSecretName, err)
+	}
+	return nil
+}
+
+// AddShootSeedName adds an index for core.ShootSeedName to the given indexer.
+func AddShootSeedName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.Shoot{}, core.ShootSeedName, func(obj client.Object) []string {
+		shoot, ok := obj.(*gardencorev1beta1.Shoot)
+		if !ok {
+			return []string{""}
+		}
+		return []string{ptr.Deref(shoot.Spec.SeedName, "")}
+	}); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to Shoot Informer: %w", core.ShootSeedName, err)
+	}
+	return nil
+}
+
+// AddShootStatusSeedName adds an index for core.ShootStatusSeedName to the given indexer.
+func AddShootStatusSeedName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.Shoot{}, core.ShootStatusSeedName, func(obj client.Object) []string {
+		shoot, ok := obj.(*gardencorev1beta1.Shoot)
+		if !ok {
+			return []string{""}
+		}
+		return []string{ptr.Deref(shoot.Status.SeedName, "")}
+	}); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to Shoot Informer: %w", core.ShootStatusSeedName, err)
+	}
+	return nil
+}
+
+// AddBackupBucketSeedName adds an index for core.BackupBucketSeedName to the given indexer.
+func AddBackupBucketSeedName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.BackupBucket{}, core.BackupBucketSeedName, BackupBucketSeedNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to BackupBucket Informer: %w", core.BackupBucketSeedName, err)
+	}
+	return nil
+}
+
+// AddBackupBucketShootRefName adds an index for core.BackupBucketShootRefName to the given indexer.
+func AddBackupBucketShootRefName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.BackupBucket{}, core.BackupBucketShootRefName, BackupBucketShootRefNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to BackupBucket Informer: %w", core.BackupBucketShootRefName, err)
+	}
+	return nil
+}
+
+// AddBackupBucketShootRefNamespace adds an index for core.BackupBucketShootRefNamespace to the given indexer.
+func AddBackupBucketShootRefNamespace(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.BackupBucket{}, core.BackupBucketShootRefNamespace, BackupBucketShootRefNamespaceIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to BackupBucket Informer: %w", core.BackupBucketShootRefNamespace, err)
+	}
+	return nil
+}
+
+// AddBackupEntrySeedName adds an index for core.BackupEntrySeedName to the given indexer.
+func AddBackupEntrySeedName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.BackupEntry{}, core.BackupEntrySeedName, func(obj client.Object) []string {
+		backupEntry, ok := obj.(*gardencorev1beta1.BackupEntry)
+		if !ok {
+			return []string{""}
+		}
+		return []string{ptr.Deref(backupEntry.Spec.SeedName, "")}
+	}); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to BackupEntry Informer: %w", core.BackupEntrySeedName, err)
+	}
+	return nil
+}
+
+// AddBackupEntryShootRefName adds an index for core.BackupEntryShootRefName to the given indexer.
+func AddBackupEntryShootRefName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.BackupEntry{}, core.BackupEntryShootRefName, BackupEntryShootRefNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to BackupEntry Informer: %w", core.BackupEntryShootRefName, err)
+	}
+	return nil
+}
+
+// AddBackupEntryShootRefNamespace adds an index for core.BackupEntryShootRefNamespace to the given indexer.
+func AddBackupEntryShootRefNamespace(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.BackupEntry{}, core.BackupEntryShootRefNamespace, BackupEntryShootRefNamespaceIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to BackupEntry Informer: %w", core.BackupEntryShootRefNamespace, err)
+	}
+	return nil
+}
+
+// AddBackupEntryBucketName adds an index for core.BackupEntryBucketName to the given indexer.
+func AddBackupEntryBucketName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.BackupEntry{}, core.BackupEntryBucketName, BackupEntryBucketNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to BackupEntry Informer: %w", core.BackupEntryBucketName, err)
+	}
+	return nil
+}
+
+// AddControllerInstallationSeedRefName adds an index for core.ControllerInstallationSeedRefName to the given indexer.
+func AddControllerInstallationSeedRefName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.ControllerInstallation{}, core.SeedRefName, ControllerInstallationSeedRefNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to ControllerInstallation Informer: %w", core.SeedRefName, err)
+	}
+	return nil
+}
+
+// AddControllerInstallationShootRefName adds an index for core.ControllerInstallationShootRefName to the given indexer.
+func AddControllerInstallationShootRefName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.ControllerInstallation{}, core.ShootRefName, ControllerInstallationShootRefNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to ControllerInstallation Informer: %w", core.ShootRefName, err)
+	}
+	return nil
+}
+
+// AddControllerInstallationShootRefNamespace adds an index for core.ControllerInstallationShootRefNamespace to the given indexer.
+func AddControllerInstallationShootRefNamespace(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.ControllerInstallation{}, core.ShootRefNamespace, ControllerInstallationShootRefNamespaceIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to ControllerInstallation Informer: %w", core.ShootRefNamespace, err)
+	}
+	return nil
+}
+
+// AddControllerInstallationRegistrationRefName adds an index for core.ControllerInstallationRegistrationRefName to the given indexer.
+func AddControllerInstallationRegistrationRefName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.ControllerInstallation{}, core.RegistrationRefName, ControllerInstallationRegistrationRefNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to ControllerInstallation Informer: %w", core.RegistrationRefName, err)
+	}
+	return nil
+}
+
+// AddInternalSecretType adds an index for core.InternalSecretType to the given indexer.
+func AddInternalSecretType(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.InternalSecret{}, core.InternalSecretType, InternalSecretTypeIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to InternalSecret Informer: %w", core.InternalSecretType, err)
+	}
+	return nil
+}
+
+// AddNamespacedCloudProfileParentRefName adds an index for core.NamespacedCloudProfileParentRefName to the given indexer.
+func AddNamespacedCloudProfileParentRefName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.NamespacedCloudProfile{}, core.NamespacedCloudProfileParentRefName, NamespacedCloudProfileParentRefNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to NamespacedCloudProfile Informer: %w", core.NamespacedCloudProfileParentRefName, err)
+	}
+	return nil
+}
+
+// SecretBindingSecretRefNameIndexerFunc extracts the .spec.secretRef.name field of a SecretBinding.
+func SecretBindingSecretRefNameIndexerFunc(obj client.Object) []string {
+	secretBinding, ok := obj.(*gardencorev1beta1.SecretBinding)
+	if !ok {
+		return []string{""}
+	}
+	return []string{secretBinding.SecretRef.Name}
+}
+
+// SecretBindingSecretRefNamespaceIndexerFunc extracts the .spec.secretRef.namespace field of a SecretBinding.
+func SecretBindingSecretRefNamespaceIndexerFunc(obj client.Object) []string {
+	secretBinding, ok := obj.(*gardencorev1beta1.SecretBinding)
+	if !ok {
+		return []string{""}
+	}
+	return []string{secretBinding.SecretRef.Namespace}
+}
+
+// AddSecretBindingSecretRefName adds an index for core.SecretBindingSecretRefName to the given indexer.
+func AddSecretBindingSecretRefName(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.SecretBinding{}, core.SecretBindingSecretRefName, SecretBindingSecretRefNameIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to SecretBinding Informer: %w", core.SecretBindingSecretRefName, err)
+	}
+	return nil
+}
+
+// AddSecretBindingSecretRefNamespace adds an index for core.SecretBindingSecretRefNamespace to the given indexer.
+func AddSecretBindingSecretRefNamespace(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &gardencorev1beta1.SecretBinding{}, core.SecretBindingSecretRefNamespace, SecretBindingSecretRefNamespaceIndexerFunc); err != nil {
+		return fmt.Errorf("failed to add indexer for %s to SecretBinding Informer: %w", core.SecretBindingSecretRefNamespace, err)
+	}
+	return nil
+}

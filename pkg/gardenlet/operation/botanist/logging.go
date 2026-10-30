@@ -1,0 +1,302 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strconv"
+
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/gardener/gardener/imagevector"
+	gardenlethelper "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/observability/logging/eventlogger"
+	"github.com/gardener/gardener/pkg/component/observability/logging/vali"
+	valiconstants "github.com/gardener/gardener/pkg/component/observability/logging/vali/constants"
+	"github.com/gardener/gardener/pkg/component/observability/logging/victorialogs"
+	"github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector"
+	"github.com/gardener/gardener/pkg/component/shared"
+	"github.com/gardener/gardener/pkg/features"
+	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
+)
+
+// DeployLogging will install the logging stack for the Shoot in the Seed clusters.
+func (b *Botanist) DeployLogging(ctx context.Context) error {
+	if !b.Shoot.IsShootControlPlaneLoggingEnabled(b.Config) {
+		return b.DestroySeedLogging(ctx)
+	}
+
+	grmIsPresent, err := b.IsGardenerResourceManagerReady(ctx)
+	if err != nil {
+		return fmt.Errorf("checking if Gardener Resource Manager is ready: %w", err)
+	}
+
+	if err := b.Shoot.Components.ControlPlane.VictoriaLogs.Deploy(ctx); err != nil {
+		return fmt.Errorf("deploying VictoriaLogs: %w", err)
+	}
+	if err := b.deployVali(ctx, grmIsPresent); err != nil {
+		return err
+	}
+
+	if err := b.deployOtelCollector(ctx, grmIsPresent); err != nil {
+		return err
+	}
+
+	if err := b.deployEventLogger(ctx, grmIsPresent); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (b *Botanist) deployEventLogger(ctx context.Context, grmIsPresent bool) error {
+	if b.isShootEventLoggerEnabled() && grmIsPresent {
+		if err := b.Shoot.Components.ControlPlane.EventLogger.Deploy(ctx); err != nil {
+			return fmt.Errorf("deploying Event Logger: %w", err)
+		}
+		return nil
+	}
+	if !b.isShootEventLoggerEnabled() {
+		if err := b.Shoot.Components.ControlPlane.EventLogger.Destroy(ctx); err != nil {
+			return fmt.Errorf("destroying Event Logger: %w", err)
+		}
+	}
+	return nil
+}
+
+func (b *Botanist) deployOtelCollector(ctx context.Context, grmIsPresent bool) error {
+	if features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) {
+		b.Shoot.Components.ControlPlane.OtelCollector.WithAuthenticationProxy(grmIsPresent)
+		if err := b.Shoot.Components.ControlPlane.OtelCollector.Deploy(ctx); err != nil {
+			return fmt.Errorf("deploying OpenTelemetry Collector: %w", err)
+		}
+		return nil
+	}
+	if err := b.Shoot.Components.ControlPlane.OtelCollector.Destroy(ctx); err != nil {
+		return fmt.Errorf("destroying OpenTelemetry Collector: %w", err)
+	}
+	return nil
+}
+
+func (b *Botanist) deployVali(ctx context.Context, grmIsPresent bool) error {
+	b.Shoot.Components.ControlPlane.Vali.WithAuthenticationProxy(grmIsPresent && !features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector))
+
+	if b.shouldDestroyVali() {
+		if err := b.Shoot.Components.ControlPlane.Vali.Destroy(ctx); err != nil {
+			return fmt.Errorf("destroying Vali: %w", err)
+		}
+		return nil
+	}
+	if err := b.Shoot.Components.ControlPlane.Vali.Deploy(ctx); err != nil {
+		return fmt.Errorf("deploying Vali: %w", err)
+	}
+	return nil
+}
+
+func (b *Botanist) shouldDestroyVali() bool {
+	// Always destroy if Vali is explicitly disabled in config
+	if !gardenlethelper.IsValiEnabled(b.Config) {
+		return true
+	}
+
+	// Destroy if RemoveVali feature gate is enabled (requires VictoriaLogsBackend as well)
+	if features.DefaultFeatureGate.Enabled(features.VictoriaLogsBackend) &&
+		features.DefaultFeatureGate.Enabled(features.RemoveVali) {
+		return true
+	}
+
+	// Otherwise, keep Vali running
+	return false
+}
+
+// DestroySeedLogging will uninstall the logging stack for the Shoot in the Seed clusters.
+func (b *Botanist) DestroySeedLogging(ctx context.Context) error {
+	if err := b.Shoot.Components.ControlPlane.EventLogger.Destroy(ctx); err != nil {
+		return err
+	}
+	if err := b.Shoot.Components.ControlPlane.OtelCollector.Destroy(ctx); err != nil {
+		return err
+	}
+	if err := b.Shoot.Components.ControlPlane.VictoriaLogs.Destroy(ctx); err != nil {
+		return err
+	}
+
+	return b.Shoot.Components.ControlPlane.Vali.Destroy(ctx)
+}
+
+func (b *Botanist) isShootNodeLoggingEnabled() bool {
+	isValiEnabled := gardenlethelper.IsValiEnabled(b.Config)
+	isVictoriaLogsEnabled := gardenlethelper.IsVictoriaLogsEnabled(b.Config)
+	isLoggingComponentEnabled := isValiEnabled || isVictoriaLogsEnabled
+	return b.Shoot != nil && !b.Shoot.IsWorkerless && b.Shoot.IsShootControlPlaneLoggingEnabled(b.Config) &&
+		isLoggingComponentEnabled && b.Config != nil &&
+		b.Config.Logging != nil && b.Config.Logging.ShootNodeLogging != nil &&
+		slices.Contains(b.Config.Logging.ShootNodeLogging.ShootPurposes, b.Shoot.Purpose)
+}
+
+func (b *Botanist) isShootEventLoggerEnabled() bool {
+	return b.Shoot != nil && b.Shoot.IsShootControlPlaneLoggingEnabled(b.Config) && gardenlethelper.IsEventLoggingEnabled(b.Config)
+}
+
+// DefaultEventLogger returns a deployer for the shoot-event-logger.
+func (b *Botanist) DefaultEventLogger() (component.Deployer, error) {
+	imageEventLogger, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameEventLogger, imagevectorutils.RuntimeVersion(b.SeedVersion()), imagevectorutils.TargetVersion(b.ShootVersion()))
+	if err != nil {
+		return nil, err
+	}
+
+	return eventlogger.New(
+		b.SeedClientSet.Client(),
+		b.Shoot.ControlPlaneNamespace,
+		b.SecretsManager,
+		eventlogger.Values{
+			Image:    imageEventLogger.String(),
+			Replicas: b.Shoot.GetReplicas(1),
+		},
+	)
+}
+
+// DefaultVali returns a deployer for Vali.
+func (b *Botanist) DefaultVali() (vali.Interface, error) {
+	var (
+		istioLabels    map[string]string
+		istioNamespace string
+	)
+	if !b.Shoot.IsSelfHosted() {
+		istioLabels = b.WildcardIstioLabels()
+		istioNamespace = b.WildcardIstioNamespace()
+	}
+
+	return shared.NewVali(
+		b.SeedClientSet.Client(),
+		b.Shoot.ControlPlaneNamespace,
+		b.SecretsManager,
+		component.ClusterTypeShoot,
+		b.Shoot.GetReplicas(1),
+		b.isShootNodeLoggingEnabled() && !features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector),
+		v1beta1constants.PriorityClassNameShootControlPlane100,
+		nil,
+		b.ComputeValiHost(),
+		false,
+		istioLabels,
+		istioNamespace,
+		vali.PVCAutoscalingConfig{
+			Enabled:     v1beta1helper.SeedSettingPersistentVolumeClaimAutoscalerEnabled(b.Seed.GetInfo().Spec.Settings),
+			MaxCapacity: resource.MustParse("40Gi"),
+		},
+	)
+}
+
+// DefaultOtelCollector returns a deployer for the OpenTelemetry Collector.
+func (b *Botanist) DefaultOtelCollector() (collector.Interface, error) {
+	collectorImage, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameOpentelemetryCollector)
+	if err != nil {
+		return nil, err
+	}
+
+	kubeRBACProxyImage, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameKubeRbacProxy)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		istioLabels    map[string]string
+		istioNamespace string
+	)
+	if !b.Shoot.IsSelfHosted() {
+		istioLabels = b.WildcardIstioLabels()
+		istioNamespace = b.WildcardIstioNamespace()
+	}
+
+	return collector.New(
+		b.SeedClientSet.Client(),
+		b.Shoot.ControlPlaneNamespace,
+		b.SecretsManager,
+		collector.Values{
+			Image:                        collectorImage.String(),
+			KubeRBACProxyImage:           kubeRBACProxyImage.String(),
+			LokiEndpoint:                 "http://" + valiconstants.ServiceName + ":" + strconv.Itoa(valiconstants.ValiPort) + valiconstants.PushEndpoint,
+			Replicas:                     b.Shoot.GetReplicas(1),
+			ShootNodeLoggingEnabled:      b.isShootNodeLoggingEnabled(),
+			IngressHost:                  b.ComputeOpenTelemetryCollectorHost(),
+			SecretNameServerCA:           v1beta1constants.SecretNameCACluster,
+			PriorityClassName:            v1beta1constants.PriorityClassNameShootControlPlane100,
+			ValiHost:                     b.ComputeValiHost(),
+			ClusterType:                  component.ClusterTypeShoot,
+			IsGardenCluster:              false,
+			IstioIngressGatewayLabels:    istioLabels,
+			IstioIngressGatewayNamespace: istioNamespace,
+			VictoriaLogsBackend:          features.DefaultFeatureGate.Enabled(features.VictoriaLogsBackend),
+			RemoveVali:                   features.DefaultFeatureGate.Enabled(features.RemoveVali),
+		},
+	), nil
+}
+
+// DefaultVictoriaLogs returns a deployer for VictoriaLogs.
+func (b *Botanist) DefaultVictoriaLogs() (component.DeployWaiter, error) {
+	var storage *resource.Quantity
+
+	pvcAutoscalerEnabled := v1beta1helper.SeedSettingPersistentVolumeClaimAutoscalerEnabled(b.Seed.GetInfo().Spec.Settings)
+	if pvcAutoscalerEnabled {
+		storage = new(resource.MustParse(b.GetValidVolumeSize("5Gi")))
+	}
+
+	var (
+		istioLabels            map[string]string
+		istioNamespace         string
+		wildcardCertSecretName *string
+	)
+	if !b.Shoot.IsSelfHosted() {
+		istioLabels = b.WildcardIstioLabels()
+		istioNamespace = b.WildcardIstioNamespace()
+	}
+	if b.ControlPlaneWildcardCert != nil {
+		wildcardCertSecretName = &b.ControlPlaneWildcardCert.Name
+	}
+
+	deployer, err := shared.NewVictoriaLogs(
+		b.SeedClientSet.Client(),
+		b.Shoot.ControlPlaneNamespace,
+		component.ClusterTypeShoot,
+		b.Shoot.GetReplicas(1),
+		v1beta1constants.PriorityClassNameShootControlPlane100,
+		storage,
+		false,
+		victorialogs.PVCAutoscalingConfig{
+			Enabled:     pvcAutoscalerEnabled,
+			MaxCapacity: resource.MustParse("40Gi"),
+		},
+		b.SecretsManager,
+		v1beta1constants.SecretNameCACluster,
+		&victorialogs.ExposureValues{
+			AuthSecretName:               v1beta1constants.SecretNameObservabilityIngressUsers,
+			AuthSecretManaged:            true,
+			Host:                         b.ComputeVictoriaLogsHost(),
+			IstioIngressGatewayLabels:    istioLabels,
+			IstioIngressGatewayNamespace: istioNamespace,
+			WildcardCertSecretName:       wildcardCertSecretName,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Destroy VictoriaLogs if:
+	// 1. VictoriaLogsBackend feature gate is disabled, OR
+	// 2. VictoriaLogs is disabled in gardenlet config, OR
+	// 3. Shoot control plane logging is disabled
+	if !features.DefaultFeatureGate.Enabled(features.VictoriaLogsBackend) ||
+		!gardenlethelper.IsVictoriaLogsEnabled(b.Config) ||
+		!b.Shoot.IsShootControlPlaneLoggingEnabled(b.Config) {
+		return component.OpDestroyAndWait(deployer), nil
+	}
+
+	return deployer, nil
+}

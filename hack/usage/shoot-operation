@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# SPDX-FileCopyrightText: Contributors to the Gardener project
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -e
+set -u
+
+NAME="$1"
+NAMESPACE="${2:-$(id -u -n)}"
+OPERATION="${3:-reconcile}"
+
+kubectl --namespace "$NAMESPACE" annotate shoot "$NAME" gardener.cloud/operation="$OPERATION" --overwrite

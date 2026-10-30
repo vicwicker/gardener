@@ -1,0 +1,108 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package controller
+
+import (
+	"context"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	"github.com/gardener/gardener/pkg/nodeagent/containerd"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/certificate"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/healthcheck"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/hostnamecheck"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/lease"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/node"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/operatingsystemconfig"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/secretnamechange"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/systemdunitcheck"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/token"
+)
+
+// AddToManager adds all controllers to the given manager.
+func AddToManager(ctx context.Context, cancel context.CancelFunc, mgr manager.Manager, cfg *nodeagentconfigv1alpha1.NodeAgentConfiguration, hostName, machineName, nodeName, configDir string) error {
+	nodePredicate, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelHostname: hostName}})
+	if err != nil {
+		return fmt.Errorf("failed computing label selector predicate for node: %w", err)
+	}
+
+	if err := (&certificate.Reconciler{
+		CancelContext: cancel,
+		MachineName:   machineName,
+	}).AddToManager(mgr); err != nil {
+		return fmt.Errorf("failed adding certificate controller: %w", err)
+	}
+
+	if err := (&node.Reconciler{}).AddToManager(mgr, nodePredicate); err != nil {
+		return fmt.Errorf("failed adding node controller: %w", err)
+	}
+
+	if err := (&secretnamechange.Reconciler{
+		ConfigDir:     configDir,
+		CancelContext: cancel,
+	}).AddToManager(mgr, nodePredicate); err != nil {
+		return fmt.Errorf("failed adding secret-name-change controller: %w", err)
+	}
+
+	containerdClient, err := containerd.NewClient()
+	if err != nil {
+		return fmt.Errorf("failed obtaining containerd client: %w", err)
+	}
+
+	var channel = make(chan event.TypedGenericEvent[*corev1.Secret])
+
+	if err := (&operatingsystemconfig.Reconciler{
+		Config:                 cfg.Controllers.OperatingSystemConfig,
+		ConfigDir:              configDir,
+		TokenSecretSyncConfigs: cfg.Controllers.Token.SyncConfigs,
+		Channel:                channel,
+		HostName:               hostName,
+		NodeName:               nodeName,
+		MachineName:            machineName,
+		CancelContext:          cancel,
+		ContainerdClient:       containerdClient,
+	}).AddToManager(ctx, mgr); err != nil {
+		return fmt.Errorf("failed adding operating system config controller: %w", err)
+	}
+
+	if err := (&token.Reconciler{
+		Config: cfg.Controllers.Token,
+	}).AddToManager(mgr, channel); err != nil {
+		return fmt.Errorf("failed adding token controller: %w", err)
+	}
+
+	// Enable lease controller only if gardener-node-agent was able to determine the node name.
+	// Otherwise, gardener-node-agent would try to list leases of the entire kube-system namespace which is not allowed by node-agent-authorizer.
+	if nodeName != "" {
+		if err := (&lease.Reconciler{}).AddToManager(mgr, nodePredicate); err != nil {
+			return fmt.Errorf("failed adding lease controller: %w", err)
+		}
+	}
+
+	if err := (&healthcheck.Reconciler{}).AddToManager(mgr, nodePredicate); err != nil {
+		return fmt.Errorf("failed adding health-check controller: %w", err)
+	}
+
+	if err := (&systemdunitcheck.Reconciler{
+		Config: cfg.Controllers.SystemdUnitCheck,
+	}).AddToManager(mgr, nodePredicate); err != nil {
+		return fmt.Errorf("failed adding systemd-unit-check controller: %w", err)
+	}
+
+	if err := (&hostnamecheck.Reconciler{
+		HostName:      hostName,
+		CancelContext: cancel,
+	}).AddToManager(mgr); err != nil {
+		return fmt.Errorf("failed adding hostname-check controller: %w", err)
+	}
+
+	return nil
+}

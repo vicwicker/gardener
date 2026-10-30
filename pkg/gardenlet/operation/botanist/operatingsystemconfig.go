@@ -1,0 +1,368 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/component-base/version"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/gardener/gardener/imagevector"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/nodeagent"
+	nodelocaldnsconstants "github.com/gardener/gardener/pkg/component/networking/nodelocaldns/constants"
+	"github.com/gardener/gardener/pkg/utils/flow"
+	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+	"github.com/gardener/gardener/pkg/utils/managedresources/builder"
+	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+)
+
+// SecretLabelKeyManagedResource is a key for a label on a secret with the value 'managed-resource'.
+const SecretLabelKeyManagedResource = "managed-resource"
+
+// DefaultOperatingSystemConfig creates the default deployer for the OperatingSystemConfig custom resource.
+func (b *Botanist) DefaultOperatingSystemConfig() (operatingsystemconfig.Interface, error) {
+	if b.Shoot.IsWorkerless {
+		return nil, nil
+	}
+
+	values, err := b.OperatingSystemConfigValues()
+	if err != nil {
+		return nil, fmt.Errorf("failed creating operating system config values: %w", err)
+	}
+
+	return operatingsystemconfig.New(
+		b.Logger,
+		b.SeedClientSet.Client(),
+		b.SecretsManager,
+		values,
+		operatingsystemconfig.DefaultInterval,
+		operatingsystemconfig.DefaultSevereThreshold,
+		operatingsystemconfig.DefaultTimeout,
+	), nil
+}
+
+// OperatingSystemConfigValues computes the values for the OperatingSystemConfig custom resource.
+// It can be used both in the DefaultOperatingSystemConfig and in the ControlPlaneBootstrapOperatingSystemConfig.
+// Reusing the same values in both places ensures that the computed OperatingSystemConfig hashes are the same.
+func (b *Botanist) OperatingSystemConfigValues() (*operatingsystemconfig.Values, error) {
+	oscImages, err := imagevectorutils.FindImages(imagevector.Containers(), []string{imagevector.ContainerImageNamePauseContainer, imagevector.ContainerImageNameValitail, imagevector.ContainerImageNameOpentelemetryCollector}, imagevectorutils.RuntimeVersion(b.ShootVersion()), imagevectorutils.TargetVersion(b.ShootVersion()))
+	if err != nil {
+		return nil, err
+	}
+
+	// This image is intentionally not part of the above FindImages call because this function defaults the image tag to
+	// the ShootVersion (which is the Kubernetes version of the shoot cluster) in case the image tag in the image vector
+	// is not set. This is true for gardener-node-agent because gardenlet always deploys it with its own version (ref
+	// WithOptionalTag call a few lines below).
+	// See also: https://github.com/gardener/gardener/issues/9577
+	oscImages[imagevector.ContainerImageNameGardenerNodeAgent], err = imagevector.Containers().FindImage(imagevector.ContainerImageNameGardenerNodeAgent)
+	if err != nil {
+		return nil, fmt.Errorf("failed finding image %q: %w", imagevector.ContainerImageNameGardenerNodeAgent, err)
+	}
+	oscImages[imagevector.ContainerImageNameGardenerNodeAgent].WithOptionalTag(version.Get().GitVersion)
+
+	valitailEnabled, valiIngressHost := false, ""
+	openTelemetryCollectorLogShipperEnabled, openTelemetryIngressHost := false, ""
+	if b.isShootNodeLoggingEnabled() {
+		valitailEnabled, valiIngressHost = true, b.ComputeValiHost()
+		openTelemetryCollectorLogShipperEnabled, openTelemetryIngressHost = true, b.ComputeOpenTelemetryCollectorHost()
+	}
+
+	var region *string
+	if !b.Shoot.HasManagedInfrastructure() {
+		region = new(b.Shoot.GetInfo().Spec.Region)
+	}
+
+	return &operatingsystemconfig.Values{
+		Namespace:         b.Shoot.ControlPlaneNamespace,
+		KubernetesVersion: b.Shoot.KubernetesVersion,
+		Workers:           b.Shoot.GetInfo().Spec.Provider.Workers,
+		OriginalValues: operatingsystemconfig.OriginalValues{
+			ClusterDomain:                           gardencorev1beta1.DefaultDomain,
+			Images:                                  oscImages,
+			KubeletConfig:                           b.Shoot.GetInfo().Spec.Kubernetes.Kubelet,
+			KubeProxyEnabled:                        v1beta1helper.KubeProxyEnabled(b.Shoot.GetInfo().Spec.Kubernetes.KubeProxy),
+			MachineTypes:                            b.Shoot.CloudProfile.Spec.MachineTypes,
+			SSHAccessEnabled:                        v1beta1helper.ShootEnablesSSHAccess(b.Shoot.GetInfo()),
+			ValitailEnabled:                         valitailEnabled,
+			ValiIngressHostName:                     valiIngressHost,
+			OpenTelemetryCollectorLogShipperEnabled: openTelemetryCollectorLogShipperEnabled,
+			OpenTelemetryIngressHostName:            openTelemetryIngressHost,
+			NodeLocalDNSEnabled:                     v1beta1helper.IsNodeLocalDNSEnabled(b.Shoot.GetInfo().Spec.SystemComponents),
+			NodeMonitorGracePeriod:                  *b.Shoot.GetInfo().Spec.Kubernetes.KubeControllerManager.NodeMonitorGracePeriod,
+			PrimaryIPFamily:                         b.Shoot.GetInfo().Spec.Networking.IPFamilies[0],
+			KubeProxyConfig:                         b.Shoot.GetInfo().Spec.Kubernetes.KubeProxy,
+			Region:                                  region,
+			RegistryCABundle:                        b.RegistryCABundle,
+		},
+	}, nil
+}
+
+// DeployOperatingSystemConfig deploys the OperatingSystemConfig custom resource and triggers the restore operation in
+// case the Shoot is in the restore phase of the control plane migration.
+func (b *Botanist) DeployOperatingSystemConfig(ctx context.Context) error {
+	clusterCASecret, found := b.SecretsManager.Get(v1beta1constants.SecretNameCACluster)
+	if !found {
+		return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameCACluster)
+	}
+	clusterCABundle, found := clusterCASecret.Data[secretsutils.DataKeyCertificateBundle]
+	if !found {
+		return fmt.Errorf("key %q not found in secret %q", secretsutils.DataKeyCertificateBundle, v1beta1constants.SecretNameCACluster)
+	}
+
+	b.Shoot.Components.Extensions.OperatingSystemConfig.SetAPIServerURL(fmt.Sprintf("https://%s", b.Shoot.ComputeOutOfClusterAPIServerAddress(true)))
+	b.Shoot.Components.Extensions.OperatingSystemConfig.SetCABundle(b.getOperatingSystemConfigCABundle(clusterCABundle))
+
+	shoot := b.Shoot.GetInfo()
+	if shoot.Status.Credentials != nil {
+		b.Shoot.Components.Extensions.OperatingSystemConfig.SetCredentialsRotationStatus(shoot.Status.Credentials.Rotation)
+	}
+
+	if v1beta1helper.ShootEnablesSSHAccess(b.Shoot.GetInfo()) {
+		sshKeypairSecret, found := b.SecretsManager.Get(v1beta1constants.SecretNameSSHKeyPair)
+		if !found {
+			return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameSSHKeyPair)
+		}
+		publicKeys := []string{string(sshKeypairSecret.Data[secretsutils.DataKeySSHAuthorizedKeys])}
+
+		if sshKeypairSecretOld, found := b.SecretsManager.Get(v1beta1constants.SecretNameSSHKeyPair, secretsmanager.Old); found {
+			publicKeys = append(publicKeys, string(sshKeypairSecretOld.Data[secretsutils.DataKeySSHAuthorizedKeys]))
+		}
+
+		b.Shoot.Components.Extensions.OperatingSystemConfig.SetSSHPublicKeys(publicKeys)
+	}
+
+	var clusterDNSAddresses []string
+	for _, ip := range b.Shoot.Networks.CoreDNS {
+		clusterDNSAddresses = append(clusterDNSAddresses, ip.String())
+	}
+
+	// During dual-stack migration, until kube-dns is migrated to  dual-stack, we only use the primary addresses.
+	nodesCondition := v1beta1helper.GetCondition(shoot.Status.Constraints, gardencorev1beta1.ShootDualStackNodesMigrationReady)
+	dnsCondition := v1beta1helper.GetCondition(shoot.Status.Constraints, gardencorev1beta1.ShootDNSServiceMigrationReady)
+	if (dnsCondition != nil && dnsCondition.Status != gardencorev1beta1.ConditionTrue) || (nodesCondition != nil) {
+		clusterDNSAddresses = clusterDNSAddresses[:1]
+	}
+
+	if b.Shoot.NodeLocalDNSEnabled && b.Shoot.ProxyMode() == gardencorev1beta1.ProxyModeIPVS {
+		// If IPVS is enabled then instruct the kubelet to create pods resolving DNS to the `nodelocaldns` network
+		// interface link-local ip address. For more information checkout the usage documentation under
+		// https://kubernetes.io/docs/tasks/administer-cluster/nodelocaldns/.
+		ipFamiliesSet := sets.New(b.Shoot.GetInfo().Spec.Networking.IPFamilies...)
+		if ipFamiliesSet.Has(gardencorev1beta1.IPFamilyIPv4) && !ipFamiliesSet.Has(gardencorev1beta1.IPFamilyIPv6) {
+			clusterDNSAddresses = []string{nodelocaldnsconstants.IPVSAddress}
+		}
+		if ipFamiliesSet.Has(gardencorev1beta1.IPFamilyIPv6) && !ipFamiliesSet.Has(gardencorev1beta1.IPFamilyIPv4) {
+			clusterDNSAddresses = []string{nodelocaldnsconstants.IPVSIPv6Address}
+		}
+	}
+	b.Shoot.Components.Extensions.OperatingSystemConfig.SetClusterDNSAddresses(clusterDNSAddresses)
+
+	readyForStaticAuthTokenSync, err := b.useShootAccessTokensForSelfHostedShootControlPlane(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check whether static auth tokens for self-hosted shoot control plane components can be synced: %w", err)
+	}
+	b.Shoot.Components.Extensions.OperatingSystemConfig.SetSyncControlPlaneAuthTokens(readyForStaticAuthTokenSync)
+
+	if b.Shoot.IsRestorePhase() {
+		return b.Shoot.Components.Extensions.OperatingSystemConfig.Restore(ctx, b.Shoot.GetShootState())
+	}
+
+	return b.Shoot.Components.Extensions.OperatingSystemConfig.Deploy(ctx)
+}
+
+func (b *Botanist) getOperatingSystemConfigCABundle(clusterCABundle []byte) string {
+	caBundle := string(clusterCABundle)
+
+	if cloudProfileCaBundle := b.Shoot.CloudProfile.Spec.CABundle; cloudProfileCaBundle != nil {
+		caBundle = fmt.Sprintf("%s\n%s", *cloudProfileCaBundle, caBundle)
+	}
+
+	return caBundle
+}
+
+// exposed for testing
+var (
+	// NodeAgentOSCSecretFn is a function for computing the operating system config secret for gardener-node-agent.
+	NodeAgentOSCSecretFn = nodeagent.OperatingSystemConfigSecret
+	// NodeAgentRBACResourcesDataFn is a function for generating the RBAC resources data map for the
+	// gardener-node-agent.
+	NodeAgentRBACResourcesDataFn = nodeagent.RBACResourcesData
+)
+
+// GardenerNodeAgentManagedResourceName is a constant for the name of a ManagedResource in the seed cluster in the shoot
+// namespace which contains resources for gardener-node-agent.
+const GardenerNodeAgentManagedResourceName = "shoot-gardener-node-agent"
+
+// DeployManagedResourceForGardenerNodeAgent creates the ManagedResource that contains:
+// - A secret containing the raw original OperatingSystemConfig for each worker pool.
+// - A secret containing some shared RBAC resources for downloading the OSC secrets + bootstrapping the node.
+func (b *Botanist) DeployManagedResourceForGardenerNodeAgent(ctx context.Context, forControlPlanePoolOnly bool) error {
+	var (
+		managedResource                  = managedresources.NewForShoot(b.SeedClientSet.Client(), b.Shoot.ControlPlaneNamespace, GardenerNodeAgentManagedResourceName, managedresources.LabelValueGardener, false)
+		managedResourceSecretsCount      = len(b.Shoot.GetInfo().Spec.Provider.Workers) + 1
+		managedResourceSecretLabels      = map[string]string{SecretLabelKeyManagedResource: GardenerNodeAgentManagedResourceName}
+		managedResourceSecretNamesWanted = sets.New[string]()
+		managedResourceSecretNameToData  = make(map[string]map[string][]byte, managedResourceSecretsCount)
+
+		workerNameToOperatingSystemConfigMaps = b.Shoot.Components.Extensions.OperatingSystemConfig.WorkerPoolNameToOperatingSystemConfigsMap()
+
+		fns = make([]flow.TaskFn, 0, managedResourceSecretsCount)
+	)
+
+	workerPools, err := b.relevantWorkerPools(forControlPlanePoolOnly)
+	if err != nil {
+		return err
+	}
+
+	// Generate operating system config secrets for the relevant worker pools.
+	for _, worker := range workerPools {
+		oscData, ok := workerNameToOperatingSystemConfigMaps[worker.Name]
+		if !ok {
+			return fmt.Errorf("did not find osc data for worker pool %q", worker.Name)
+		}
+
+		data, err := b.generateOperatingSystemConfigSecretForWorker(ctx, worker, oscData.Original)
+		if err != nil {
+			return err
+		}
+
+		managedResourceSecretNameToData["shoot-gardener-node-agent-"+worker.Name] = data
+	}
+
+	rbacResourcesData, err := NodeAgentRBACResourcesDataFn()
+	if err != nil {
+		return err
+	}
+	managedResourceSecretNameToData["shoot-gardener-node-agent-rbac"] = rbacResourcesData
+
+	// Create Secrets for the ManagedResource containing the configs for all worker pools well as the RBAC resources.
+	for secretName, data := range managedResourceSecretNameToData {
+		var (
+			keyValues                                        = data
+			managedResourceSecretName, managedResourceSecret = managedresources.NewSecret(
+				b.SeedClientSet.Client(),
+				b.Shoot.ControlPlaneNamespace,
+				secretName,
+				keyValues,
+				true,
+			)
+		)
+
+		managedResource.WithSecretRef(managedResourceSecretName)
+		managedResourceSecretNamesWanted.Insert(managedResourceSecretName)
+
+		fns = append(fns, func(ctx context.Context) error {
+			return managedResourceSecret.
+				AddLabels(managedResourceSecretLabels).
+				Reconcile(ctx)
+		})
+	}
+
+	// If we want to update the configuration for the control plane worker pool only, we don't want to override/touch
+	// the ManagedResource secrets for other worker pools. In addition, we also don't want to remove their references
+	// from the ManagedResource's `.spec.secretRefs[]` - otherwise, they would be deleted.
+	// To prevent this, we check if the ManagedResource already exists, and if so, we collect all existing references
+	if forControlPlanePoolOnly {
+		if err := b.mergeExistingSecretRefsIntoNodeAgentManagedResource(ctx, managedResource, managedResourceSecretNamesWanted); err != nil {
+			return fmt.Errorf("failed to merge existing ManagedResource secret references into the gardener-node-agent ManagedResource: %w", err)
+		}
+	}
+
+	if err := flow.Parallel(fns...)(ctx); err != nil {
+		return err
+	}
+
+	if err := managedResource.Reconcile(ctx); err != nil {
+		return err
+	}
+
+	// Cleanup no longer required Secrets for the ManagedResource (e.g., those for removed worker pools).
+	secretList := &corev1.SecretList{}
+	if err := b.SeedClientSet.Client().List(ctx, secretList, client.InNamespace(b.Shoot.ControlPlaneNamespace), client.MatchingLabels(managedResourceSecretLabels)); err != nil {
+		return err
+	}
+
+	return kubernetesutils.DeleteObjectsFromListConditionally(ctx, b.SeedClientSet.Client(), secretList, func(obj runtime.Object) bool {
+		acc, err := meta.Accessor(obj)
+		if err != nil {
+			return false
+		}
+		return !managedResourceSecretNamesWanted.Has(acc.GetName())
+	})
+}
+
+func (b *Botanist) relevantWorkerPools(controlPlanePoolOnly bool) ([]gardencorev1beta1.Worker, error) {
+	workerPools := b.Shoot.GetInfo().Spec.Provider.Workers
+	if !controlPlanePoolOnly {
+		return workerPools, nil
+	}
+
+	controlPlanePool := v1beta1helper.ControlPlaneWorkerPoolForShoot(workerPools)
+	if controlPlanePool == nil {
+		return nil, errors.New("failed to find control plane worker pool for shoot")
+	}
+	return []gardencorev1beta1.Worker{*controlPlanePool}, nil
+}
+
+func (b *Botanist) mergeExistingSecretRefsIntoNodeAgentManagedResource(ctx context.Context, managedResource *builder.ManagedResource, managedResourceSecretNamesWanted sets.Set[string]) error {
+	existingManagedResource := &resourcesv1alpha1.ManagedResource{ObjectMeta: metav1.ObjectMeta{Name: GardenerNodeAgentManagedResourceName, Namespace: b.Shoot.ControlPlaneNamespace}}
+	if err := b.SeedClientSet.Client().Get(ctx, client.ObjectKeyFromObject(existingManagedResource), existingManagedResource); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to read ManagedResource %s: %w", client.ObjectKeyFromObject(existingManagedResource), err)
+		}
+		return nil
+	}
+
+	for _, secretRef := range existingManagedResource.Spec.SecretRefs {
+		if managedResourceSecretName := secretRef.Name; !managedResourceSecretNamesWanted.Has(secretRef.Name) {
+			managedResource.WithSecretRef(managedResourceSecretName)
+			managedResourceSecretNamesWanted.Insert(managedResourceSecretName)
+		}
+	}
+
+	return nil
+}
+
+func (b *Botanist) generateOperatingSystemConfigSecretForWorker(
+	ctx context.Context,
+	worker gardencorev1beta1.Worker,
+	oscDataOriginal operatingsystemconfig.Data,
+) (
+	map[string][]byte,
+	error,
+) {
+	oscSecret, err := NodeAgentOSCSecretFn(ctx, b.SeedClientSet.Client(), oscDataOriginal.Object, oscDataOriginal.GardenerNodeAgentSecretName, worker.Name, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed computing the OperatingSystemConfig secret for gardener-node-agent for pool %q: %w", worker.Name, err)
+	}
+
+	resources, err := managedresources.
+		NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer).
+		AddAllAndSerialize(oscSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed adding gardener-node-agent secret for pool %q to the registry and serializing it: %w", worker.Name, err)
+	}
+
+	return resources, nil
+}

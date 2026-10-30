@@ -1,0 +1,82 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package shared
+
+import (
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/gardener/gardener/imagevector"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/autoscaling/vpa"
+	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+)
+
+// NewVerticalPodAutoscaler instantiates a new `vertical-pod-autoscaler` component.
+func NewVerticalPodAutoscaler(
+	c client.Client,
+	gardenNamespaceName string,
+	runtimeVersion *semver.Version,
+	secretsManager secretsmanager.Interface,
+	maxAllowed corev1.ResourceList,
+	secretNameServerCA string,
+	priorityClassNameAdmissionController string,
+	priorityClassNameRecommender string,
+	priorityClassNameUpdater string,
+	isGardenCluster bool,
+	featureGates map[string]bool,
+) (
+	component.DeployWaiter,
+	error,
+) {
+	imageAdmissionController, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameVpaAdmissionController, imagevectorutils.TargetVersion(runtimeVersion.String()))
+	if err != nil {
+		return nil, err
+	}
+
+	imageRecommender, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameVpaRecommender, imagevectorutils.TargetVersion(runtimeVersion.String()))
+	if err != nil {
+		return nil, err
+	}
+
+	imageUpdater, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameVpaUpdater, imagevectorutils.TargetVersion(runtimeVersion.String()))
+	if err != nil {
+		return nil, err
+	}
+
+	return vpa.New(
+		c,
+		gardenNamespaceName,
+		secretsManager,
+		vpa.Values{
+			ClusterType:              component.ClusterTypeSeed,
+			IsGardenCluster:          isGardenCluster,
+			SecretNameServerCA:       secretNameServerCA,
+			RuntimeKubernetesVersion: runtimeVersion,
+			AdmissionController: vpa.ValuesAdmissionController{
+				Image:             imageAdmissionController.String(),
+				PriorityClassName: priorityClassNameAdmissionController,
+			},
+			Recommender: vpa.ValuesRecommender{
+				Image:                        imageRecommender.String(),
+				PriorityClassName:            priorityClassNameRecommender,
+				RecommendationMarginFraction: new(float64(0.05)),
+				MaxAllowed:                   maxAllowed,
+			},
+			Updater: vpa.ValuesUpdater{
+				EvictionTolerance:      new(float64(1.0)),
+				EvictAfterOOMThreshold: &metav1.Duration{Duration: 48 * time.Hour},
+				Image:                  imageUpdater.String(),
+				PriorityClassName:      priorityClassNameUpdater,
+			},
+			FeatureGates: featureGates,
+		},
+	), nil
+}

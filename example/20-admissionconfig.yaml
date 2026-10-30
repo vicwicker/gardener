@@ -1,0 +1,29 @@
+---
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+- name: ShootTolerationRestriction
+  configuration:
+    apiVersion: shoottolerationrestriction.admission.gardener.cloud/v1alpha1
+    kind: Configuration
+    defaults:
+    - key: foo
+    whitelist:
+    - key: foo
+    - key: bar
+      value: baz
+- name: ShootDNSRewriting
+  configuration:
+    apiVersion: shootdnsrewriting.admission.gardener.cloud/v1alpha1
+    kind: Configuration
+    commonSuffixes:
+    - .gardener.cloud
+    - .github.com
+- name: ShootResourceReservation
+  configuration:
+   apiVersion: shootresourcereservation.admission.gardener.cloud/v1alpha1
+   kind: Configuration
+   useGKEFormula: false
+#  selector:
+#    matchLabels:
+#      shoot.gardener.cloud/worker-specific-reservations: "true"

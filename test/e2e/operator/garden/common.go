@@ -1,0 +1,142 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package garden
+
+import (
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	"github.com/gardener/gardener/pkg/utils"
+)
+
+const backupSecretName = "virtual-garden-etcd-main-backup"
+
+// backupSecretForGarden returns the backup secret that is referenced by the main etcd backup of the given garden.
+func backupSecretForGarden(garden *operatorv1alpha1.Garden) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      garden.Spec.VirtualCluster.ETCD.Main.Backup.SecretRef.Name,
+			Namespace: v1beta1constants.GardenNamespace,
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{"hostPath": []byte("/etc/gardener/local-backupbuckets")},
+	}
+}
+
+func defaultGarden(specifyBackupBucket bool) *operatorv1alpha1.Garden {
+	randomSuffix, err := utils.GenerateRandomStringFromCharset(5, "0123456789abcdefghijklmnopqrstuvwxyz")
+	Expect(err).NotTo(HaveOccurred())
+	name := "garden-" + randomSuffix
+
+	var bucketName *string
+	if specifyBackupBucket {
+		bucketName = new("gardener-operator/" + name)
+	}
+
+	return &operatorv1alpha1.Garden{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: operatorv1alpha1.GardenSpec{
+			DNS: &operatorv1alpha1.DNSManagement{
+				Providers: []operatorv1alpha1.DNSProvider{{
+					Name: "primary",
+					Type: "local",
+					SecretRef: corev1.LocalObjectReference{
+						Name: "garden-dns-local",
+					},
+				}},
+			},
+			Extensions: []operatorv1alpha1.GardenExtension{{
+				Type: "local-ext-shoot",
+			}},
+			RuntimeCluster: operatorv1alpha1.RuntimeCluster{
+				Networking: operatorv1alpha1.RuntimeNetworking{
+					// Subnet for automatic pod IP assignment (calico default IPPool) in the kind cluster.
+					Pods:     []string{"10.1.0.0/16"},
+					Services: []string{"10.2.0.0/16"},
+				},
+				Ingress: operatorv1alpha1.Ingress{
+					Domains: []operatorv1alpha1.DNSDomain{{
+						Name:     "ingress.runtime-garden.local.gardener.cloud",
+						Provider: new("primary"),
+					}},
+					Controller: gardencorev1beta1.IngressController{
+						Kind: "nginx",
+					},
+				},
+				Provider: operatorv1alpha1.Provider{
+					Region: new("local"),
+					Zones:  []string{"0", "1", "2"},
+				},
+				Settings: &operatorv1alpha1.Settings{
+					VerticalPodAutoscaler: &operatorv1alpha1.SettingVerticalPodAutoscaler{
+						Enabled: new(true),
+					},
+					TopologyAwareRouting: &operatorv1alpha1.SettingTopologyAwareRouting{
+						Enabled: true,
+					},
+				},
+			},
+			VirtualCluster: operatorv1alpha1.VirtualCluster{
+				ControlPlane: &operatorv1alpha1.ControlPlane{
+					HighAvailability: &operatorv1alpha1.HighAvailability{},
+				},
+				DNS: operatorv1alpha1.DNS{
+					Domains: []operatorv1alpha1.DNSDomain{{
+						Name:     "virtual-garden.local.gardener.cloud",
+						Provider: new("primary"),
+					}},
+				},
+				ETCD: &operatorv1alpha1.ETCD{
+					Main: &operatorv1alpha1.ETCDMain{
+						Backup: &operatorv1alpha1.Backup{
+							Provider:   "local",
+							Region:     new("local"),
+							BucketName: bucketName,
+							SecretRef: corev1.LocalObjectReference{
+								Name: backupSecretName,
+							},
+						},
+					},
+				},
+				Gardener: operatorv1alpha1.Gardener{
+					ClusterIdentity: "e2e-test",
+					Dashboard: &operatorv1alpha1.GardenerDashboardConfig{
+						Domain: &operatorv1alpha1.DNSDomain{
+							Name:     "dashboard.local.gardener.cloud",
+							Provider: new("primary"),
+						},
+						Terminal: &operatorv1alpha1.DashboardTerminal{
+							Container: operatorv1alpha1.DashboardTerminalContainer{Image: "busybox:latest"},
+						},
+					},
+					DiscoveryServer: &operatorv1alpha1.GardenerDiscoveryServerConfig{
+						Domain: &operatorv1alpha1.DNSDomain{
+							Name:     "discovery.local.gardener.cloud",
+							Provider: new("primary"),
+						},
+					},
+				},
+				Kubernetes: operatorv1alpha1.Kubernetes{
+					Version: "1.37.0",
+				},
+				Maintenance: operatorv1alpha1.Maintenance{
+					TimeWindow: gardencorev1beta1.MaintenanceTimeWindow{
+						Begin: "220000+0100",
+						End:   "230000+0100",
+					},
+				},
+				Networking: operatorv1alpha1.Networking{
+					Services: []string{"100.64.0.0/13"},
+				},
+			},
+		},
+	}
+}

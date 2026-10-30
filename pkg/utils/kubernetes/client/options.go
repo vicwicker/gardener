@@ -1,0 +1,122 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package client
+
+import (
+	"time"
+
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// CleanOption is a configuration that modifies options for a clean operation.
+type CleanOption interface {
+	ApplyToClean(*CleanOptions)
+}
+
+// TolerateErrorFunc is a function type for tolerating errors.
+type TolerateErrorFunc func(err error) bool
+
+// IgnoreLeftoverFunc is a function type for ignoring objects that remain in the cluster.
+type IgnoreLeftoverFunc func(log logr.Logger, obj client.Object) bool
+
+// CleanOptions are options to clean certain resources.
+// If FinalizeGracePeriodSeconds is set, the finalizers of the resources are removed if the resources still
+// exist after their targeted termination date plus the FinalizeGracePeriodSeconds amount.
+type CleanOptions struct {
+	ListOptions                []client.ListOption
+	DeleteOptions              []client.DeleteOption
+	FinalizeGracePeriodSeconds *int64
+	ErrorToleration            []TolerateErrorFunc
+	IgnoreLeftovers            []IgnoreLeftoverFunc
+}
+
+var _ CleanOption = &CleanOptions{}
+
+// ApplyToClean implements CleanOption for CleanOptions.
+func (o *CleanOptions) ApplyToClean(co *CleanOptions) {
+	if o.ListOptions != nil {
+		co.ListOptions = o.ListOptions
+	}
+	if o.DeleteOptions != nil {
+		co.DeleteOptions = o.DeleteOptions
+	}
+	if o.FinalizeGracePeriodSeconds != nil {
+		co.FinalizeGracePeriodSeconds = o.FinalizeGracePeriodSeconds
+	}
+	if o.ErrorToleration != nil {
+		co.ErrorToleration = o.ErrorToleration
+	}
+	if o.IgnoreLeftovers != nil {
+		co.IgnoreLeftovers = o.IgnoreLeftovers
+	}
+}
+
+// ApplyOptions applies the OptFuncs to the CleanOptions.
+func (o *CleanOptions) ApplyOptions(opts []CleanOption) *CleanOptions {
+	for _, opt := range opts {
+		opt.ApplyToClean(o)
+	}
+	return o
+}
+
+// ListWith uses the given list options for a clean operation.
+type ListWith []client.ListOption
+
+// ApplyToClean specifies list options for a clean operation.
+func (d ListWith) ApplyToClean(opts *CleanOptions) {
+	opts.ListOptions = append(opts.ListOptions, d...)
+}
+
+// DeleteWith uses the given delete options for a clean operation.
+type DeleteWith []client.DeleteOption
+
+// ApplyToClean specifies deletion options for a clean operation.
+func (d DeleteWith) ApplyToClean(opts *CleanOptions) {
+	opts.DeleteOptions = append(opts.DeleteOptions, d...)
+}
+
+// FinalizeGracePeriodSeconds specifies that a resource shall be finalized if it's been deleting
+// without being gone beyond the deletion timestamp for the given seconds.
+type FinalizeGracePeriodSeconds int64
+
+// ApplyToClean specifies a finalize grace period for a clean operation.
+func (s FinalizeGracePeriodSeconds) ApplyToClean(opts *CleanOptions) {
+	secs := int64(s)
+	opts.FinalizeGracePeriodSeconds = &secs
+}
+
+// TolerateErrors uses the given toleration funcs for a clean operation.
+type TolerateErrors []TolerateErrorFunc
+
+// ApplyToClean specifies errors to be tolerated for a clean operation.
+func (m TolerateErrors) ApplyToClean(opts *CleanOptions) {
+	opts.ErrorToleration = append(opts.ErrorToleration, m...)
+}
+
+// IgnoreUnknownNamespaces returns an IgnoreLeftoverFunc that ignores objects in unknown namespaces.
+func IgnoreUnknownNamespaces(namespaces []string, scheme *runtime.Scheme) IgnoreLeftoverFunc {
+	namespaceSet := sets.New(namespaces...)
+	return func(log logr.Logger, obj client.Object) bool {
+		ignore := obj.GetNamespace() != "" && !namespaceSet.Has(obj.GetNamespace())
+		if ignore {
+			log.Info("Ignoring leftover object in unknown namespace", "obj", client.ObjectKeyFromObject(obj), "gvk", GVKStringForObject(obj, scheme))
+		}
+		return ignore
+	}
+}
+
+// IgnoreObjectsCreatedAfter returns an IgnoreLeftoverFunc that ignores objects created after the given time.
+func IgnoreObjectsCreatedAfter(timeStamp time.Time, scheme *runtime.Scheme) IgnoreLeftoverFunc {
+	return func(log logr.Logger, obj client.Object) bool {
+		if obj.GetCreationTimestamp().After(timeStamp) {
+			log.Info("Ignoring leftover object created after cleanup start time", "obj", client.ObjectKeyFromObject(obj), "gvk", GVKStringForObject(obj, scheme), "creationTimestamp", obj.GetCreationTimestamp(), "cleanupStartTime", timeStamp.Format(time.RFC3339))
+			return true
+		}
+		return false
+	}
+}

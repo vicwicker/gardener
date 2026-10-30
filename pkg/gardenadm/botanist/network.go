@@ -1,0 +1,100 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist
+
+import (
+	"context"
+	"fmt"
+	"net"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/controller/networkpolicy"
+	"github.com/gardener/gardener/pkg/controller/networkpolicy/hostnameresolver"
+	"github.com/gardener/gardener/pkg/nodeagent"
+)
+
+// IsPodNetworkAvailable checks if the control plane Node has the pod network configured.
+// It checks the NetworkUnavailable condition - when False, the pod network is available.
+func (b *GardenadmBotanist) IsPodNetworkAvailable(ctx context.Context) (bool, error) {
+	node, err := nodeagent.FetchNodeByHostName(ctx, b.SeedClientSet.Client(), b.HostName)
+	if err != nil {
+		return false, fmt.Errorf("failed fetching node object by hostname %q: %w", b.HostName, err)
+	}
+
+	// If no Node exists yet, pod network is not available
+	if node == nil {
+		return false, nil
+	}
+
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeNetworkUnavailable {
+			return condition.Status == corev1.ConditionFalse, nil
+		}
+	}
+
+	return false, nil
+}
+
+// CheckControlPlaneNodeLabeled returns an error until the control plane Node carries the `node-role.kubernetes.io/control-plane`
+// label (applied asynchronously by gardener-node-agent), which bootstrap components pin themselves to.
+func (b *GardenadmBotanist) CheckControlPlaneNodeLabeled(ctx context.Context) error {
+	node, err := nodeagent.FetchNodeByHostName(ctx, b.SeedClientSet.Client(), b.HostName)
+	if err != nil {
+		return fmt.Errorf("failed fetching node object by hostname %q: %w", b.HostName, err)
+	}
+
+	if node == nil {
+		return fmt.Errorf("node for host %q was not created yet", b.HostName)
+	}
+
+	if _, ok := node.Labels[v1beta1constants.LabelNodeRoleControlPlane]; !ok {
+		return fmt.Errorf("node %q does not yet carry the %q label", node.Name, v1beta1constants.LabelNodeRoleControlPlane)
+	}
+
+	return nil
+}
+
+// ApplyNetworkPolicies reconciles all namespaces in the cluster in order to apply the network policies.
+func (b *GardenadmBotanist) ApplyNetworkPolicies(ctx context.Context) error {
+	reconciler := &networkpolicy.Reconciler{
+		RuntimeClient: b.SeedClientSet.Client(),
+		Resolver:      hostnameresolver.NewNoOpProvider(),
+		RuntimeNetworks: networkpolicy.RuntimeNetworkConfig{
+			IPFamilies: b.Shoot.GetInfo().Spec.Networking.IPFamilies,
+			Pods:       netIPNetSliceToStringSlice(b.Shoot.Networks.Pods),
+			Services:   netIPNetSliceToStringSlice(b.Shoot.Networks.Services),
+			Nodes:      netIPNetSliceToStringSlice(b.Shoot.Networks.Nodes),
+		},
+	}
+
+	namespaceList := &corev1.NamespaceList{}
+	if err := b.SeedClientSet.Client().List(ctx, namespaceList); err != nil {
+		return fmt.Errorf("failed listing namespaces: %w", err)
+	}
+
+	for _, namespace := range namespaceList.Items {
+		b.Logger.Info("Reconciling NetworkPolicies using gardenlet's reconciliation logic", "namespaceName", namespace.Name)
+
+		reconcilerCtx := log.IntoContext(ctx, b.Logger.WithName("networkpolicy-reconciler").WithValues("namespaceName", namespace.Name))
+		if _, err := reconciler.Reconcile(reconcilerCtx, reconcile.Request{NamespacedName: types.NamespacedName{Name: namespace.Name}}); err != nil {
+			return fmt.Errorf("failed running NetworkPolicy controller for namespace %q: %w", namespace.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func netIPNetSliceToStringSlice(in []net.IPNet) []string {
+	out := make([]string, 0, len(in))
+	for _, ip := range in {
+		out = append(out, ip.String())
+	}
+	return out
+}

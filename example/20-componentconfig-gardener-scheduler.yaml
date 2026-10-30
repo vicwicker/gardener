@@ -1,0 +1,30 @@
+---
+apiVersion: scheduler.config.gardener.cloud/v1alpha1
+kind: SchedulerConfiguration
+clientConnection:
+  qps: 100
+  burst: 130
+leaderElection:
+  leaderElect: true
+  leaseDuration: 15s
+  renewDeadline: 10s
+  retryPeriod: 2s
+  resourceLock: leases
+  resourceNamespace: garden
+  resourceName: gardener-scheduler-leader-election
+logLevel: info
+logFormat: text
+server:
+  healthProbes:
+    port: 10251
+  metrics:
+    port: 19252
+debugging:
+  enableProfiling: false
+  enableContentionProfiling: false
+#schedulers:
+#  backupBucket:
+#    concurrentSyncs: 5 # defaults to 5
+#  shoot:
+#    concurrentSyncs: 5 # defaults to 5
+#    candidateDeterminationStrategy: MinimalDistance # either {SameRegion,MinimalDistance}

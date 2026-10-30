@@ -1,0 +1,142 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist_test
+
+import (
+	"context"
+	"errors"
+	"net"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"go.uber.org/mock/gomock"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/clock"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
+	mockvpnshoot "github.com/gardener/gardener/pkg/component/networking/vpn/shoot/mock"
+	"github.com/gardener/gardener/pkg/gardenlet/operation"
+	. "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
+	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
+	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+)
+
+var _ = Describe("VPNShoot", func() {
+	var (
+		ctrl     *gomock.Controller
+		botanist *Botanist
+	)
+	BeforeEach(func() {
+		ctrl = gomock.NewController(GinkgoT())
+
+		botanist = &Botanist{Operation: &operation.Operation{
+			Clock: clock.RealClock{},
+		}}
+	})
+
+	AfterEach(func() {
+		ctrl.Finish()
+	})
+
+	Describe("#DefaultVPNShoot", func() {
+		BeforeEach(func() {
+			fakeClient := fakeclient.NewClientBuilder().Build()
+			botanist.SeedClientSet = fakekubernetes.NewClientSetBuilder().WithClient(fakeClient).Build()
+			botanist.Shoot = &shootpkg.Shoot{
+				Networks: &shootpkg.Networks{
+					Pods:     []net.IPNet{{IP: []byte("192.168.0.0"), Mask: []byte("16")}},
+					Services: []net.IPNet{{IP: []byte("10.0.0.0"), Mask: []byte("24")}},
+					Nodes:    []net.IPNet{{IP: []byte("10.181.0.0"), Mask: []byte("16")}},
+				},
+				ExternalClusterDomain: new("foo.local.gardener.cloud"),
+			}
+			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Kubernetes: gardencorev1beta1.Kubernetes{
+						Version: "1.35.0",
+					},
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4},
+						Pods:       new("192.168.0.0/16"),
+						Services:   new("10.0.0.0/24"),
+						Nodes:      new("10.181.0.0/16"),
+					},
+				},
+			})
+			botanist.Seed = &seedpkg.Seed{}
+			botanist.Seed.SetInfo(&gardencorev1beta1.Seed{})
+		})
+
+		It("should successfully create a vpnShoot interface for ReversedVPN", func() {
+			vpnShoot, err := botanist.DefaultVPNShoot()
+			Expect(vpnShoot).NotTo(BeNil())
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("#DeployVPNShoot", func() {
+		var (
+			vpnShoot *mockvpnshoot.MockInterface
+			ctx      = context.TODO()
+			shoot    *gardencorev1beta1.Shoot
+			fakeErr  = errors.New("fake err")
+		)
+
+		BeforeEach(func() {
+			vpnShoot = mockvpnshoot.NewMockInterface(ctrl)
+
+			shoot = &gardencorev1beta1.Shoot{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bar",
+					Namespace: "foo",
+				},
+			}
+			botanist.Shoot = &shootpkg.Shoot{
+				Components: &shootpkg.Components{
+					SystemComponents: &shootpkg.SystemComponents{
+						VPNShoot: vpnShoot,
+					},
+				},
+				Networks: &shootpkg.Networks{
+					Pods:     []net.IPNet{{IP: []byte("192.168.0.0"), Mask: []byte("16")}},
+					Services: []net.IPNet{{IP: []byte("10.0.0.0"), Mask: []byte("24")}},
+					Nodes:    []net.IPNet{{IP: []byte("10.181.0.0"), Mask: []byte("16")}},
+				},
+			}
+
+			botanist.Shoot.SetInfo(shoot)
+			gardenClient := fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).WithStatusSubresource(&gardencorev1beta1.Shoot{}).WithObjects(shoot).Build()
+			botanist.GardenClient = gardenClient
+		})
+
+		BeforeEach(func() {
+			vpnShoot.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			vpnShoot.EXPECT().SetServiceNetworkCIDRs(botanist.Shoot.Networks.Services)
+			vpnShoot.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
+		})
+
+		It("should set the network ranges, deploy, and report the constraint", func() {
+			vpnShoot.EXPECT().Deploy(ctx)
+			Expect(botanist.DeployVPNShoot(ctx)).To(Succeed())
+			Expect(botanist.GardenClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+
+			Expect(shoot.Status.Constraints).To(ContainCondition(
+				OfType(gardencorev1beta1.ShootUsesUnifiedHTTPProxyPort),
+				WithStatus(gardencorev1beta1.ConditionTrue),
+				WithReason("ShootUsesUnifiedHTTPProxyPort"),
+			))
+		})
+
+		It("should fail when the deploy function fails", func() {
+			vpnShoot.EXPECT().Deploy(ctx).Return(fakeErr)
+			Expect(botanist.DeployVPNShoot(ctx)).To(Equal(fakeErr))
+		})
+	})
+})

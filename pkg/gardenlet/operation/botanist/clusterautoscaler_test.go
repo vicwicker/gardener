@@ -1,0 +1,508 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist_test
+
+import (
+	"context"
+	"errors"
+	"net"
+
+	"github.com/Masterminds/semver/v3"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"go.uber.org/mock/gomock"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
+	mockclusterautoscaler "github.com/gardener/gardener/pkg/component/autoscaling/clusterautoscaler/mock"
+	mockworker "github.com/gardener/gardener/pkg/component/extensions/worker/mock"
+	mockkubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/mock"
+	"github.com/gardener/gardener/pkg/gardenlet/operation"
+	. "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
+	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
+	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+)
+
+var _ = Describe("ClusterAutoscaler", func() {
+	var (
+		ctx                 = context.TODO()
+		fakeErr             = errors.New("fake err")
+		namespace           = "shoot--foo--bar"
+		ctrl                *gomock.Controller
+		botanist            *Botanist
+		kubernetesClientSet *fakekubernetes.ClientSet
+		fakeClient          client.Client
+	)
+
+	BeforeEach(func() {
+		ctrl = gomock.NewController(GinkgoT())
+
+		fakeClient = fakeclient.NewClientBuilder().Build()
+		kubernetesClientSet = fakekubernetes.NewClientSetBuilder().WithClient(fakeClient).WithVersion("1.35.0").Build()
+
+		botanist = &Botanist{Operation: &operation.Operation{}}
+		botanist.Seed = &seedpkg.Seed{}
+		botanist.Shoot = &shootpkg.Shoot{
+			Networks:                 &shootpkg.Networks{},
+			CloudProfile:             &gardencorev1beta1.CloudProfile{},
+			RuntimeKubernetesVersion: semver.MustParse("1.35.0"),
+		}
+		botanist.SeedClientSet = kubernetesClientSet
+	})
+
+	AfterEach(func() {
+		ctrl.Finish()
+	})
+
+	Describe("#DefaultClusterAutoscaler", func() {
+		BeforeEach(func() {
+			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Kubernetes: gardencorev1beta1.Kubernetes{Version: "1.35.0"}}})
+			botanist.Shoot.ControlPlaneNamespace = namespace
+		})
+
+		It("should successfully create a cluster-autoscaler interface", func() {
+			clusterAutoscaler, err := botanist.DefaultClusterAutoscaler()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(clusterAutoscaler).NotTo(BeNil())
+		})
+	})
+
+	Describe("#DeployClusterAutoscaler", func() {
+		var (
+			clusterAutoscaler *mockclusterautoscaler.MockInterface
+			worker            *mockworker.MockInterface
+
+			namespaceUID       = types.UID("5678")
+			machineDeployments = []extensionsv1alpha1.MachineDeployment{{}}
+			kubeAPIServer      *mockkubeapiserver.MockInterface
+		)
+
+		BeforeEach(func() {
+			kubeAPIServer = mockkubeapiserver.NewMockInterface(ctrl)
+			clusterAutoscaler = mockclusterautoscaler.NewMockInterface(ctrl)
+			worker = mockworker.NewMockInterface(ctrl)
+
+			botanist.SeedNamespaceObject = &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					UID: namespaceUID,
+				},
+			}
+			botanist.Shoot.Components = &shootpkg.Components{
+				ControlPlane: &shootpkg.ControlPlane{
+					ClusterAutoscaler: clusterAutoscaler,
+					KubeAPIServer:     kubeAPIServer,
+				},
+				Extensions: &shootpkg.Extensions{
+					Worker: worker,
+				},
+			}
+			botanist.Shoot.ControlPlaneNamespace = namespace
+			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{})
+		})
+
+		Context("CA wanted", func() {
+			BeforeEach(func() {
+				botanist.Shoot.WantsClusterAutoscaler = true
+				botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{})
+
+				clusterAutoscaler.EXPECT().SetNamespaceUID(namespaceUID)
+				worker.EXPECT().MachineDeployments().Return(machineDeployments)
+				clusterAutoscaler.EXPECT().SetMachineDeployments(machineDeployments)
+				clusterAutoscaler.EXPECT().SetMaxNodesTotal(int64(0))
+				clusterAutoscaler.EXPECT().SetReplicas(int32(1))
+				kubeAPIServer.EXPECT().GetAutoscalingReplicas().Return(new(int32(1)))
+			})
+
+			It("should set the secrets, namespace uid, machine deployments, and deploy", func() {
+				clusterAutoscaler.EXPECT().Deploy(ctx)
+				Expect(botanist.DeployClusterAutoscaler(ctx)).To(Succeed())
+			})
+
+			It("should fail when the deploy function fails", func() {
+				clusterAutoscaler.EXPECT().Deploy(ctx).Return(fakeErr)
+				Expect(botanist.DeployClusterAutoscaler(ctx)).To(Equal(fakeErr))
+			})
+		})
+
+		Context("CA unwanted", func() {
+			BeforeEach(func() {
+				botanist.Shoot.WantsClusterAutoscaler = false
+			})
+
+			It("should destroy", func() {
+				clusterAutoscaler.EXPECT().Destroy(ctx)
+				Expect(botanist.DeployClusterAutoscaler(ctx)).To(Succeed())
+			})
+
+			It("should fail when the destroy function fails", func() {
+				clusterAutoscaler.EXPECT().Destroy(ctx).Return(fakeErr)
+				Expect(botanist.DeployClusterAutoscaler(ctx)).To(Equal(fakeErr))
+			})
+		})
+	})
+
+	Describe("#ScaleClusterAutoscalerToZero", func() {
+		var (
+			namespace = "shoot--foo--bar"
+		)
+
+		BeforeEach(func() {
+			botanist.SeedClientSet = kubernetesClientSet
+			botanist.Shoot = &shootpkg.Shoot{
+				ControlPlaneNamespace: namespace,
+			}
+		})
+
+		It("should scale the CA deployment", func() {
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster-autoscaler", Namespace: namespace},
+				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(1))},
+			}
+			Expect(fakeClient.Create(ctx, deployment)).To(Succeed())
+
+			Expect(botanist.ScaleClusterAutoscalerToZero(ctx)).To(Succeed())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "cluster-autoscaler"}, deployment)).To(Succeed())
+			Expect(deployment.Spec.Replicas).To(Equal(new(int32(0))))
+		})
+
+		It("should fail when the scale call fails", func() {
+			fakeClientWithErr := fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).WithInterceptorFuncs(interceptor.Funcs{
+				SubResourcePatch: func(_ context.Context, _ client.Client, _ string, _ client.Object, _ client.Patch, _ ...client.SubResourcePatchOption) error {
+					return fakeErr
+				},
+			}).Build()
+
+			botanist.SeedClientSet = fakekubernetes.NewClientSetBuilder().WithClient(fakeClientWithErr).Build()
+
+			Expect(botanist.ScaleClusterAutoscalerToZero(ctx)).To(MatchError(fakeErr))
+		})
+	})
+
+	Describe("#CalculateMaxNodesTotal", func() {
+		var (
+			shoot     *gardencorev1beta1.Shoot
+			namespace string
+
+			maxNetworks int32
+		)
+
+		BeforeEach(func() {
+			shoot = &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+						NodeCIDRMaskSize: new(int32(24)),
+					},
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Pods: new("100.64.0.0/12"),
+				},
+			}}
+			_, pods, err := net.ParseCIDR(*shoot.Spec.Networking.Pods)
+			Expect(err).NotTo(HaveOccurred())
+			botanist.Shoot.Networks.Pods = append(botanist.Shoot.Networks.Pods, *pods)
+			// -> shoot networks allow the following number of nodes:
+			maxNetworks = 4096
+
+			botanist.Shoot.CloudProfile.Spec.Limits = &gardencorev1beta1.Limits{
+				MaxNodesTotal: new(int32(100)),
+			}
+
+			namespace = "shoot--foo--bar"
+			botanist.Shoot.ControlPlaneNamespace = namespace
+		})
+
+		It("should return 0 if there are no limits", func() {
+			shoot.Spec.Networking = nil
+			botanist.Shoot.CloudProfile.Spec.Limits = nil
+			Expect(botanist.CalculateMaxNodesTotal(ctx, shoot)).To(BeEquivalentTo(0))
+		})
+
+		It("should return 0 if maxNodesTotal is not limited", func() {
+			shoot.Spec.Networking = nil
+			botanist.Shoot.CloudProfile.Spec.Limits.MaxNodesTotal = nil
+			Expect(botanist.CalculateMaxNodesTotal(ctx, shoot)).To(BeEquivalentTo(0))
+		})
+
+		It("should return the network limit if maxNodesTotal is not limited", func() {
+			botanist.Shoot.CloudProfile.Spec.Limits.MaxNodesTotal = nil
+			Expect(botanist.CalculateMaxNodesTotal(ctx, shoot)).To(BeEquivalentTo(maxNetworks))
+		})
+
+		It("should return the CloudProfile limit if network is not limited", func() {
+
+			shoot.Spec.Networking = nil
+			Expect(botanist.CalculateMaxNodesTotal(ctx, shoot)).To(BeEquivalentTo(*botanist.Shoot.CloudProfile.Spec.Limits.MaxNodesTotal))
+		})
+
+		It("should return the CloudProfile limit if it is lower than the network limit", func() {
+
+			botanist.Shoot.CloudProfile.Spec.Limits.MaxNodesTotal = new(maxNetworks - 10)
+			Expect(botanist.CalculateMaxNodesTotal(ctx, shoot)).To(BeEquivalentTo(*botanist.Shoot.CloudProfile.Spec.Limits.MaxNodesTotal))
+		})
+
+		It("should return the network limit if it is lower than the CloudProfile limit", func() {
+
+			botanist.Shoot.CloudProfile.Spec.Limits.MaxNodesTotal = new(maxNetworks + 10)
+			Expect(botanist.CalculateMaxNodesTotal(ctx, shoot)).To(BeEquivalentTo(maxNetworks))
+		})
+
+		It("should return the current node count if it is higher than the CloudProfile limit", func() {
+			machineCount := int(maxNetworks - 50)
+			fakeClientWithMachines := fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).WithInterceptorFuncs(interceptor.Funcs{
+				List: func(_ context.Context, _ client.WithWatch, list client.ObjectList, _ ...client.ListOption) error {
+					if pml, ok := list.(*metav1.PartialObjectMetadataList); ok {
+						pml.Items = make([]metav1.PartialObjectMetadata, machineCount)
+					}
+					return nil
+				},
+			}).Build()
+
+			botanist.SeedClientSet = fakekubernetes.NewClientSetBuilder().WithClient(fakeClientWithMachines).Build()
+
+			botanist.Shoot.CloudProfile.Spec.Limits.MaxNodesTotal = new(maxNetworks - 100)
+			Expect(botanist.CalculateMaxNodesTotal(ctx, shoot)).To(BeEquivalentTo(maxNetworks - 50))
+		})
+	})
+
+	DescribeTable("#CalculateMaxNodesForShootNetworks",
+		func(shoot *gardencorev1beta1.Shoot, expectedResult int) {
+			if shoot.Spec.Networking != nil {
+				if shoot.Spec.Networking.Pods != nil {
+					_, pods, err := net.ParseCIDR(*shoot.Spec.Networking.Pods)
+					Expect(err).NotTo(HaveOccurred())
+					botanist.Shoot.Networks.Pods = append(botanist.Shoot.Networks.Pods, *pods)
+				}
+				if shoot.Spec.Networking.Nodes != nil {
+					_, nodes, err := net.ParseCIDR(*shoot.Spec.Networking.Nodes)
+					Expect(err).NotTo(HaveOccurred())
+					botanist.Shoot.Networks.Nodes = append(botanist.Shoot.Networks.Nodes, *nodes)
+				}
+			}
+			if shoot.Status.Networking != nil {
+				for _, p := range shoot.Status.Networking.Pods {
+					_, pods, err := net.ParseCIDR(p)
+					Expect(err).NotTo(HaveOccurred())
+					botanist.Shoot.Networks.Pods = append(botanist.Shoot.Networks.Pods, *pods)
+				}
+				for _, n := range shoot.Status.Networking.Nodes {
+					_, nodes, err := net.ParseCIDR(n)
+					Expect(err).NotTo(HaveOccurred())
+					botanist.Shoot.Networks.Nodes = append(botanist.Shoot.Networks.Nodes, *nodes)
+				}
+			}
+			maxNodes, err := botanist.CalculateMaxNodesForShootNetworks(shoot)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(maxNodes).To(BeEquivalentTo(expectedResult))
+		},
+
+		Entry(
+			"no network",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+						NodeCIDRMaskSize: new(int32(24)),
+					},
+				},
+			}},
+			0,
+		),
+		Entry(
+			"Pods network only",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+						NodeCIDRMaskSize: new(int32(24)),
+					},
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Pods: new("100.64.0.0/12"),
+				},
+			}},
+			4096,
+		),
+		Entry(
+			"Default Pods network",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+						NodeCIDRMaskSize: new(int32(24)),
+					},
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Pods:  new("100.64.0.0/11"),
+					Nodes: new("10.250.0.0/16"),
+				},
+			}},
+			8192,
+		),
+		Entry(
+			"Pods network is restriction",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+						NodeCIDRMaskSize: new(int32(24)),
+					},
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Pods:  new("100.64.0.0/12"),
+					Nodes: new("10.250.0.0/16"),
+				},
+			}},
+			4096,
+		),
+		Entry(
+			"Nodes network is restriction",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+						NodeCIDRMaskSize: new(int32(24)),
+					},
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Pods:  new("100.64.0.0/11"),
+					Nodes: new("10.250.0.0/20"),
+				},
+			}},
+			4094,
+		),
+		Entry(
+			"IPv6",
+			&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{
+				Kubernetes: gardencorev1beta1.Kubernetes{
+					KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+						NodeCIDRMaskSize: new(int32(64)),
+					},
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Pods:       new("2001:db8:1::/48"),
+					Nodes:      new("2001:db8:2::/48"),
+					IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6},
+				},
+			}},
+			65536,
+		),
+		Entry(
+			"Multiple pods network only",
+			&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Kubernetes: gardencorev1beta1.Kubernetes{
+						KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+							NodeCIDRMaskSize: new(int32(24)),
+						},
+					},
+					Networking: &gardencorev1beta1.Networking{
+						Pods: new("100.64.0.0/12"),
+					},
+				},
+				Status: gardencorev1beta1.ShootStatus{
+					Networking: &gardencorev1beta1.NetworkingStatus{
+						Pods: []string{"10.0.0.0/24", "10.0.1.0/24"},
+					},
+				},
+			},
+			4098,
+		),
+		Entry(
+			"Pods network is restriction (with multiple networks)",
+			&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Kubernetes: gardencorev1beta1.Kubernetes{
+						KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+							NodeCIDRMaskSize: new(int32(24)),
+						},
+					},
+					Networking: &gardencorev1beta1.Networking{
+						Pods:  new("100.64.0.0/12"),
+						Nodes: new("10.250.0.0/16"),
+					},
+				},
+				Status: gardencorev1beta1.ShootStatus{
+					Networking: &gardencorev1beta1.NetworkingStatus{
+						Pods:  []string{"100.80.0.0/12", "100.96.0.0/12"},
+						Nodes: []string{"10.251.0.0/16"},
+					},
+				},
+			},
+			12288,
+		),
+		Entry(
+			"Nodes network is restriction (with multiple networks)",
+			&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Kubernetes: gardencorev1beta1.Kubernetes{
+						KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+							NodeCIDRMaskSize: new(int32(24)),
+						},
+					},
+					Networking: &gardencorev1beta1.Networking{
+						Pods:  new("100.64.0.0/11"),
+						Nodes: new("10.250.0.0/20"),
+					},
+				},
+				Status: gardencorev1beta1.ShootStatus{
+					Networking: &gardencorev1beta1.NetworkingStatus{
+						Pods:  []string{"100.96.0.0/11"},
+						Nodes: []string{"10.251.0.0/20"},
+					},
+				},
+			},
+			8188,
+		),
+		Entry(
+			"Dual-stack - IPv4 nodes network is restriction",
+			&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Kubernetes: gardencorev1beta1.Kubernetes{
+						KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+							NodeCIDRMaskSize: new(int32(24)),
+						},
+					},
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6, gardencorev1beta1.IPFamilyIPv4},
+					},
+				},
+				Status: gardencorev1beta1.ShootStatus{
+					Networking: &gardencorev1beta1.NetworkingStatus{
+						Pods:  []string{"100.96.0.0/11", "2001:db8:1::/48"},
+						Nodes: []string{"10.251.0.0/20", "2001:db8:1::/48"},
+					},
+				},
+			},
+			4094,
+		),
+		Entry(
+			"Dual-stack - IPv4 pods network is restriction",
+			&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Kubernetes: gardencorev1beta1.Kubernetes{
+						KubeControllerManager: &gardencorev1beta1.KubeControllerManagerConfig{
+							NodeCIDRMaskSize: new(int32(24)),
+						},
+					},
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6, gardencorev1beta1.IPFamilyIPv4},
+					},
+				},
+				Status: gardencorev1beta1.ShootStatus{
+					Networking: &gardencorev1beta1.NetworkingStatus{
+						Pods:  []string{"100.64.0.0/12", "2001:db8:1::/56"},
+						Nodes: []string{"10.250.0.0/16", "2001:db8:1::/56"},
+					},
+				},
+			},
+			4096,
+		),
+	)
+})

@@ -1,0 +1,92 @@
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  ownerReferences:
+  - apiVersion: v1
+    blockOwnerDeletion: true
+    controller: true
+    kind: Namespace
+    name: {{ .ControlPlaneNamespace }}
+    uid: {{ .ControlPlaneNamespaceUID }}
+spec:
+  workloadSelector:
+    labels:
+{{- range $k, $v := .IngressGatewayLabels }}
+      {{ $k }}: {{ $v }}
+{{- end }}
+  configPatches:
+{{- range $v := .Hosts }}
+  - applyTo: HTTP_ROUTE
+    match:
+      context: GATEWAY
+      routeConfiguration:
+        name: "{{ $.RouteConfigurationName }}"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        match:
+          dynamic_metadata:
+          - filter: envoy.filters.http.lua
+            path:
+            - key: {{ $.AuthenticationDynamicMetadataKey }}
+            value:
+              string_match:
+                exact: {{ $v }}
+          prefix: /
+        route:
+          cluster: outbound|{{ $.Port }}||{{ $.MutualTLSHost }}
+{{- end }}
+{{- range $v := .WildcardHosts }}
+  - applyTo: HTTP_ROUTE
+    match:
+      context: GATEWAY
+      routeConfiguration:
+        name: "{{ $.WildcardRouteConfigurationName }}"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        match:
+          dynamic_metadata:
+          - filter: envoy.filters.http.lua
+            path:
+            - key: {{ $.AuthenticationDynamicMetadataKey }}
+            value:
+              string_match:
+                exact: {{ $v }}
+          prefix: /
+        route:
+          cluster: outbound|{{ $.Port }}||{{ $.MutualTLSHost }}
+{{- end }}
+  - applyTo: CLUSTER
+    match:
+      context: GATEWAY
+      cluster:
+        name: outbound|{{ .Port }}||{{ .ConnectionUpgradeHost }}
+    patch:
+      operation: MERGE
+      value:
+        transportSocket:
+          name: envoy.transport_sockets.tls
+          typedConfig:
+            '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            commonTlsContext:
+              alpnProtocols:
+              - "http/1.1"
+  - applyTo: HTTP_ROUTE
+    match:
+      context: GATEWAY
+      routeConfiguration:
+        name: "{{ .RouteConfigurationName }}"
+        vhost:
+          route:
+            name: "{{ .ConnectionUpgradeRouteName }}"
+    patch:
+      operation: MERGE
+      value:
+        route:
+          upgrade_configs:
+          - upgrade_type: spdy/3.1
+          - upgrade_type: websocket

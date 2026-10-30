@@ -1,0 +1,345 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/apimachinery/pkg/util/sets"
+	podsecurityadmissionapi "k8s.io/pod-security-admission/api"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/shoot/namespaces"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/retry"
+)
+
+// DeployControlPlaneNamespace creates a namespace in the Seed cluster which is used to deploy all the control plane
+// components for the Shoot cluster. Moreover, the cloud provider configuration and all the secrets will be
+// stored as ConfigMaps/Secrets.
+func (b *Botanist) DeployControlPlaneNamespace(ctx context.Context) error {
+	namespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: b.Shoot.ControlPlaneNamespace,
+		},
+	}
+
+	if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.SeedClientSet.Client(), namespace, func() error {
+		requiredExtensions, err := b.getShootRequiredExtensionTypes(ctx)
+		if err != nil {
+			return err
+		}
+
+		seedProviderType := b.Shoot.GetInfo().Spec.Provider.Type
+		if !b.Shoot.IsSelfHosted() {
+			seedProviderType = b.Seed.GetInfo().Spec.Provider.Type
+		}
+
+		metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, v1beta1constants.ShootUID, string(b.Shoot.GetInfo().Status.UID))
+		metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.GardenRole, v1beta1constants.GardenRoleShoot)
+		metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.LabelSeedProvider, seedProviderType)
+		metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.LabelShootProvider, b.Shoot.GetInfo().Spec.Provider.Type)
+		if b.Shoot.GetInfo().Spec.Networking != nil && b.Shoot.GetInfo().Spec.Networking.Type != nil {
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.LabelNetworkingProvider, *b.Shoot.GetInfo().Spec.Networking.Type)
+		}
+
+		// Remove all old extension and container runtime labels before reconciling the new labels.
+		for k := range namespace.Labels {
+			if strings.HasPrefix(k, v1beta1constants.LabelExtensionPrefix) || strings.HasPrefix(k, extensionsv1alpha1.ContainerRuntimeNameWorkerLabelPrefix) {
+				delete(namespace.Labels, k)
+			}
+		}
+		for extensionType := range requiredExtensions {
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.LabelExtensionPrefix+extensionType, "true")
+		}
+		for k, v := range gardenerutils.ContainerRuntimeLabelsForWorkerPools(b.Shoot.GetInfo().Spec.Provider.Workers...) {
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, k, v)
+		}
+
+		metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.LabelBackupProvider, seedProviderType)
+		if backup := v1beta1helper.GetBackupConfigForShoot(b.Shoot.GetInfo(), b.GetSeed()); backup != nil {
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.LabelBackupProvider, backup.Provider)
+		}
+
+		metav1.SetMetaDataLabel(&namespace.ObjectMeta, podsecurityadmissionapi.EnforceLevelLabel, string(podsecurityadmissionapi.LevelPrivileged))
+		metav1.SetMetaDataLabel(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigConsider, "true")
+
+		existingFailureToleranceType, failureToleranceTypeExisting := namespace.Annotations[resourcesv1alpha1.HighAvailabilityConfigFailureToleranceType]
+
+		shootFailureToleranceType := v1beta1helper.GetFailureToleranceType(b.Shoot.GetInfo())
+		if shootFailureToleranceType == nil {
+			metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigFailureToleranceType, "")
+		} else {
+			metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigFailureToleranceType, string(*shootFailureToleranceType))
+		}
+
+		var (
+			newFailureToleranceType = namespace.Annotations[resourcesv1alpha1.HighAvailabilityConfigFailureToleranceType]
+			zones                   []string
+		)
+
+		if b.Shoot.IsSelfHosted() && b.Shoot.RunsControlPlane() {
+			// The kube-system namespace of self-hosted shoot clusters is not managed by the shoot namespaces component
+			// (ManagedResource), hence set its labels here.
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.GardenerPurpose, metav1.NamespaceSystem)
+
+			// In self-hosted shoot clusters, the control plane namespace (kube-system) does not only host control plane
+			// components but also data plane system components (e.g., coredns, calico-typha).
+			// The data plane components are not required to run on the control plane pool exclusively. On the contrary, for
+			// some, it might even be desirable to spread them across control plane and worker nodes – especially, with a
+			// single control plane node.
+			// Zone pinning is disabled to allow control plane and system components to spread across hosts and zones.
+			// The most important control plane components run as static pods and are thereby pinned to the control plane
+			// pool's zone(s) anyhow. Cross-AZ traffic might occur for other components if the control plane pool uses
+			// different zones than the other pools allowing system components.
+			metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigZonePinning, "false")
+			// If zone pinning is disabled, only the number of zones available for system components is relevant to inject
+			// topology spread constraints accordingly. Consider the zones of all worker pools for this.
+			zones = v1beta1helper.ZonesWithSystemComponents(b.Shoot.GetInfo().Spec.Provider.Workers)
+		} else if !b.Shoot.IsSelfHosted() {
+			// Enable zone pinning for hosted shoots for avoiding cross-AZ traffic in control planes without zone failure
+			// tolerance on seeds with multiple (more) zones.
+			metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigZonePinning, "true")
+
+			if seedZones := b.Seed.GetInfo().Spec.Provider.Zones; len(seedZones) > 0 &&
+				(!failureToleranceTypeExisting || existingFailureToleranceType != newFailureToleranceType) {
+				var explicitZones []string
+				if controlPlane := b.Shoot.GetInfo().Spec.ControlPlane; controlPlane != nil {
+					explicitZones = controlPlane.Zones
+				}
+
+				if len(explicitZones) > 0 {
+					zones, err = calculateShootZones(ctx, b.SeedClientSet.Client(), b.Logger, namespace, shootFailureToleranceType, explicitZones, explicitZones, "")
+				} else {
+					zones, err = calculateShootZones(ctx, b.SeedClientSet.Client(), b.Logger, namespace, shootFailureToleranceType, seedZones, allShootZones(b.Shoot.GetInfo().Spec.Provider.Workers), v1beta1helper.SeedSettingZoneSelectionMode(b.Seed.GetInfo().Spec.Settings))
+				}
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		if len(zones) > 0 {
+			metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigZones, strings.Join(zones, ","))
+		}
+
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	b.SeedNamespaceObject = namespace
+	return nil
+}
+
+func allShootZones(workerPools []gardencorev1beta1.Worker) []string {
+	zones := sets.New[string]()
+	for _, pool := range workerPools {
+		zones.Insert(pool.Zones...)
+	}
+	return zones.UnsortedList()
+}
+
+// calculateShootZones calculates and picks zones for the shoot cluster based on the passed 'failureToleranceType'.
+// 'failureToleranceType' == 'zone' -> 3 zones
+// 'failureToleranceType' != 'zone' -> 1 zone
+// If there are volumes in already used zones, then these zones will be part of the list too.
+func calculateShootZones(
+	ctx context.Context,
+	cl client.Client,
+	log logr.Logger,
+	namespace *corev1.Namespace,
+	failureToleranceType *gardencorev1beta1.FailureToleranceType,
+	seedZones []string,
+	shootZones []string,
+	zoneSelectionMode gardencorev1beta1.ZoneSelectionMode,
+) (
+	[]string,
+	error,
+) {
+	var (
+		zonesToSelect = 3
+		zonePool      = slices.Clone(seedZones)
+	)
+
+	if failureToleranceType == nil || *failureToleranceType != gardencorev1beta1.FailureToleranceTypeZone {
+		zonesToSelect = 1
+
+		if zoneSelectionMode != "" {
+			if intersection := sets.New(seedZones...).Intersection(sets.New(shootZones...)); intersection.Len() == 0 {
+				switch zoneSelectionMode {
+				case gardencorev1beta1.ZoneSelectionModePrefer:
+					log.Info("Shoot zones are not part of the seed zones, but selection mode allows continuation", "zoneSelectionMode", zoneSelectionMode, "seedZones", seedZones, "shootZones", shootZones)
+				case gardencorev1beta1.ZoneSelectionModeEnforce:
+					return nil, fmt.Errorf("seed zone selection mode is %s but the shoot zones %v are not part of the seed zones %v, cannot select appropriate zone for shoot control plane in seed", zoneSelectionMode, shootZones, seedZones)
+				}
+			} else {
+				zonePool = intersection.UnsortedList()
+			}
+		}
+	}
+
+	chosenZones := sets.New[string]()
+	if zones, ok := namespace.Annotations[resourcesv1alpha1.HighAvailabilityConfigZones]; ok {
+		chosenZones.Insert(strings.Split(zones, ",")...)
+	}
+
+	// The zones annotation is used to add a node affinity to pods and pin them to exactly those zones part of
+	// the annotation's value. However, existing clusters might already run in multiple zones. In particular,
+	// if they have created their volumes in multiple zones already, we cannot change this unless we delete and
+	// recreate the disks. This is nothing we want to do automatically, so let's find the existing volumes and
+	// use their zones from now on.
+	// As a consequence, even shoots w/o failure tolerance type 'zone' might be pinned to multiple zones.
+	pvcList := &corev1.PersistentVolumeClaimList{}
+	if err := cl.List(ctx, pvcList, client.InNamespace(namespace.Name)); err != nil {
+		return nil, fmt.Errorf("failed listing PVCs: %w", err)
+	}
+
+	for _, pvc := range pvcList.Items {
+		// Skip handling if PV has not been created yet.
+		if pvc.Spec.VolumeName == "" {
+			continue
+		}
+
+		pv := &corev1.PersistentVolume{}
+		if err := cl.Get(ctx, client.ObjectKey{Name: pvc.Spec.VolumeName}, pv); err != nil {
+			return nil, fmt.Errorf("failed getting PV %s: %w", pvc.Spec.VolumeName, err)
+		}
+
+		pvNodeAffinity := pv.Spec.NodeAffinity
+		if pvNodeAffinity == nil || pvNodeAffinity.Required == nil {
+			continue
+		}
+
+		for _, term := range pvNodeAffinity.Required.NodeSelectorTerms {
+			zonesFromTerm := ExtractZonesFromNodeSelectorTerm(term)
+			if len(zonesFromTerm) == 0 {
+				continue
+			}
+
+			seedZoneSet := sets.New(seedZones...)
+			for _, zoneFromTerm := range zonesFromTerm {
+				// Only add zone if it is found in the seed spec.
+				// Zone name mismatches are handled by provider extensions, e.g. see https://github.com/gardener/gardener-extension-provider-azure/pull/602.
+				if !seedZoneSet.Has(zoneFromTerm) {
+					continue
+				}
+				log.Info("Found existing zone due to volume", "zone", zoneFromTerm, "persistentVolume", client.ObjectKeyFromObject(pv))
+				chosenZones.Insert(zoneFromTerm)
+			}
+		}
+	}
+
+	if len(seedZones) < zonesToSelect-chosenZones.Len() {
+		return nil, fmt.Errorf("cannot select %d zones for shoot because seed only specifies %d zones in its specification", zonesToSelect, len(seedZones))
+	}
+
+	for chosenZones.Len() < zonesToSelect {
+		chosenZones.Insert(zonePool[rand.Intn(len(zonePool))])
+	}
+
+	return sets.List(chosenZones), nil
+}
+
+// ExtractZonesFromNodeSelectorTerm extracts the zones from given term.
+func ExtractZonesFromNodeSelectorTerm(term corev1.NodeSelectorTerm) []string {
+	zones := sets.New[string]()
+	for _, matchExpression := range term.MatchExpressions {
+		if matchExpression.Operator != corev1.NodeSelectorOpIn {
+			continue
+		}
+
+		key := matchExpression.Key
+		// Only consider labels with 'topology.{provider-specific-string}/zone' or "failure-domain.beta.kubernetes.io/zone" which should match most of the cases.
+		if (strings.HasPrefix(key, "topology.") && strings.HasSuffix(key, "/zone")) ||
+			key == corev1.LabelFailureDomainBetaZone {
+			zones.Insert(matchExpression.Values...)
+		}
+	}
+	return zones.UnsortedList()
+}
+
+// DeleteSeedNamespace deletes the namespace in the Seed cluster which holds the control plane components. The built-in
+// garbage collection in Kubernetes will automatically delete all resources which belong to this namespace. This
+// comprises volumes and load balancers as well.
+func (b *Botanist) DeleteSeedNamespace(ctx context.Context) error {
+	namespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: b.Shoot.ControlPlaneNamespace,
+		},
+	}
+
+	err := b.SeedClientSet.Client().Delete(ctx, namespace, kubernetes.DefaultDeleteOptions...)
+	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+		return nil
+	}
+
+	return err
+}
+
+// WaitUntilSeedNamespaceDeleted waits until the namespace of the Shoot cluster within the Seed cluster is deleted.
+func (b *Botanist) WaitUntilSeedNamespaceDeleted(ctx context.Context) error {
+	return retry.UntilTimeout(ctx, 5*time.Second, 900*time.Second, func(ctx context.Context) (done bool, err error) {
+		if err := b.SeedClientSet.Client().Get(ctx, client.ObjectKey{Name: b.Shoot.ControlPlaneNamespace}, &corev1.Namespace{}); err != nil {
+			if apierrors.IsNotFound(err) {
+				return retry.Ok()
+			}
+			return retry.SevereError(err)
+		}
+		b.Logger.Info("Waiting until the namespace has been cleaned up and deleted in the Seed cluster", "namespaceName", b.Shoot.ControlPlaneNamespace)
+		return retry.MinorError(fmt.Errorf("namespace %q is not yet cleaned up", b.Shoot.ControlPlaneNamespace))
+	})
+}
+
+// DefaultShootNamespaces returns a deployer for the shoot namespaces.
+func (b *Botanist) DefaultShootNamespaces() component.DeployWaiter {
+	return namespaces.New(b.SeedClientSet.Client(), b.Shoot.ControlPlaneNamespace, b.Shoot.GetInfo().Spec.Provider.Workers)
+}
+
+// getShootRequiredExtensionTypes returns all extension types that are enabled or explicitly disabled for the shoot.
+// The function considers only extensions of kind `Extension`.
+func (b *Botanist) getShootRequiredExtensionTypes(ctx context.Context) (sets.Set[string], error) {
+	controllerRegistrationList := &gardencorev1beta1.ControllerRegistrationList{}
+	if err := b.GardenClient.List(ctx, controllerRegistrationList); err != nil {
+		return nil, err
+	}
+
+	types := sets.Set[string]{}
+	for _, reg := range controllerRegistrationList.Items {
+		for _, res := range reg.Spec.Resources {
+			if res.Kind == extensionsv1alpha1.ExtensionResource && slices.Contains(res.AutoEnable, gardencorev1beta1.ClusterTypeShoot) {
+				types.Insert(res.Type)
+			}
+		}
+	}
+
+	for _, extension := range b.Shoot.GetInfo().Spec.Extensions {
+		if ptr.Deref(extension.Disabled, false) {
+			types.Delete(extension.Type)
+		} else {
+			types.Insert(extension.Type)
+		}
+	}
+
+	return types, nil
+}

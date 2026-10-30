@@ -1,0 +1,190 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist_test
+
+import (
+	"context"
+	"net"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
+	. "github.com/gardener/gardener/pkg/gardenadm/botanist"
+	"github.com/gardener/gardener/pkg/gardenlet/operation"
+	botanistpkg "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
+	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+)
+
+var _ = Describe("Network", func() {
+	var (
+		ctx           context.Context
+		namespaceName = "kube-system"
+
+		b *GardenadmBotanist
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+
+		b = &GardenadmBotanist{
+			Botanist: &botanistpkg.Botanist{
+				Operation: &operation.Operation{
+					Shoot: &shoot.Shoot{
+						ControlPlaneNamespace: namespaceName,
+						Networks: &shoot.Networks{
+							Pods:     []net.IPNet{{IP: net.ParseIP("10.1.2.3"), Mask: net.CIDRMask(8, 32)}},
+							Services: []net.IPNet{{IP: net.ParseIP("10.4.5.6"), Mask: net.CIDRMask(8, 32)}},
+							Nodes:    []net.IPNet{{IP: net.ParseIP("10.7.8.9"), Mask: net.CIDRMask(8, 32)}},
+						},
+					},
+					SeedClientSet: fakekubernetes.
+						NewClientSetBuilder().
+						WithClient(fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()).
+						Build(),
+				},
+			},
+		}
+		b.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+			Spec: gardencorev1beta1.ShootSpec{
+				Networking: &gardencorev1beta1.Networking{
+					IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4},
+				},
+			},
+		})
+	})
+
+	Describe("#IsPodNetworkAvailable", func() {
+		var (
+			hostName = "foo"
+
+			node *corev1.Node
+		)
+
+		BeforeEach(func() {
+			node = &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "node-",
+					Labels:       map[string]string{"kubernetes.io/hostname": hostName},
+				},
+			}
+			b.HostName = hostName
+		})
+
+		It("should return false because the Node does not exist", func() {
+			available, err := b.IsPodNetworkAvailable(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(available).To(BeFalse())
+		})
+
+		It("should return an error when it fails fetching node object by hostname", func() {
+			node2 := node.DeepCopy()
+
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
+			Expect(b.SeedClientSet.Client().Create(ctx, node2)).To(Succeed())
+
+			available, err := b.IsPodNetworkAvailable(ctx)
+			Expect(err).To(MatchError(ContainSubstring("failed fetching node object by hostname")))
+			Expect(available).To(BeFalse())
+		})
+
+		It("should return false because the Node's NetworkUnavailable condition is true", func() {
+			node.Status.Conditions = []corev1.NodeCondition{
+				{
+					Type:   corev1.NodeNetworkUnavailable,
+					Status: corev1.ConditionTrue,
+				},
+			}
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
+
+			available, err := b.IsPodNetworkAvailable(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(available).To(BeFalse())
+		})
+
+		It("should return true because the Node's NetworkUnavailable condition is false", func() {
+			node.Status.Conditions = []corev1.NodeCondition{
+				{
+					Type:   corev1.NodeNetworkUnavailable,
+					Status: corev1.ConditionFalse,
+				},
+			}
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
+
+			available, err := b.IsPodNetworkAvailable(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(available).To(BeTrue())
+		})
+
+		It("should return false because the Node's does not have a NetworkUnavailable condition", func() {
+			node.Status.Conditions = []corev1.NodeCondition{}
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
+
+			available, err := b.IsPodNetworkAvailable(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(available).To(BeFalse())
+		})
+	})
+
+	Describe("#CheckControlPlaneNodeLabeled", func() {
+		var (
+			hostName = "foo"
+
+			node *corev1.Node
+		)
+
+		BeforeEach(func() {
+			node = &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "node-",
+					Labels:       map[string]string{"kubernetes.io/hostname": hostName},
+				},
+			}
+			b.HostName = hostName
+		})
+
+		It("should return an error because the Node does not exist yet", func() {
+			Expect(b.CheckControlPlaneNodeLabeled(ctx)).To(MatchError(ContainSubstring("was not created yet")))
+		})
+
+		It("should return an error because the Node does not carry the control-plane label yet", func() {
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
+
+			Expect(b.CheckControlPlaneNodeLabeled(ctx)).To(MatchError(ContainSubstring("does not yet carry the \"node-role.kubernetes.io/control-plane\" label")))
+		})
+
+		It("should succeed because the Node carries the control-plane label", func() {
+			node.Labels["node-role.kubernetes.io/control-plane"] = ""
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
+
+			Expect(b.CheckControlPlaneNodeLabeled(ctx)).To(Succeed())
+		})
+	})
+
+	Describe("#ApplyNetworkPolicies", func() {
+		It("should apply the NetworkPolicies", func() {
+			namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default", Labels: map[string]string{"gardener.cloud/role": "shoot"}}, Status: corev1.NamespaceStatus{Phase: corev1.NamespaceActive}}
+			Expect(b.SeedClientSet.Client().Create(ctx, namespace)).To(Succeed())
+
+			endpoints := &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"}}
+			Expect(b.SeedClientSet.Client().Create(ctx, endpoints)).To(Succeed())
+
+			networkPolicyList := &networkingv1.NetworkPolicyList{}
+			Expect(b.SeedClientSet.Client().List(ctx, networkPolicyList)).To(Succeed())
+			Expect(networkPolicyList.Items).To(BeEmpty())
+
+			Expect(b.ApplyNetworkPolicies(ctx)).To(Succeed())
+
+			Expect(b.SeedClientSet.Client().List(ctx, networkPolicyList)).To(Succeed())
+			Expect(networkPolicyList.Items).NotTo(BeEmpty())
+		})
+	})
+})

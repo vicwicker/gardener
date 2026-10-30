@@ -1,0 +1,237 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package extension
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/controllerutils/mapper"
+	predicateutils "github.com/gardener/gardener/pkg/controllerutils/predicate"
+	"github.com/gardener/gardener/pkg/operator/controller/extension/extension/admission"
+	"github.com/gardener/gardener/pkg/operator/controller/extension/extension/controllerregistration"
+	extensionruntime "github.com/gardener/gardener/pkg/operator/controller/extension/extension/runtime"
+	operatorpredicate "github.com/gardener/gardener/pkg/operator/predicate"
+	"github.com/gardener/gardener/pkg/utils/oci"
+)
+
+// ControllerName is the name of this controller.
+const ControllerName = "extension"
+
+// AddToManager adds Reconciler to the given manager.
+func (r *Reconciler) AddToManager(mgr manager.Manager) error {
+	var err error
+
+	if r.RuntimeClientSet == nil {
+		r.RuntimeClientSet, err = kubernetes.NewWithConfig(
+			kubernetes.WithRESTConfig(mgr.GetConfig()),
+			kubernetes.WithRuntimeAPIReader(mgr.GetAPIReader()),
+			kubernetes.WithRuntimeClient(mgr.GetClient()),
+			kubernetes.WithRuntimeCache(mgr.GetCache()),
+		)
+		if err != nil {
+			return fmt.Errorf("failed creating runtime clientset: %w", err)
+		}
+	}
+
+	if r.GardenClientMap == nil {
+		return fmt.Errorf("GardenClientMap must not be nil")
+	}
+
+	if r.Clock == nil {
+		r.Clock = clock.RealClock{}
+	}
+
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorder(ControllerName + "-controller")
+	}
+
+	if r.HelmRegistry == nil {
+		r.HelmRegistry = oci.NewHelmRegistry(r.RuntimeClientSet.Client())
+	}
+
+	if r.GardenNamespace == "" {
+		r.GardenNamespace = v1beta1constants.GardenNamespace
+	}
+
+	r.admission = admission.New(r.RuntimeClientSet, r.Recorder, r.GardenNamespace, r.HelmRegistry)
+	r.controllerRegistration = controllerregistration.New(r.RuntimeClientSet.Client(), r.Recorder, r.GardenNamespace)
+	r.runtime = extensionruntime.New(r.RuntimeClientSet, r.Recorder, r.GardenNamespace, r.HelmRegistry)
+
+	secretPredicates, err := r.buildSecretPredicates()
+	if err != nil {
+		return fmt.Errorf("failed to build secret predicates: %w", err)
+	}
+
+	configMapPredicates, err := r.buildConfigMapPredicates()
+	if err != nil {
+		return fmt.Errorf("failed to build config map predicates: %w", err)
+	}
+
+	return builder.
+		ControllerManagedBy(mgr).
+		Named(ControllerName).
+		For(&operatorv1alpha1.Extension{}, builder.WithPredicates(predicate.Or(
+			predicate.GenerationChangedPredicate{},
+			operatorpredicate.ExtensionRequirementsChanged(),
+		))).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: int(ptr.Deref(r.Config.Controllers.Extension.ConcurrentSyncs, 0)),
+			ReconciliationTimeout:   controllerutils.DefaultReconciliationTimeout,
+		}).
+		Watches(
+			&operatorv1alpha1.Garden{},
+			handler.EnqueueRequestsFromMapFunc(r.MapToAllExtensions(mgr.GetLogger().WithValues("controller", ControllerName))),
+			builder.WithPredicates(predicate.Or(
+				operatorpredicate.GardenCreatedOrReconciledSuccessfully(),
+				operatorpredicate.GardenDeletionTriggered(),
+			)),
+		).
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.MapSecretToExtensions(mgr.GetLogger().WithValues("controller", ControllerName))),
+			builder.WithPredicates(secretPredicates),
+		).
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.MapConfigMapToExtensions(mgr.GetLogger().WithValues("controller", ControllerName))),
+			builder.WithPredicates(configMapPredicates),
+		).
+		Complete(r)
+}
+
+func (r *Reconciler) buildSecretPredicates() (predicate.Predicate, error) {
+	predicateHelmPullSecret, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
+		MatchLabels: map[string]string{v1beta1constants.GardenRole: v1beta1constants.GardenRoleHelmPullSecret},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed creating helm pull secret label selector predicate: %w", err)
+	}
+
+	predicateOCICABundle, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
+		MatchLabels: map[string]string{v1beta1constants.GardenRole: v1beta1constants.GardenRoleOCICABundle},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed creating OCI CA bundle label selector predicate: %w", err)
+	}
+
+	predicateResourceReference, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
+		MatchLabels: map[string]string{v1beta1constants.GardenRole: v1beta1constants.GardenRoleResourceReference},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed creating resource reference label selector predicate: %w", err)
+	}
+
+	return predicate.And(
+		predicate.Or(predicateHelmPullSecret, predicateOCICABundle, predicateResourceReference),
+		predicateutils.HasNamespace(r.GardenNamespace),
+	), nil
+}
+
+func (r *Reconciler) buildConfigMapPredicates() (predicate.Predicate, error) {
+	predicateResourceReference, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
+		MatchLabels: map[string]string{v1beta1constants.GardenRole: v1beta1constants.GardenRoleResourceReference},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed creating resource reference label selector predicate: %w", err)
+	}
+
+	return predicate.And(
+		predicateResourceReference,
+		predicateutils.HasNamespace(r.GardenNamespace),
+	), nil
+}
+
+// MapToAllExtensions returns reconcile.Request objects for all existing gardens in the system.
+func (r *Reconciler) MapToAllExtensions(log logr.Logger) handler.MapFunc {
+	return func(ctx context.Context, _ client.Object) []reconcile.Request {
+		extensionList := &metav1.PartialObjectMetadataList{}
+		extensionList.SetGroupVersionKind(operatorv1alpha1.SchemeGroupVersion.WithKind("ExtensionList"))
+		if err := r.RuntimeClientSet.Client().List(ctx, extensionList); err != nil {
+			log.Error(err, "Failed to list extensions")
+			return nil
+		}
+
+		return mapper.ObjectListToRequests(extensionList)
+	}
+}
+
+// MapSecretToExtensions returns reconcile.Request objects for the referenced secrets of extension helm chart.
+func (r *Reconciler) MapSecretToExtensions(log logr.Logger) handler.MapFunc {
+	return func(ctx context.Context, secret client.Object) []reconcile.Request {
+		extensionList := &operatorv1alpha1.ExtensionList{}
+		if err := r.RuntimeClientSet.Client().List(ctx, extensionList); err != nil {
+			log.Error(err, "Failed to list extensions")
+			return nil
+		}
+
+		var requests []reconcile.Request
+		for _, ext := range extensionList.Items {
+			pullSecretRef := controllerregistration.GetExtensionPullSecretRef(&ext)
+			caBundleSecretRef := controllerregistration.GetExtensionCABundleSecretRef(&ext)
+
+			if (pullSecretRef != nil && pullSecretRef.Name == secret.GetName()) ||
+				(caBundleSecretRef != nil && caBundleSecretRef.Name == secret.GetName()) {
+				// Helm pull secret and CA bundle secret of extension helm chart are considered,
+				// as they are used by gardenlets and need to be copied to the virtual garden.
+				requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: ext.Name}})
+			}
+
+			if ext.Spec.Deployment == nil {
+				continue
+			}
+			for _, resourceRef := range ext.Spec.Deployment.Resources {
+				if resourceRef.ResourceRef.Kind == "Secret" && resourceRef.ResourceRef.Name == secret.GetName() {
+					requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: ext.Name}})
+				}
+			}
+		}
+
+		return requests
+	}
+}
+
+// MapConfigMapToExtensions returns reconcile.Request objects for the referenced configmaps of extension helm chart.
+func (r *Reconciler) MapConfigMapToExtensions(log logr.Logger) handler.MapFunc {
+	return func(ctx context.Context, configMap client.Object) []reconcile.Request {
+		extensionList := &operatorv1alpha1.ExtensionList{}
+		if err := r.RuntimeClientSet.Client().List(ctx, extensionList); err != nil {
+			log.Error(err, "Failed to list extensions")
+			return nil
+		}
+
+		var requests []reconcile.Request
+		for _, ext := range extensionList.Items {
+			if ext.Spec.Deployment == nil {
+				continue
+			}
+			for _, resourceRef := range ext.Spec.Deployment.Resources {
+				if resourceRef.ResourceRef.Kind == "ConfigMap" && resourceRef.ResourceRef.Name == configMap.GetName() {
+					requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: ext.Name}})
+				}
+			}
+		}
+
+		return requests
+	}
+}

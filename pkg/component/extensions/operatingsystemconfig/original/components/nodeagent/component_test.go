@@ -1,0 +1,301 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package nodeagent_test
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/Masterminds/semver/v3"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/component-base/version"
+
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
+	. "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/nodeagent"
+	"github.com/gardener/gardener/pkg/utils"
+	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
+)
+
+var _ = Describe("Component", func() {
+	var (
+		oscSecretName              = "osc-secret-name"
+		kubernetesVersion          = semver.MustParse("1.2.3")
+		apiServerURL               = "https://localhost"
+		caBundle                   = []byte("ca-bundle")
+		additionalTokenSyncConfigs = []nodeagentconfigv1alpha1.TokenSecretSyncConfig{{
+			SecretName: "gardener-valitail",
+			Path:       "/var/lib/valitail/auth-token",
+		}}
+	)
+
+	Describe("#Config", func() {
+		var component components.Component
+
+		BeforeEach(func() {
+			component = New()
+		})
+
+		It("should return the expected units and files", func() {
+			key := "key"
+
+			expectedFiles, err := Files(ComponentConfig(key, kubernetesVersion, apiServerURL, nil, false, false))
+			Expect(err).NotTo(HaveOccurred())
+			expectedFiles = append(expectedFiles, extensionsv1alpha1.File{
+				Path:        nodeagentconfigv1alpha1.ClusterCAFilePath,
+				Permissions: new(int32(0640)),
+				Content: extensionsv1alpha1.FileContent{
+					Inline: &extensionsv1alpha1.FileContentInline{
+						Encoding: "b64",
+						Data:     utils.EncodeBase64(caBundle),
+					},
+				},
+			})
+
+			units, files, err := component.Config(components.Context{
+				Key:               key,
+				KubernetesVersion: kubernetesVersion,
+				APIServerURL:      apiServerURL,
+				CABundle:          string(caBundle),
+				Images:            map[string]*imagevectorutils.Image{"gardener-node-agent": {Repository: new("gardener-node-agent"), Tag: new("v1")}},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(units).To(ConsistOf(
+				extensionsv1alpha1.Unit{
+					Name:   "gardener-node-agent.service",
+					Enable: new(true),
+					Content: new(`[Unit]
+Description=Gardener Node Agent
+After=network-online.target
+
+[Service]
+LimitMEMLOCK=infinity
+ExecStart=/opt/bin/gardener-node-agent --config-dir=/var/lib/gardener-node-agent
+Restart=always
+RestartSec=5
+StandardOutput=journal+console
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target`),
+					FilePaths: []string{fmt.Sprintf("/var/lib/gardener-node-agent/config-%s.yaml", version.Get().GitVersion), nodeagentconfigv1alpha1.ClusterCAFilePath, "/opt/bin/gardener-node-agent"},
+				},
+			))
+			Expect(files).To(ConsistOf(append(expectedFiles, extensionsv1alpha1.File{
+				Path:        "/opt/bin/gardener-node-agent",
+				Permissions: new(int32(0755)),
+				Content: extensionsv1alpha1.FileContent{
+					ImageRef: &extensionsv1alpha1.FileContentImageRef{
+						Image:           "gardener-node-agent:v1",
+						FilePathInImage: "/gardener-node-agent",
+					},
+				},
+			})))
+		})
+
+		It("should include control plane auth token sync configs when SyncControlPlaneAuthTokens is true", func() {
+			var (
+				key                  = "key"
+				expectedTokenConfigs = []nodeagentconfigv1alpha1.TokenSecretSyncConfig{
+					{
+						SecretName: "shoot-access-kube-controller-manager",
+						Path:       "/var/lib/static-pods/kube-controller-manager/kubeconfig/token",
+					},
+					{
+						SecretName: "shoot-access-kube-scheduler",
+						Path:       "/var/lib/static-pods/kube-scheduler/kubeconfig/token",
+					},
+					{
+						SecretName: "shoot-access-etcd-main",
+						Path:       "/var/lib/static-pods/etcd-main/kubeconfig/token",
+					},
+					{
+						SecretName: "shoot-access-etcd-events",
+						Path:       "/var/lib/static-pods/etcd-events/kubeconfig/token",
+					},
+					{
+						SecretName: "shoot-access-cluster-admin",
+						Path:       "/etc/kubernetes/admin-token",
+					},
+				}
+			)
+
+			_, files, err := component.Config(components.Context{
+				Key:                        key,
+				KubernetesVersion:          kubernetesVersion,
+				APIServerURL:               apiServerURL,
+				CABundle:                   string(caBundle),
+				SyncControlPlaneAuthTokens: true,
+				Images:                     map[string]*imagevectorutils.Image{"gardener-node-agent": {Repository: new("gardener-node-agent"), Tag: new("v1")}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			expectedConfigFiles, err := Files(ComponentConfig(key, kubernetesVersion, apiServerURL, expectedTokenConfigs, false, false))
+			Expect(err).NotTo(HaveOccurred())
+			for _, expected := range expectedConfigFiles {
+				Expect(files).To(ContainElement(expected), "Expected file to be included: "+expected.Path)
+			}
+		})
+
+		It("should set bootstrap.controlPlaneNodesEndpoints.enabled when IsControlPlanePool is true", func() {
+			key := "key"
+
+			_, files, err := component.Config(components.Context{
+				Key:                key,
+				KubernetesVersion:  kubernetesVersion,
+				APIServerURL:       apiServerURL,
+				CABundle:           string(caBundle),
+				IsControlPlanePool: true,
+				Images:             map[string]*imagevectorutils.Image{"gardener-node-agent": {Repository: new("gardener-node-agent"), Tag: new("v1")}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			expectedConfigFiles, err := Files(ComponentConfig(key, kubernetesVersion, apiServerURL, nil, true, false))
+			Expect(err).NotTo(HaveOccurred())
+			for _, expected := range expectedConfigFiles {
+				Expect(files).To(ContainElement(expected), "Expected file to be included: "+expected.Path)
+			}
+		})
+	})
+
+	Describe("#UnitContent", func() {
+		It("should return the expected result", func() {
+			Expect(UnitContent()).To(Equal(`[Unit]
+Description=Gardener Node Agent
+After=network-online.target
+
+[Service]
+LimitMEMLOCK=infinity
+ExecStart=/opt/bin/gardener-node-agent --config-dir=/var/lib/gardener-node-agent
+Restart=always
+RestartSec=5
+StandardOutput=journal+console
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target`))
+		})
+	})
+
+	Describe("#ComponentConfig", func() {
+		It("should return the expected result for a non-control-plane pool", func() {
+			Expect(ComponentConfig(oscSecretName, kubernetesVersion, apiServerURL, additionalTokenSyncConfigs, false, false)).To(Equal(&nodeagentconfigv1alpha1.NodeAgentConfiguration{
+				APIServer: nodeagentconfigv1alpha1.APIServer{
+					Server: apiServerURL,
+					CAFile: nodeagentconfigv1alpha1.ClusterCAFilePath,
+				},
+				Controllers: nodeagentconfigv1alpha1.ControllerConfiguration{
+					OperatingSystemConfig: nodeagentconfigv1alpha1.OperatingSystemConfigControllerConfig{
+						SecretName:        oscSecretName,
+						KubernetesVersion: kubernetesVersion,
+						PreferIPv6:        new(false),
+					},
+					Token: nodeagentconfigv1alpha1.TokenControllerConfig{
+						SyncConfigs: []nodeagentconfigv1alpha1.TokenSecretSyncConfig{
+							{
+								SecretName: "gardener-valitail",
+								Path:       "/var/lib/valitail/auth-token",
+							},
+						},
+						SyncPeriod: &metav1.Duration{Duration: 12 * time.Hour},
+					},
+				},
+			}))
+		})
+
+		It("should set bootstrap.controlPlaneNodesEndpoints.enabled and a shorter token sync period for a control plane pool", func() {
+			Expect(ComponentConfig(oscSecretName, kubernetesVersion, apiServerURL, additionalTokenSyncConfigs, true, false)).To(Equal(&nodeagentconfigv1alpha1.NodeAgentConfiguration{APIServer: nodeagentconfigv1alpha1.APIServer{
+				Server: apiServerURL,
+				CAFile: nodeagentconfigv1alpha1.ClusterCAFilePath,
+			},
+				Bootstrap: &nodeagentconfigv1alpha1.BootstrapConfiguration{
+					ControlPlaneNodesEndpoints: &nodeagentconfigv1alpha1.ControlPlaneNodesEndpoints{Enabled: true},
+				},
+				Controllers: nodeagentconfigv1alpha1.ControllerConfiguration{
+					OperatingSystemConfig: nodeagentconfigv1alpha1.OperatingSystemConfigControllerConfig{
+						SecretName:        oscSecretName,
+						KubernetesVersion: kubernetesVersion,
+						PreferIPv6:        new(false),
+					},
+					Token: nodeagentconfigv1alpha1.TokenControllerConfig{
+						SyncConfigs: []nodeagentconfigv1alpha1.TokenSecretSyncConfig{
+							{
+								SecretName: "gardener-valitail",
+								Path:       "/var/lib/valitail/auth-token",
+							},
+						},
+						SyncPeriod: &metav1.Duration{Duration: time.Hour},
+					},
+				},
+			}))
+		})
+
+		It("should set controllers.operatingSystemConfig.preferIPv6 when preferIPv6 is true", func() {
+			Expect(ComponentConfig(oscSecretName, kubernetesVersion, apiServerURL, additionalTokenSyncConfigs, false, true)).To(Equal(&nodeagentconfigv1alpha1.NodeAgentConfiguration{
+				APIServer: nodeagentconfigv1alpha1.APIServer{
+					Server: apiServerURL,
+					CAFile: nodeagentconfigv1alpha1.ClusterCAFilePath,
+				},
+				Controllers: nodeagentconfigv1alpha1.ControllerConfiguration{
+					OperatingSystemConfig: nodeagentconfigv1alpha1.OperatingSystemConfigControllerConfig{
+						SecretName:        oscSecretName,
+						KubernetesVersion: kubernetesVersion,
+						PreferIPv6:        new(true),
+					},
+					Token: nodeagentconfigv1alpha1.TokenControllerConfig{
+						SyncConfigs: []nodeagentconfigv1alpha1.TokenSecretSyncConfig{
+							{
+								SecretName: "gardener-valitail",
+								Path:       "/var/lib/valitail/auth-token",
+							},
+						},
+						SyncPeriod: &metav1.Duration{Duration: 12 * time.Hour},
+					},
+				},
+			}))
+		})
+	})
+
+	Describe("#Files", func() {
+		It("should return the expected files", func() {
+			config := ComponentConfig(oscSecretName, nil, apiServerURL, additionalTokenSyncConfigs, false, false)
+
+			Expect(Files(config)).To(ConsistOf(extensionsv1alpha1.File{
+				Path:        fmt.Sprintf("/var/lib/gardener-node-agent/config-%s.yaml", version.Get().GitVersion),
+				Permissions: new(int32(0600)),
+				Content: extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Encoding: "b64", Data: utils.EncodeBase64([]byte(`apiServer:
+  caFile: ` + nodeagentconfigv1alpha1.ClusterCAFilePath + `
+  server: ` + apiServerURL + `
+apiVersion: nodeagent.config.gardener.cloud/v1alpha1
+clientConnection:
+  acceptContentTypes: ""
+  burst: 0
+  contentType: ""
+  kubeconfig: ""
+  qps: 0
+controllers:
+  operatingSystemConfig:
+    kubernetesVersion: null
+    preferIPv6: false
+    secretName: ` + oscSecretName + `
+  systemdUnitCheck: {}
+  token:
+    syncConfigs:
+    - path: /var/lib/valitail/auth-token
+      secretName: gardener-valitail
+    syncPeriod: 12h0m0s
+kind: NodeAgentConfiguration
+logFormat: ""
+logLevel: ""
+server: {}
+`))}},
+			}))
+		})
+	})
+})

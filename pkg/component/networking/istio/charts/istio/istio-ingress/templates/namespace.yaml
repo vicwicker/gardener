@@ -1,0 +1,10 @@
+{{- if .Values.deployNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    istio-operator-managed: Reconcile
+    istio-injection: disabled
+    gardener.cloud/role: istio-ingress
+{{- end }}

@@ -1,0 +1,221 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package gardenlet
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/clock"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/api/seedmanagement/v1alpha1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/controller/gardenletdeployer"
+	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
+	"github.com/gardener/gardener/pkg/utils/oci"
+)
+
+// Reconciler reconciles the Gardenlet.
+type Reconciler struct {
+	GardenClient     client.Client
+	GardenRESTConfig *rest.Config
+	SeedClientSet    kubernetes.Interface
+	Config           gardenletconfigv1alpha1.GardenletConfiguration
+	Recorder         events.EventRecorder
+	Clock            clock.Clock
+	GardenNamespace  string
+	HelmRegistry     oci.Interface
+	ValuesHelper     gardenletdeployer.ValuesHelper
+}
+
+// Reconcile performs the main reconciliation logic.
+func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
+	log := logf.FromContext(ctx)
+
+	gardenlet := &seedmanagementv1alpha1.Gardenlet{}
+	if err := r.GardenClient.Get(ctx, request.NamespacedName, gardenlet); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("Object is gone, stop reconciling")
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, fmt.Errorf("error retrieving object from store: %w", err)
+	}
+
+	log.V(1).Info("Reconciling")
+	status := gardenlet.Status.DeepCopy()
+	status.ObservedGeneration = gardenlet.Generation
+
+	_, gardenletConfig, err := helper.ExtractSeedTemplateAndGardenletConfig(gardenlet.Name, &gardenlet.Spec.Config)
+	if err != nil {
+		r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, err.Error())
+		updateCondition(r.Clock, status, gardencorev1beta1.ConditionFalse, gardencorev1beta1.EventReconcileError, err.Error())
+		if updateErr := r.updateStatus(ctx, gardenlet, status); updateErr != nil {
+			log.Error(updateErr, "Could not update status")
+		}
+		return reconcile.Result{}, fmt.Errorf("error extracting gardenlet configuration: %w", err)
+	}
+
+	var seed *gardencorev1beta1.Seed
+	if !strings.HasPrefix(gardenlet.Name, gardenletutils.ResourcePrefixSelfHostedShoot) {
+		seed, err = gardenletdeployer.GetSeed(ctx, r.GardenClient, gardenlet.Name)
+		if err != nil {
+			r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, err.Error())
+			updateCondition(r.Clock, status, gardencorev1beta1.ConditionFalse, gardencorev1beta1.EventReconcileError, err.Error())
+			if updateErr := r.updateStatus(ctx, gardenlet, status); updateErr != nil {
+				log.Error(updateErr, "Could not update status")
+			}
+			return reconcile.Result{}, fmt.Errorf("error getting seed: %w", err)
+		}
+	}
+
+	log.Info("Deploying gardenlet")
+	r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeNormal, gardencorev1beta1.EventReconciling, gardencorev1beta1.EventActionReconcile, "Deploying gardenlet")
+	if err := r.deployGardenlet(ctx, log, gardenlet, seed, gardenletConfig); err != nil {
+		r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, err.Error())
+		updateCondition(r.Clock, status, gardencorev1beta1.ConditionFalse, gardencorev1beta1.EventReconcileError, err.Error())
+		if updateErr := r.updateStatus(ctx, gardenlet, status); updateErr != nil {
+			log.Error(updateErr, "Could not update status")
+		}
+		return reconcile.Result{}, fmt.Errorf("error deploying gardenlet: %w", err)
+	}
+
+	log.V(1).Info("Reconciliation finished")
+	r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeNormal, gardencorev1beta1.EventReconciled, gardencorev1beta1.EventActionReconcile, "Gardenlet has been deployed")
+	updateCondition(r.Clock, status, gardencorev1beta1.ConditionTrue, gardencorev1beta1.EventReconciled, "Gardenlet with chart from "+gardenlet.Spec.Deployment.Helm.OCIRepository.GetURL()+" has been deployed")
+	if updateErr := r.updateStatus(ctx, gardenlet, status); updateErr != nil {
+		log.Error(updateErr, "Could not update status")
+	}
+
+	return reconcile.Result{RequeueAfter: r.Config.Controllers.Gardenlet.SyncPeriod.Duration}, nil
+}
+
+func (r *Reconciler) deployGardenlet(
+	ctx context.Context,
+	log logr.Logger,
+	gardenlet *seedmanagementv1alpha1.Gardenlet,
+	seed *gardencorev1beta1.Seed,
+	gardenletConfig *gardenletconfigv1alpha1.GardenletConfiguration,
+) error {
+	values, err := r.prepareGardenletChartValues(ctx, log, gardenlet, seed, gardenletConfig)
+	if err != nil {
+		return fmt.Errorf("failed preparing gardenlet chart values: %w", err)
+	}
+
+	secretNamespace := metav1.NamespaceSystem
+	if seed != nil {
+		secretNamespace = gardenlet.Namespace
+	}
+
+	subCtx := context.WithValue(ctx, oci.ContextKeySecretNamespace, secretNamespace)
+	archive, err := r.HelmRegistry.Pull(subCtx, &gardenlet.Spec.Deployment.Helm.OCIRepository)
+	if err != nil {
+		return fmt.Errorf("failed pulling Helm chart from OCI repository: %w", err)
+	}
+
+	if err := r.SeedClientSet.ChartApplier().ApplyFromArchive(ctx, archive, r.GardenNamespace, "gardenlet", kubernetes.Values(values)); err != nil {
+		return fmt.Errorf("failed applying gardenlet chart from archive: %w", err)
+	}
+
+	// remove renew-kubeconfig annotation, if it exists
+	if gardenlet.Annotations[v1beta1constants.GardenerOperation] == v1beta1constants.GardenerOperationRenewKubeconfig {
+		patch := client.MergeFrom(gardenlet.DeepCopy())
+		delete(gardenlet.Annotations, v1beta1constants.GardenerOperation)
+		if err := r.GardenClient.Patch(ctx, gardenlet, patch); err != nil {
+			return fmt.Errorf("failed patching gardenlet annotations: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (r *Reconciler) prepareGardenletChartValues(
+	ctx context.Context,
+	log logr.Logger,
+	gardenlet *seedmanagementv1alpha1.Gardenlet,
+	seed *gardencorev1beta1.Seed,
+	gardenletConfig *gardenletconfigv1alpha1.GardenletConfiguration,
+) (
+	map[string]any,
+	error,
+) {
+	values, err := gardenletdeployer.PrepareGardenletChartValues(
+		ctx,
+		log,
+		r.GardenClient,
+		r.GardenRESTConfig,
+		r.SeedClientSet.Client(),
+		r.Recorder,
+		gardenlet,
+		seed,
+		r.ValuesHelper,
+		seedmanagementv1alpha1.BootstrapToken,
+		"",
+		&gardenlet.Spec.Deployment.GardenletDeployment,
+		gardenletConfig,
+		r.GardenNamespace,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed preparing chart values: %w", err)
+	}
+
+	if imageVector := gardenlet.Spec.Deployment.ImageVectorOverwrite; imageVector != nil {
+		values["imageVectorOverwrite"] = *imageVector
+	} else {
+		// The values returned by gardenletdeployer.PrepareGardenletChartValues always include the
+		// `imageVectorOverwrite` key. It is populated from the parent gardenlet’s image vector overwrite (see
+		// https://github.com/gardener/gardener/blob/485c25124ea536e4610c627109017dd34d434921/pkg/controller/gardenletdeployer/valueshelper.go#L156-L164).
+		//
+		// In this controller there is no parent gardenlet. The helper code implicitly treats the existing gardenlet
+		// deployment as its own parent. Consequently, if we did not remove the `imageVectorOverwrite` key here, it
+		// would be impossible to clear this configuration once `.spec.deployment.imageVectorOverwrite` is unset on the
+		// Gardenlet resource.
+		delete(values, "imageVectorOverwrite")
+	}
+
+	if imageVector := gardenlet.Spec.Deployment.ComponentImageVectorOverwrite; imageVector != nil {
+		values["componentImageVectorOverwrites"] = *imageVector
+	} else {
+		// Similar to the <imageVectorOverwrite> (see above), we have to also get rid of the
+		// <componentImageVectorOverwrites> in case it is no longer specified in the `Gardenlet` resource.
+		delete(values, "componentImageVectorOverwrites")
+	}
+
+	if imageVector := gardenlet.Spec.Deployment.ChartsImageVectorOverwrite; imageVector != nil {
+		values["chartsImageVectorOverwrite"] = *imageVector
+	} else {
+		// Similar to the <imageVectorOverwrite> (see above), we have to also get rid of the
+		// <chartsImageVectorOverwrite> in case it is no longer specified in the `Gardenlet` resource.
+		delete(values, "chartsImageVectorOverwrite")
+	}
+
+	return values, nil
+}
+
+func updateCondition(clock clock.Clock, status *seedmanagementv1alpha1.GardenletStatus, conditionStatus gardencorev1beta1.ConditionStatus, reason, message string) {
+	condition := v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, seedmanagementv1alpha1.GardenletReconciled)
+	condition = v1beta1helper.UpdatedConditionWithClock(clock, condition, conditionStatus, reason, message)
+	status.Conditions = v1beta1helper.MergeConditions(status.Conditions, condition)
+}
+
+func (r *Reconciler) updateStatus(ctx context.Context, gardenlet *seedmanagementv1alpha1.Gardenlet, status *seedmanagementv1alpha1.GardenletStatus) error {
+	patch := client.StrategicMergeFrom(gardenlet.DeepCopy())
+	gardenlet.Status = *status
+	return r.GardenClient.Status().Patch(ctx, gardenlet, patch)
+}

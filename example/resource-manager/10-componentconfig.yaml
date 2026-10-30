@@ -1,0 +1,118 @@
+---
+apiVersion: resourcemanager.config.gardener.cloud/v1alpha1
+kind: ResourceManagerConfiguration
+sourceClientConnection:
+  qps: 100
+  burst: 130
+# namespaces: []
+# cacheResyncPeriod: 24h
+#targetClientConnection:
+#  qps: 100
+#  burst: 130
+#  namespaces: []
+#  cacheResyncPeriod: 24h
+leaderElection:
+  leaderElect: true
+  leaseDuration: 15s
+  renewDeadline: 10s
+  retryPeriod: 2s
+  resourceLock: leases
+  resourceName: gardener-resource-manager
+  resourceNamespace: default
+logLevel: info
+logFormat: text
+server:
+  webhooks:
+    port: 9449
+    tls:
+      serverCertDir: example/resource-manager
+  healthProbes:
+    port: 8081
+  metrics:
+    port: 8080
+debugging:
+  enableProfiling: false
+  enableContentionProfiling: false
+controllers:
+# clusterID: foo
+# resourceClass: bar
+# cacheSyncTimeout: 2m
+  garbageCollector:
+    enabled: true
+    syncPeriod: 1h
+  health:
+    concurrentSyncs: 5
+    syncPeriod: 1m
+  csrApprover:
+    enabled: true
+    concurrentSyncs: 1
+    machineNamespace: shoot--foo--bar
+  managedResources:
+    concurrentSyncs: 5
+    syncPeriod: 1m
+    alwaysUpdate: false
+    managedByLabelValue: gardener
+  networkPolicy:
+    enabled: true
+    concurrentSyncs: 5
+  # namespaceSelectors:
+  # - matchLabels:
+  #     kubernetes.io/metadata.name: default
+    ingressControllerSelector:
+      namespace: default
+      podSelector:
+        matchLabels:
+          foo: bar
+  nodeCriticalComponents:
+    enabled: true
+    concurrentSyncs: 5
+    backoff: 10s
+  nodeAgentReconciliationDelay:
+    enabled: true
+    minDelay: 0s
+    maxDelay: 5m
+  tokenRequestor:
+    enabled: true
+    concurrentSyncs: 5
+webhooks:
+  crdDeletionProtection:
+    enabled: true
+  extensionValidation:
+    enabled: true
+  highAvailabilityConfig:
+    enabled: true
+    defaultNotReadyTolerationSeconds: 60
+    defaultUnreachableTolerationSeconds: 60
+  kubernetesServiceHost:
+    enabled: true
+    host: api.example.com
+  podKubeAPIServerLoadBalancing:
+    enabled: false
+  podSchedulerName:
+    enabled: true
+    schedulerName: foo-scheduler
+  podTopologySpreadConstraints:
+    enabled: true
+  projectedTokenMount:
+    enabled: true
+    expirationSeconds: 43200
+  seccompProfile:
+    enabled: true
+  systemComponentsConfig:
+    enabled: true
+    nodeSelector:
+      worker.gardener.cloud/system-components: "true"
+    podNodeSelector:
+      worker.gardener.cloud/system-components: "true"
+    podTolerations:
+  # - key: someKey
+  #   operator: Equal
+  #   value: someValue
+  #   effect: NoSchedule
+  #   tolerationSeconds: 300
+  nodeAgentAuthorizer:
+    enabled: true
+    machineNamespace: shoot--foo--bar
+    authorizeWithSelectors: false
+  vpaInPlaceUpdates:
+    enabled: false

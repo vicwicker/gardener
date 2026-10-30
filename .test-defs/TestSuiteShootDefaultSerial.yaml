@@ -1,0 +1,27 @@
+apiVersion: testmachinery.sapcloud.io
+kind: TestDefinition
+metadata:
+  name: shoot-default-serial-test-suite
+spec:
+  owner: gardener-oq@listserv.sap.com
+  description: shoot test suites that includes all serial default tests
+
+  activeDeadlineSeconds: 8100
+  labels: ["shoot", "default"]
+  behavior:
+  - serial
+
+  command: [bash, -c]
+  args:
+    - >-
+      go test -timeout=0 ./test/testmachinery/suites/shoot
+      --v -ginkgo.v -ginkgo.show-node-events -ginkgo.no-color
+      --report-file=$TM_EXPORT_PATH/report.json
+      -kubecfg=$TM_KUBECONFIG_PATH/gardener.config
+      -shoot-name=$SHOOT_NAME
+      -project-namespace=$PROJECT_NAMESPACE
+      -fenced=$FENCED
+      -ginkgo.focus="\[DEFAULT\].*\[SERIAL\]"
+      -ginkgo.timeout=2h
+
+  image: golang:1.26.10

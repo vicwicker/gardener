@@ -1,0 +1,464 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package gardener
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/rest"
+	"k8s.io/pod-security-admission/api"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
+	"github.com/gardener/gardener/pkg/utils"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/secrets"
+)
+
+// Domain contains information about a domain configured in the garden cluster.
+type Domain struct {
+	// Domain is the domain name to be used by the DNS provider.
+	Domain string
+	// Provider is the type of the DNS provider.
+	Provider string
+	// Zone is the zone where the DNS records are managed.
+	Zone string
+	// Credentials is a resource containing credentials for a DNS service provider.
+	// Supported resources are v1.Secret and security.gardener.cloud/v1alpha1.WorkloadIdentity.
+	Credentials client.Object
+}
+
+func constructDomainFromSecret(secret *corev1.Secret) (*Domain, error) {
+	provider, domain, zone, err := GetDomainInfoFromAnnotations(secret.Annotations)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Domain{
+		Domain:      domain,
+		Provider:    provider,
+		Zone:        zone,
+		Credentials: secret,
+	}, nil
+}
+
+// DomainIsDefaultDomain identifies whether the given domain is a default domain.
+func DomainIsDefaultDomain(domain string, defaultDomains []*Domain) *Domain {
+	for _, defaultDomain := range defaultDomains {
+		if strings.HasSuffix(domain, "."+defaultDomain.Domain) {
+			return defaultDomain
+		}
+	}
+	return nil
+}
+
+var gardenRoleReq = utils.MustNewRequirement(v1beta1constants.GardenRole, selection.Exists)
+
+// ReadGardenInternalDomain reads the internal domain information from the Garden cluster.
+func ReadGardenInternalDomain(
+	ctx context.Context,
+	c client.Reader,
+	seedDNSProvider *gardencorev1beta1.SeedDNSProviderConfig,
+) (
+	*Domain,
+	error,
+) {
+	credentials, err := kubernetesutils.GetCredentialsByObjectReference(ctx, c, seedDNSProvider.CredentialsRef)
+	if err != nil {
+		return nil, fmt.Errorf("cannot fetch internal domain credentials from reference %q: %w", seedDNSProvider.CredentialsRef.String(), err)
+	}
+
+	return &Domain{
+		Domain:      seedDNSProvider.Domain,
+		Provider:    seedDNSProvider.Type,
+		Zone:        ptr.Deref(seedDNSProvider.Zone, ""),
+		Credentials: credentials,
+	}, nil
+}
+
+// ReadGardenDefaultDomains reads the default domain information from the Garden cluster.
+func ReadGardenDefaultDomains(
+	ctx context.Context,
+	c client.Reader,
+	namespace string,
+	seedDNSDefaults []gardencorev1beta1.SeedDNSProviderConfig,
+) (
+	[]*Domain,
+	error,
+) {
+	var domains []*Domain
+
+	if len(seedDNSDefaults) > 0 {
+		for _, seedDNSDefault := range seedDNSDefaults {
+			credentials, err := kubernetesutils.GetCredentialsByObjectReference(ctx, c, seedDNSDefault.CredentialsRef)
+			if err != nil {
+				return nil, fmt.Errorf("cannot fetch default domain credentials from reference %q: %w", seedDNSDefault.CredentialsRef.String(), err)
+			}
+
+			domain := &Domain{
+				Domain:      seedDNSDefault.Domain,
+				Provider:    seedDNSDefault.Type,
+				Zone:        ptr.Deref(seedDNSDefault.Zone, ""),
+				Credentials: credentials,
+			}
+			domains = append(domains, domain)
+		}
+
+		return domains, nil
+	}
+
+	// Fall back to reading default domain secrets from the namespace
+	secrets, err := ReadGardenDefaultDomainsSecrets(ctx, c, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, secret := range secrets {
+		domain, err := constructDomainFromSecret(&secret)
+		if err != nil {
+			return nil, fmt.Errorf("error constructing default domain from secret %s: %w", client.ObjectKeyFromObject(&secret), err)
+		}
+		domains = append(domains, domain)
+	}
+
+	return domains, nil
+}
+
+// ReadGardenDefaultDomainsSecrets reads the default domain secrets from the given namespace.
+// This function makes sense only if no default domains are configured in the seed spec.
+// The passed reader should target the garden cluster.
+//
+// Deprecated: Use ReadGardenDefaultDomains instead.
+func ReadGardenDefaultDomainsSecrets(
+	ctx context.Context,
+	c client.Reader,
+	namespace string,
+) (
+	[]corev1.Secret,
+	error,
+) {
+	// TODO(dimityrmirchev): Remove this function once explicit DNS configuration becomes mandatory after release v1.133
+	secretList := &corev1.SecretList{}
+	if err := c.List(ctx, secretList, client.InNamespace(namespace), client.MatchingLabels{
+		v1beta1constants.GardenRole: v1beta1constants.GardenRoleDefaultDomain,
+	}); err != nil {
+		return nil, err
+	}
+
+	// Sort domain secrets by DNSDefaultDomainPriority to get the domain with the highest priority first
+	sort.SliceStable(secretList.Items, func(i, j int) bool {
+		iAnnotations := secretList.Items[i].GetAnnotations()
+		jAnnotations := secretList.Items[j].GetAnnotations()
+		var iPriority, jPriority int
+		var err error
+
+		if iAnnotations != nil {
+			if domainPriority, ok := iAnnotations[DNSDefaultDomainPriority]; ok {
+				iPriority, err = strconv.Atoi(domainPriority)
+				if err != nil {
+					iPriority = 0
+				}
+			}
+		}
+		if jAnnotations != nil {
+			if domainPriority, ok := jAnnotations[DNSDefaultDomainPriority]; ok {
+				jPriority, err = strconv.Atoi(domainPriority)
+				if err != nil {
+					jPriority = 0
+				}
+			}
+		}
+
+		return iPriority > jPriority
+	})
+
+	return secretList.Items, nil
+}
+
+// ReadGardenSecrets reads the Kubernetes Secrets from the Garden cluster which are independent of Shoot clusters.
+// The Secret objects are stored on the Controller in order to pass them to created Garden objects later.
+// When roles are provided, only secrets whose gardener.cloud/role label matches one of the given values are listed.
+func ReadGardenSecrets(
+	ctx context.Context,
+	log logr.Logger,
+	c client.Reader,
+	namespace string,
+	roles ...string,
+) (
+	map[string]*corev1.Secret,
+	error,
+) {
+	var (
+		logInfo                                  []string
+		secretsMap                               = make(map[string]*corev1.Secret)
+		numberOfAlertingSecrets                  = 0
+		numberOfGlobalMonitoringSecrets          = 0
+		numberOfShootServiceAccountIssuerSecrets = 0
+	)
+
+	roleReq := gardenRoleReq
+	if len(roles) > 0 {
+		req, err := labels.NewRequirement(v1beta1constants.GardenRole, selection.In, roles)
+		if err != nil {
+			return nil, fmt.Errorf("failed building role label requirement: %w", err)
+		}
+		roleReq = *req
+	}
+
+	secretList := &corev1.SecretList{}
+	if err := c.List(ctx, secretList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(roleReq)}); err != nil {
+		return nil, err
+	}
+
+	for _, secret := range secretList.Items {
+		// Retrieve the alerting secret to configure alerting. Either in cluster email alerting or
+		// external alertmanager configuration.
+		if secret.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleAlerting {
+			authType := string(secret.Data["auth_type"])
+			if authType != "smtp" && authType != "none" && authType != "basic" && authType != "certificate" {
+				return nil, fmt.Errorf("invalid or missing field 'auth_type' in secret %s", secret.Name)
+			}
+			alertingSecret := secret
+			secretsMap[v1beta1constants.GardenRoleAlerting] = &alertingSecret
+			logInfo = append(logInfo, fmt.Sprintf("alerting secret %q", secret.Name))
+			numberOfAlertingSecrets++
+		}
+
+		// Retrieving basic auth secret for aggregate monitoring with a label
+		// indicating the Garden role global-monitoring.
+		if secret.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleGlobalMonitoring {
+			monitoringSecret := secret
+			secretsMap[v1beta1constants.GardenRoleGlobalMonitoring] = &monitoringSecret
+			logInfo = append(logInfo, fmt.Sprintf("monitoring basic auth secret %q", secret.Name))
+			numberOfGlobalMonitoringSecrets++
+		}
+
+		// Retrieving basic auth secret for remote write monitoring with a label
+		// indicating the Garden role global-shoot-remote-write-monitoring.
+		if secret.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleGlobalShootRemoteWriteMonitoring {
+			monitoringSecret := secret
+			secretsMap[v1beta1constants.GardenRoleGlobalShootRemoteWriteMonitoring] = &monitoringSecret
+			logInfo = append(logInfo, fmt.Sprintf("monitoring basic auth secret %q", secret.Name))
+		}
+
+		if secret.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleShootServiceAccountIssuer {
+			shootIssuer := secret
+			if hostname, ok := secret.Data["hostname"]; !ok {
+				return nil, fmt.Errorf("cannot use Shoot Service Account Issuer secret %q as it does not contain key 'hostname'", secret.Name)
+			} else if strings.TrimSpace(string(hostname)) == "" {
+				return nil, fmt.Errorf("cannot use Shoot Service Account Issuer secret %q as it does contain an empty 'hostname' key", secret.Name)
+			}
+			secretsMap[v1beta1constants.GardenRoleShootServiceAccountIssuer] = &shootIssuer
+			logInfo = append(logInfo, fmt.Sprintf("Shoot Service Account Issuer secret %q", secret.Name))
+			numberOfShootServiceAccountIssuerSecrets++
+		}
+	}
+
+	// Operators can configure gardener to send email alerts or send the alerts to an external alertmanager. If no configuration
+	// is provided then no alerts will be sent.
+	if numberOfAlertingSecrets > 1 {
+		return nil, fmt.Errorf("can only accept at most one alerting secret, but found %d", numberOfAlertingSecrets)
+	}
+
+	if numberOfGlobalMonitoringSecrets > 1 {
+		return nil, fmt.Errorf("can only accept at most one global monitoring secret, but found %d", numberOfGlobalMonitoringSecrets)
+	}
+
+	// The managed shoot service account issuer is configured centrally per Garden cluster.
+	// The presence of more than one secret is an ambiguous behaviour and should be disallowed.
+	if numberOfShootServiceAccountIssuerSecrets > 1 {
+		return nil, fmt.Errorf("can only accept at most one shoot service account issuer secret, but found %d", numberOfShootServiceAccountIssuerSecrets)
+	}
+
+	log.Info("Found secrets", "namespace", namespace, "secrets", logInfo)
+	return secretsMap, nil
+}
+
+const (
+	// SecretNamePrefixGardenAccess is the prefix of all secrets containing credentials for accessing the garden cluster.
+	SecretNamePrefixGardenAccess = "garden-access-"
+	// VolumeMountPathGenericGardenKubeconfig is a constant for the path to which the generic garden kubeconfig will be mounted.
+	VolumeMountPathGenericGardenKubeconfig = "/var/run/secrets/gardener.cloud/garden/generic-kubeconfig"
+	// PathGardenToken is a constant for the path at which the garden token file is accessible.
+	PathGardenToken = VolumeMountPathGenericGardenKubeconfig + "/" + resourcesv1alpha1.DataKeyToken
+	// PathGenericGardenKubeconfig is a constant for the path at which the kubeconfig file is accessible.
+	PathGenericGardenKubeconfig = VolumeMountPathGenericGardenKubeconfig + "/" + secrets.DataKeyKubeconfig
+)
+
+// NewGardenAccessSecret returns a new AccessSecret object and initializes it with an empty corev1.Secret object
+// with the given name and namespace. If not already done, the name will be prefixed with the
+// SecretNamePrefixGardenAccess. The ServiceAccountName field will be defaulted with the name.
+func NewGardenAccessSecret(name, namespace string) *AccessSecret {
+	if !strings.HasPrefix(name, SecretNamePrefixGardenAccess) {
+		name = SecretNamePrefixGardenAccess + name
+	}
+
+	return &AccessSecret{
+		Secret: &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+		},
+		ServiceAccountName: strings.TrimPrefix(name, SecretNamePrefixGardenAccess),
+		Class:              resourcesv1alpha1.ResourceManagerClassGarden,
+	}
+}
+
+// InjectGenericGardenKubeconfig injects the volumes, volume mounts, and env vars for the generic garden kubeconfig into
+// the provided object. The access secret name must be the name of a secret containing a JWT token which should be used
+// by the kubeconfig. The mount path is important to match the token path configured in the generic kubeconfig.
+// If containerNames are not specified, the adjustments happen for all containers.
+// If any of the containers in the object already has the GARDEN_KUBECONFIG env var, the object is not mutated.
+func InjectGenericGardenKubeconfig(obj runtime.Object, genericKubeconfigName, accessSecretName, mountPath string, containerNames ...string) error {
+	// check for presence of env var
+	hasGardenKubeconfig := false
+
+	if err := kubernetesutils.VisitPodSpec(obj, func(podSpec *corev1.PodSpec) {
+		kubernetesutils.VisitContainers(podSpec, func(container *corev1.Container) {
+			if kubernetesutils.HasEnvVar(*container, v1beta1constants.EnvGenericGardenKubeconfig) {
+				hasGardenKubeconfig = true
+			}
+		}, containerNames...)
+	}); err != nil {
+		return err
+	}
+
+	if hasGardenKubeconfig {
+		return nil
+	}
+
+	// inject volume and volumeMounts
+	if err := injectGenericKubeconfig(
+		obj,
+		genericKubeconfigName,
+		accessSecretName,
+		"garden-kubeconfig",
+		mountPath,
+		containerNames...,
+	); err != nil {
+		return err
+	}
+
+	// inject reference annotations for generic kubeconfig
+	if err := references.InjectAnnotations(obj); err != nil {
+		return err
+	}
+
+	// inject env var
+	return kubernetesutils.VisitPodSpec(obj, func(podSpec *corev1.PodSpec) {
+		kubernetesutils.VisitContainers(podSpec, func(container *corev1.Container) {
+			kubernetesutils.AddEnvVar(container, corev1.EnvVar{
+				Name:  v1beta1constants.EnvGenericGardenKubeconfig,
+				Value: mountPath + "/" + secrets.DataKeyKubeconfig,
+			}, true)
+		}, containerNames...)
+	})
+}
+
+// PrepareGardenClientRestConfig takes a base rest config and adds an optional host and CA certificate.
+func PrepareGardenClientRestConfig(baseConfig *rest.Config, address *string) *rest.Config {
+	gardenClientRestConfig := rest.CopyConfig(baseConfig)
+	if address != nil {
+		gardenClientRestConfig.Host = *address
+	}
+	return gardenClientRestConfig
+}
+
+// DefaultGardenerGVKsForEncryption returns the list of [schema.GroupVersionKind] served by Gardener API Server which are encrypted by default.
+func DefaultGardenerGVKsForEncryption() []schema.GroupVersionKind {
+	return []schema.GroupVersionKind{
+		gardencorev1.SchemeGroupVersion.WithKind("ControllerDeployment"),
+		gardencorev1beta1.SchemeGroupVersion.WithKind("ControllerRegistration"),
+		gardencorev1beta1.SchemeGroupVersion.WithKind("InternalSecret"),
+		gardencorev1beta1.SchemeGroupVersion.WithKind("ShootState"),
+	}
+}
+
+// DefaultGardenerGroupResourcesForEncryption returns the list of [schema.GroupResource] served by Gardener API Server which are encrypted by default.
+func DefaultGardenerGroupResourcesForEncryption() []schema.GroupResource {
+	return []schema.GroupResource{
+		gardencorev1.Resource("controllerdeployments"),
+		gardencorev1beta1.Resource("controllerregistrations"),
+		gardencorev1beta1.Resource("internalsecrets"),
+		gardencorev1beta1.Resource("shootstates"),
+	}
+}
+
+// DefaultGardenerResourcesForEncryption returns the list of resources served by Gardener API Server which are encrypted by default.
+func DefaultGardenerResourcesForEncryption() sets.Set[string] {
+	return sets.New(
+		gardencorev1.Resource("controllerdeployments").String(),
+		gardencorev1beta1.Resource("controllerregistrations").String(),
+		gardencorev1beta1.Resource("internalsecrets").String(),
+		gardencorev1beta1.Resource("shootstates").String(),
+	)
+}
+
+// GetGardenWildcardCertificate gets the wildcard TLS certificate for the Garden runtime ingress and SNI domains.
+// Nil is returned if no wildcard certificate is configured.
+func GetGardenWildcardCertificate(ctx context.Context, c client.Client, namespace string) (*corev1.Secret, error) {
+	return getWildcardCertificate(ctx, c, namespace, v1beta1constants.GardenRoleGardenWildcardCert)
+}
+
+// GetRequiredGardenWildcardCertificate gets the wildcard TLS certificate for the Garden runtime ingress and SNI domains.
+// An error is returned if no wildcard certificate is found.
+func GetRequiredGardenWildcardCertificate(ctx context.Context, c client.Client, namespace string) (*corev1.Secret, error) {
+	tlsSecret, err := GetGardenWildcardCertificate(ctx, c, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get garden wildcard certificate secret: %w", err)
+	}
+	if tlsSecret == nil {
+		return nil, fmt.Errorf("no garden wildcard certificate secret found")
+	}
+
+	return tlsSecret, nil
+}
+
+// ReconcileGardenNamespace ensures that the Garden namespace exists with the appropriate labels and annotations.
+func ReconcileGardenNamespace(ctx context.Context, client client.Client, namespaceName string, zones []string, manageMetadata bool, mutateFn func(namespace *corev1.Namespace)) error {
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName}}
+	_, err := controllerutils.CreateOrGetAndMergePatch(ctx, client, namespace, func() error {
+		if manageMetadata {
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, api.EnforceLevelLabel, string(api.LevelPrivileged))
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigConsider, "true")
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.GardenRole, v1beta1constants.GardenRoleGarden)
+			metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigZones, strings.Join(zones, ","))
+		}
+
+		if mutateFn != nil {
+			mutateFn(namespace)
+		}
+		return nil
+	})
+	return err
+}
+
+// ClusterIsSelfHostedShoot returns 'true' if the cluster is a self-hosted shoot cluster.
+func ClusterIsSelfHostedShoot(ctx context.Context, c client.Reader) (bool, error) {
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: metav1.NamespaceSystem}}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil {
+		return false, fmt.Errorf("failed reading %q namespace: %w", namespace.Name, err)
+	}
+	return namespace.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleShoot, nil
+}

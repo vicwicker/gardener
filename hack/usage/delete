@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#
+# SPDX-FileCopyrightText: Contributors to the Gardener project
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -e
+set -u
+
+RESOURCE="$1"
+NAME="$2"
+NAMESPACE=""
+
+if [[ "$1" != "project" ]]; then
+  NAMESPACE="--namespace ${3:-$(id -u -n)}"
+fi
+
+kubectl $NAMESPACE annotate "$RESOURCE" "$NAME" confirmation.gardener.cloud/deletion=true --overwrite
+kubectl $NAMESPACE delete   "$RESOURCE" "$NAME" --wait=false

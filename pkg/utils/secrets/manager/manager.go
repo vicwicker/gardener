@@ -1,0 +1,461 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package manager
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/mitchellh/hashstructure/v2"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/clock"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/gardener/gardener/pkg/utils"
+	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
+)
+
+const (
+	// LabelKeyName is a constant for a key of a label on a Secret describing the name.
+	LabelKeyName = "name"
+	// LabelKeyManagedBy is a constant for a key of a label on a Secret describing who is managing it.
+	LabelKeyManagedBy = "managed-by"
+	// LabelKeyManagerIdentity is a constant for a key of a label on a Secret describing which secret manager instance
+	// is managing it.
+	LabelKeyManagerIdentity = "manager-identity"
+	// LabelKeyChecksumConfig is a constant for a key of a label on a Secret describing the checksum of the
+	// configuration used to create the data.
+	LabelKeyChecksumConfig = "checksum-of-config"
+	// LabelKeyChecksumSigningCA is a constant for a key of a label on a Secret describing the checksum of the
+	// certificate authority which has signed the client or server certificate in the data.
+	LabelKeyChecksumSigningCA = "checksum-of-signing-ca"
+	// LabelKeyBundleFor is a constant for a key of a label on a Secret describing that it is a bundle secret for
+	// another secret.
+	LabelKeyBundleFor = "bundle-for"
+	// LabelKeyPersist is a constant for a key of a label on a Secret describing that it should get persisted.
+	LabelKeyPersist = "persist"
+	// LabelKeyLastRotationInitiationTime is a constant for a key of a label on a Secret describing the unix timestamps
+	// of when the last secret rotation was initiated.
+	LabelKeyLastRotationInitiationTime = "last-rotation-initiation-time"
+	// LabelKeyIssuedAtTime is a constant for a key of a label on a Secret describing the time of when the secret data
+	// was created. In case the data contains a certificate it is the time part of the certificate's 'not before' field.
+	LabelKeyIssuedAtTime = "issued-at-time"
+	// LabelKeyValidUntilTime is a constant for a key of a label on a Secret describing the time of how long the secret
+	// data is valid. In case the data contains a certificate it is the time part of the certificate's 'not after'
+	// field.
+	LabelKeyValidUntilTime = "valid-until-time"
+	// LabelKeyRenewAfterValidityPercentage is a constant for a key of a label on a certificate secret describing the
+	// percentage of the validity when the certificate should be renewed. The effective check for renewal is after the
+	// given percentage of validity or 10d before the end of validity. If not specified the default percentage is 80.
+	LabelKeyRenewAfterValidityPercentage = "renew-after-validity-percentage"
+	// LabelKeyUseDataForName is a constant for a key of a label on a Secret describing that its data should be used
+	// instead of generating a fresh secret with the same name.
+	LabelKeyUseDataForName = "secrets-manager-use-data-for-name"
+
+	// LabelValueTrue is a constant for a value of a label on a Secret describing the value 'true'.
+	LabelValueTrue = "true"
+	// LabelValueSecretsManager is a constant for a value of a label on a Secret describing the value 'secret-manager'.
+	LabelValueSecretsManager = "secrets-manager"
+
+	nameSuffixBundle = "-bundle"
+)
+
+type (
+	manager struct {
+		lock                        sync.Mutex
+		clock                       clock.Clock
+		store                       secretStore
+		logger                      logr.Logger
+		client                      client.Client
+		identity                    string
+		lastRotationInitiationTimes nameToUnixTime
+		opts                        *NewOptions
+	}
+
+	nameToUnixTime map[string]string
+
+	secretStore map[string]secretInfos
+	secretInfos struct {
+		current secretInfo
+		old     *secretInfo
+		bundle  *secretInfo
+	}
+	secretInfo struct {
+		obj                        *corev1.Secret
+		dataChecksum               string
+		lastRotationInitiationTime int64
+	}
+
+	// NewOptions are options for New calls.
+	NewOptions struct {
+		// Namespaces is the list of namespaces the secrets manager should operate on.
+		Namespaces []string
+		// CASecretAutoRotation states whether CA secrets are considered for automatic rotation (defaults to false).
+		CASecretAutoRotation bool
+		// SecretNamesToTimes is a map whose keys are secret names and whose values are the last rotation initiation
+		// times.
+		SecretNamesToTimes map[string]time.Time
+		// DisableAutomaticSecretRenewal states whether automatic secret renewal should be disabled even if a secret's
+		// configuration would otherwise require it.
+		DisableAutomaticSecretRenewal bool
+	}
+	// NewOption is some configuration that configures a secrets manager instance when creating it with [New].
+	NewOption func(*NewOptions)
+)
+
+// WithNamespaces returns a function which configures the namespaces the secrets manager should operate in.
+func WithNamespaces(namespaces ...string) NewOption {
+	return func(options *NewOptions) {
+		options.Namespaces = namespaces
+	}
+}
+
+// WithCASecretAutoRotation enables automatic rotation for CA secrets (turned off by default).
+func WithCASecretAutoRotation() NewOption {
+	return func(options *NewOptions) {
+		options.CASecretAutoRotation = true
+	}
+}
+
+// WithSecretNamesToTimes sets a map whose keys are secret names and whose values are the last rotation initiation
+// times.
+func WithSecretNamesToTimes(secretNamesToTimes map[string]time.Time) NewOption {
+	return func(options *NewOptions) {
+		options.SecretNamesToTimes = secretNamesToTimes
+	}
+}
+
+// WithoutAutomaticSecretRenewal disables automatic secret renewal (enabled by default).
+// When set, the secrets manager will not list existing secrets or prepare them for automatic renewal, even if a
+// secret's configuration would otherwise require it.
+func WithoutAutomaticSecretRenewal() NewOption {
+	return func(options *NewOptions) {
+		options.DisableAutomaticSecretRenewal = true
+	}
+}
+
+var _ Interface = &manager{}
+
+func (m *manager) Identity() string {
+	return m.identity
+}
+
+type secretClass string
+
+const (
+	current secretClass = "current"
+	old     secretClass = "old"
+	bundle  secretClass = "bundle"
+)
+
+// New returns a new manager for secrets in a given namespace.
+func New(
+	ctx context.Context,
+	logger logr.Logger,
+	clock clock.Clock,
+	c client.Client,
+	identity string,
+	optionFns ...NewOption,
+) (
+	Interface,
+	error,
+) {
+	opts := &NewOptions{}
+	for _, f := range optionFns {
+		f(opts)
+	}
+
+	if len(opts.Namespaces) == 0 {
+		return nil, errors.New("must specify at least one namespace")
+	}
+
+	m := &manager{
+		store:                       make(secretStore),
+		clock:                       clock,
+		logger:                      logger,
+		client:                      c,
+		identity:                    identity,
+		opts:                        opts,
+		lastRotationInitiationTimes: make(nameToUnixTime),
+	}
+
+	if !opts.DisableAutomaticSecretRenewal {
+		if err := m.prepareExpiringSecretsForAutoRenewal(ctx); err != nil {
+			return nil, fmt.Errorf("failed to prepare expiring secrets for auto-renewal: %w", err)
+		}
+	}
+
+	// If the user has provided last rotation initiation times then convert to unix time and store the data in our
+	// internal map.
+	for name, time := range m.opts.SecretNamesToTimes {
+		m.lastRotationInitiationTimes[name] = unixTime(time)
+	}
+
+	return m, nil
+}
+
+func (m *manager) listSecrets(ctx context.Context, listOptions ...client.ListOption) (*corev1.SecretList, error) {
+	secretListAllNamespaces := &corev1.SecretList{}
+
+	for _, namespace := range m.opts.Namespaces {
+		secretList := &corev1.SecretList{}
+		if err := m.client.List(ctx, secretList, append([]client.ListOption{
+			client.InNamespace(namespace),
+			client.MatchingLabels{LabelKeyManagedBy: LabelValueSecretsManager, LabelKeyManagerIdentity: m.identity},
+		}, listOptions...)...); err != nil {
+			return nil, fmt.Errorf("failed to list secrets in namespace %q: %w", namespace, err)
+		}
+
+		secretListAllNamespaces.Items = append(secretListAllNamespaces.Items, secretList.Items...)
+	}
+
+	return secretListAllNamespaces, nil
+}
+
+func (m *manager) prepareExpiringSecretsForAutoRenewal(ctx context.Context) error {
+	secretList, err := m.listSecrets(ctx)
+	if err != nil {
+		return err
+	}
+
+	nameToNewestSecret := make(map[string]corev1.Secret, len(secretList.Items))
+
+	// Find the newest secret in system for the respective secret names. Read their existing
+	// last-rotation-initiation-time labels and store them in our internal map.
+	for _, secret := range secretList.Items {
+		oldSecret, found := nameToNewestSecret[secret.Labels[LabelKeyName]]
+		if !found || oldSecret.CreationTimestamp.Time.Before(secret.CreationTimestamp.Time) {
+			nameToNewestSecret[secret.Labels[LabelKeyName]] = *secret.DeepCopy()
+			m.lastRotationInitiationTimes[secret.Labels[LabelKeyName]] = secret.Labels[LabelKeyLastRotationInitiationTime]
+		}
+	}
+
+	// Check if the secrets must be automatically renewed because they are about to expire.
+	for name, secret := range nameToNewestSecret {
+		if isCASecret(secret.Data) && !m.opts.CASecretAutoRotation {
+			continue
+		}
+
+		mustRenew, err := m.mustAutoRenewSecret(secret)
+		if err != nil {
+			return err
+		}
+
+		if mustRenew {
+			m.logger.Info("Preparing secret for automatic renewal", "secret", client.ObjectKeyFromObject(&secret), "issuedAt", secret.Labels[LabelKeyIssuedAtTime], "validUntil", secret.Labels[LabelKeyValidUntilTime])
+			m.lastRotationInitiationTimes[name] = unixTime(m.clock.Now())
+		}
+	}
+
+	return nil
+}
+
+func (m *manager) mustAutoRenewSecret(secret corev1.Secret) (bool, error) {
+	if secret.Labels[LabelKeyIssuedAtTime] == "" || secret.Labels[LabelKeyValidUntilTime] == "" {
+		return false, nil
+	}
+
+	issuedAtUnix, err := strconv.ParseInt(secret.Labels[LabelKeyIssuedAtTime], 10, 64)
+	if err != nil {
+		return false, err
+	}
+
+	validUntilUnix, err := strconv.ParseInt(secret.Labels[LabelKeyValidUntilTime], 10, 64)
+	if err != nil {
+		return false, err
+	}
+
+	renewAfterValidityPercentage := 80
+	if secret.Labels[LabelKeyRenewAfterValidityPercentage] != "" {
+		value, err := strconv.Atoi(secret.Labels[LabelKeyRenewAfterValidityPercentage])
+		if err != nil {
+			return false, err
+		}
+		renewAfterValidityPercentage = value
+	}
+
+	var (
+		validity    = validUntilUnix - issuedAtUnix
+		renewAtUnix = issuedAtUnix + validity*int64(renewAfterValidityPercentage)/100
+		renewAt     = time.Unix(renewAtUnix, 0).UTC()
+		validUntil  = time.Unix(validUntilUnix, 0).UTC()
+		now         = m.clock.Now().UTC()
+	)
+
+	// Renew if 80% of the validity has been reached or if the secret expires in less than 10d.
+	return now.After(renewAt) || now.After(validUntil.Add(-10*24*time.Hour)), nil
+}
+
+func (m *manager) addToStore(name string, secret *corev1.Secret, class secretClass) error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	info, err := computeSecretInfo(secret)
+	if err != nil {
+		return err
+	}
+
+	secrets := m.store[name]
+
+	switch class {
+	case current:
+		secrets.current = info
+	case old:
+		secrets.old = &info
+	case bundle:
+		secrets.bundle = &info
+	}
+
+	m.store[name] = secrets
+
+	return nil
+}
+
+func (m *manager) getFromStore(name string) (secretInfos, bool) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	secrets, ok := m.store[name]
+	return secrets, ok
+}
+
+func computeSecretInfo(obj *corev1.Secret) (secretInfo, error) {
+	var (
+		lastRotationStartTime int64
+		err                   error
+	)
+
+	if v := obj.Labels[LabelKeyLastRotationInitiationTime]; len(v) > 0 {
+		lastRotationStartTime, err = strconv.ParseInt(obj.Labels[LabelKeyLastRotationInitiationTime], 10, 64)
+		if err != nil {
+			return secretInfo{}, err
+		}
+	}
+
+	return secretInfo{
+		obj:                        obj,
+		dataChecksum:               utils.ComputeSecretChecksum(obj.Data),
+		lastRotationInitiationTime: lastRotationStartTime,
+	}, nil
+}
+
+// ObjectMeta returns the object meta based on the given settings.
+func ObjectMeta(
+	namespace string,
+	labels map[string]string,
+	managerIdentity string,
+	config secretsutils.ConfigInterface,
+	ignoreConfigChecksumForCASecretName bool,
+	lastRotationInitiationTime string,
+	signingCAChecksum *string,
+	persist *bool,
+	bundleFor *string,
+) (
+	metav1.ObjectMeta,
+	error,
+) {
+	configHash, err := hashstructure.Hash(config, hashstructure.FormatV2, &hashstructure.HashOptions{IgnoreZeroValue: true})
+	if err != nil {
+		return metav1.ObjectMeta{}, err
+	}
+
+	secretLabels := map[string]string{
+		LabelKeyName:                       config.GetName(),
+		LabelKeyManagedBy:                  LabelValueSecretsManager,
+		LabelKeyManagerIdentity:            managerIdentity,
+		LabelKeyChecksumConfig:             strconv.FormatUint(configHash, 10),
+		LabelKeyLastRotationInitiationTime: lastRotationInitiationTime,
+	}
+
+	if signingCAChecksum != nil {
+		secretLabels[LabelKeyChecksumSigningCA] = *signingCAChecksum
+	}
+
+	if persist != nil && *persist {
+		secretLabels[LabelKeyPersist] = LabelValueTrue
+	}
+
+	if bundleFor != nil {
+		secretLabels[LabelKeyBundleFor] = *bundleFor
+	}
+
+	for k, v := range labels {
+		if _, exists := secretLabels[k]; exists {
+			// don't allow overriding of labels which are set by the secrets manager itself, as they are crucial for the correct functioning of the manager
+			continue
+		}
+		secretLabels[k] = v
+	}
+
+	return metav1.ObjectMeta{
+		Name:      computeSecretName(config, secretLabels, ignoreConfigChecksumForCASecretName),
+		Namespace: namespace,
+		Labels:    secretLabels,
+	}, nil
+}
+
+func computeSecretName(config secretsutils.ConfigInterface, labels map[string]string, ignoreConfigChecksumForCASecretName bool) string {
+	name := config.GetName()
+
+	// For backwards-compatibility, we might need to keep the static names of the CA secrets so that external components
+	// (like extensions, etc.) relying on them don't break. This is why it is possible to opt out of the fact that the
+	// config checksum is considered for the name computation.
+	if cfg, ok := config.(*secretsutils.CertificateSecretConfig); !ok || cfg.SigningCA != nil || !ignoreConfigChecksumForCASecretName {
+		if infix := labels[LabelKeyChecksumConfig] + labels[LabelKeyChecksumSigningCA]; len(infix) > 0 {
+			name += "-" + utils.ComputeSHA256Hex([]byte(infix))[:8]
+		}
+	}
+
+	if suffix := labels[LabelKeyLastRotationInitiationTime]; len(suffix) > 0 {
+		name += "-" + utils.ComputeSHA256Hex([]byte(suffix))[:5]
+	}
+
+	return name
+}
+
+// Secret constructs a *corev1.Secret for the given metadata and data.
+func Secret(objectMeta metav1.ObjectMeta, data map[string][]byte) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: objectMeta,
+		Data:       data,
+		Type:       secretTypeForData(data),
+		Immutable:  new(true),
+	}
+}
+
+func secretTypeForData(data map[string][]byte) corev1.SecretType {
+	secretType := corev1.SecretTypeOpaque
+	if data[secretsutils.DataKeyCertificate] != nil && data[secretsutils.DataKeyPrivateKey] != nil {
+		secretType = corev1.SecretTypeTLS
+	}
+	return secretType
+}
+
+func unixTime(in time.Time) string {
+	return strconv.FormatInt(in.UTC().Unix(), 10)
+}
+
+func isCASecret(data map[string][]byte) bool {
+	return data[secretsutils.DataKeyCertificateCA] != nil && data[secretsutils.DataKeyPrivateKeyCA] != nil
+}
+
+func certificateSecretConfig(config secretsutils.ConfigInterface) *secretsutils.CertificateSecretConfig {
+	var certificateConfig *secretsutils.CertificateSecretConfig
+
+	switch cfg := config.(type) {
+	case *secretsutils.CertificateSecretConfig:
+		certificateConfig = cfg
+	case *secretsutils.ControlPlaneSecretConfig:
+		certificateConfig = cfg.CertificateSecretConfig
+	}
+
+	return certificateConfig
+}

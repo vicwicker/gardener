@@ -1,0 +1,582 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package fluentbit
+
+import (
+	"context"
+	_ "embed"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	fluentbitv1alpha2 "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/observability/logging/fluentcustomresources"
+	valiconstants "github.com/gardener/gardener/pkg/component/observability/logging/vali/constants"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/aggregate"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/garden"
+	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
+	"github.com/gardener/gardener/pkg/features"
+	"github.com/gardener/gardener/pkg/utils"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
+)
+
+const (
+	managedResourceName = "fluent-bit"
+	fluentBitConfigName = "fluent-bit-config"
+)
+
+var (
+	//go:embed lua/modify_severity.lua
+	modify_severity_lua string
+	//go:embed lua/add_tag_to_record.lua
+	add_tag_to_record_lua string
+	//go:embed lua/add_time_and_systemd_attr.lua
+	add_time_and_systemd_attr_lua string
+)
+
+// Values is the values for fluent-bit configurations
+type Values struct {
+	// Image is the fluent-bit image.
+	Image string
+	// InitContainerImage is the fluent-bit init container image.
+	InitContainerImage string
+	// PriorityClassName is the name of the priority class of the fluent-bit.
+	PriorityClassName string
+	// IsGardenCluster specifies whether FluentBit is being deployed in a cluster registered as a Garden.
+	IsGardenCluster bool
+}
+
+type fluentBit struct {
+	client    client.Client
+	namespace string
+	values    Values
+}
+
+// New creates a new instance of fluent-bit deployer.
+func New(
+	client client.Client,
+	namespace string,
+	values Values,
+) component.DeployWaiter {
+	return &fluentBit{
+		client:    client,
+		namespace: namespace,
+		values:    values,
+	}
+}
+
+func (f *fluentBit) Deploy(ctx context.Context) error {
+	var (
+		registry = managedresources.NewRegistry(kubernetes.SeedScheme, kubernetes.SeedCodec, kubernetes.SeedSerializer)
+
+		configMap = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      v1beta1constants.ConfigMapNameFluentBitLua,
+				Namespace: f.namespace,
+			},
+			Data: map[string]string{
+				"modify_severity.lua":           modify_severity_lua,
+				"add_tag_to_record.lua":         add_tag_to_record_lua,
+				"add_time_and_systemd_attr.lua": add_time_and_systemd_attr_lua,
+			},
+		}
+		serviceMonitor = &monitoringv1.ServiceMonitor{
+			ObjectMeta: monitoringutils.ConfigObjectMeta("fluent-bit", f.namespace, f.getPrometheusLabel()),
+			Spec: monitoringv1.ServiceMonitorSpec{
+				Selector: metav1.LabelSelector{MatchLabels: getLabels()},
+				Endpoints: []monitoringv1.Endpoint{{
+					Port: "metrics",
+					RelabelConfigs: []monitoringv1.RelabelConfig{
+						{
+							TargetLabel: "__metrics_path__",
+							Replacement: new("/api/v2/metrics/prometheus"),
+						},
+						{
+							Action: "labelmap",
+							Regex:  `__meta_kubernetes_pod_label_(.+)`,
+						},
+					},
+					MetricRelabelConfigs: monitoringutils.StandardMetricRelabelConfig(
+						"fluentbit_input_bytes_total",
+						"fluentbit_input_records_total",
+						"fluentbit_output_proc_bytes_total",
+						"fluentbit_output_proc_records_total",
+						"fluentbit_output_errors_total",
+						"fluentbit_output_retries_total",
+						"fluentbit_output_retries_failed_total",
+						"fluentbit_filter_add_records_total",
+						"fluentbit_filter_drop_records_total",
+						"fluentbit_storage_mem_chunks",
+						"fluentbit_storage_fs_chunks",
+						"fluentbit_storage_fs_chunks_up",
+						"fluentbit_storage_fs_chunks_down",
+					),
+				}},
+			},
+		}
+		serviceMonitorPlugin = &monitoringv1.ServiceMonitor{
+			ObjectMeta: monitoringutils.ConfigObjectMeta("fluent-bit-output-plugin", f.namespace, f.getPrometheusLabel()),
+			Spec: monitoringv1.ServiceMonitorSpec{
+				Selector: metav1.LabelSelector{MatchLabels: getLabels()},
+				Endpoints: []monitoringv1.Endpoint{{
+					Port: "metrics-plugin",
+					RelabelConfigs: []monitoringv1.RelabelConfig{
+						// This service monitor is targeting the fluent-bit service. Without explicitly overriding the
+						// job label, prometheus-operator would choose job=fluent-bit (service name).
+						{
+							Action:      "replace",
+							Replacement: new("fluent-bit-output-plugin"),
+							TargetLabel: "job",
+						},
+						{
+							Action: "labelmap",
+							Regex:  `__meta_kubernetes_pod_label_(.+)`,
+						},
+					},
+					MetricRelabelConfigs: monitoringutils.StandardMetricRelabelConfig(
+						"fluentbit_gardener_buffered_logs",
+						"fluentbit_gardener_incoming_logs_total",
+						"fluentbit_gardener_output_client_logs_total",
+						"fluentbit_gardener_clients_total",
+						"fluentbit_gardener_errors_total",
+						"fluentbit_gardener_dropped_logs_total",
+						"fluentbit_gardener_dque_size",
+						"fluentbit_gardener_exported_client_logs_total",
+						"fluentbit_gardener_throttled_logs_total",
+						"output_plugin_otel_sdk_exporter_log_exported_total",
+						"output_plugin_otel_sdk_log_created_total",
+						"output_plugin_otel_sdk_exporter_log_inflight",
+						"output_plugin_otel_sdk_exporter_operation_duration_seconds_bucket",
+						"output_plugin_otel_sdk_exporter_operation_duration_seconds_sum",
+						"output_plugin_otel_sdk_exporter_operation_duration_seconds_count",
+						"output_plugin_rpc_client_call_duration_seconds_bucket",
+						"output_plugin_rpc_client_call_duration_seconds_sum",
+						"output_plugin_rpc_client_call_duration_seconds_count",
+						"output_plugin_rpc_client_request_size_bytes_bucket",
+						"output_plugin_rpc_client_request_size_bytes_sum",
+						"output_plugin_rpc_client_request_size_bytes_count",
+						"output_plugin_rpc_client_response_size_bytes_bucket",
+						"output_plugin_rpc_client_response_size_bytes_sum",
+						"output_plugin_rpc_client_response_size_bytes_count",
+						"process_cpu_seconds_total",
+						"process_resident_memory_bytes",
+						"process_virtual_memory_bytes",
+						"process_network_transmit_bytes_total",
+						"process_network_receive_bytes_total",
+						"process_virtual_memory_max_bytes",
+						"go_memstats_heap_alloc_bytes",
+						"go_memstats_heap_inuse_bytes",
+						"go_memstats_heap_idle_bytes",
+						"go_memstats_heap_objects",
+						"go_memstats_mallocs_total",
+						"go_memstats_frees_total",
+						"go_goroutines",
+						"go_gc_duration_seconds",
+						"go_gc_duration_seconds_sum",
+						"go_gc_duration_seconds_count",
+						"target_info",
+					),
+				}},
+			},
+		}
+		prometheusRule = &monitoringv1.PrometheusRule{
+			ObjectMeta: monitoringutils.ConfigObjectMeta("fluent-bit", f.namespace, f.getPrometheusLabel()),
+			Spec: monitoringv1.PrometheusRuleSpec{
+				Groups: []monitoringv1.RuleGroup{{
+					Name: "fluent-bit.rules",
+					Rules: []monitoringv1.Rule{
+						{
+							Alert: "FluentBitDown",
+							Expr:  intstr.FromString(`absent(up{job="fluent-bit"} == 1)`),
+							For:   new(monitoringv1.Duration("15m")),
+							Labels: map[string]string{
+								"service":    "logging",
+								"severity":   "warning",
+								"type":       "seed",
+								"visibility": "operator",
+							},
+							Annotations: map[string]string{
+								"description": "There are no fluent-bit pods running on seed: {{$externalLabels.seed}}. No logs will be collected.",
+								"summary":     "Fluent-bit is down",
+							},
+						},
+						{
+							Alert: "FluentBitIdleInputPlugins",
+							Expr:  intstr.FromString(`sum by (pod) (increase(fluentbit_input_bytes_total{pod=~"fluent-bit.*"}[4m])) == 0`),
+							For:   new(monitoringv1.Duration("6h")),
+							Labels: map[string]string{
+								"service":    "logging",
+								"severity":   "warning",
+								"type":       "seed",
+								"visibility": "operator",
+							},
+							Annotations: map[string]string{
+								"description": "The input plugins of Fluent-bit pod {{$labels.pod}} running on seed {{$externalLabels.seed}} haven't collected any logs for the last 6 hours.",
+								"summary":     "Fluent-bit input plugins haven't process any data for the past 6 hours",
+							},
+						},
+						{
+							Alert: "FluentBitReceivesLogsWithoutMetadata",
+							Expr:  intstr.FromString(`sum by (pod) (increase(fluentbit_vali_gardener_logs_without_metadata_total[4m])) > 0`),
+							Labels: map[string]string{
+								"service":    "logging",
+								"severity":   "warning",
+								"type":       "seed",
+								"visibility": "operator",
+							},
+							Annotations: map[string]string{
+								"description": "{{$labels.pod}} receives logs without metadata on seed: {{$externalLabels.seed}}. These logs will be dropped.",
+								"summary":     "Fluent-bit receives logs without metadata",
+							},
+						},
+						{
+							Alert: "FluentBitSendsOoOLogs",
+							Expr:  intstr.FromString(`sum by (pod) (increase(prometheus_target_scrapes_sample_out_of_order_total[4m])) > 0`),
+							Labels: map[string]string{
+								"service":    "logging",
+								"severity":   "warning",
+								"type":       "seed",
+								"visibility": "operator",
+							},
+							Annotations: map[string]string{
+								"description": "{{$labels.pod}} on seed: {{$externalLabels.seed}} sends OutOfOrder logs to the Vali. These logs will be dropped.",
+								"summary":     "Fluent-bit sends OoO logs",
+							},
+						},
+						{
+							Alert: "FluentBitGardenerValiPluginErrors",
+							Expr:  intstr.FromString(`sum by (pod) (increase(fluentbit_vali_gardener_errors_total[4m])) > 0`),
+							Labels: map[string]string{
+								"service":    "logging",
+								"severity":   "warning",
+								"type":       "seed",
+								"visibility": "operator",
+							},
+							Annotations: map[string]string{
+								"description": "There are errors in the {{$labels.pod}} GardenerVali plugin on seed: {{$externalLabels.seed}}.",
+								"summary":     "Errors in Fluent-bit GardenerVali plugin",
+							},
+						},
+					},
+				}},
+			},
+		}
+	)
+
+	resources := []client.Object{
+		configMap,
+		f.getFluentBit(),
+		f.getClusterFluentBitConfig(),
+		serviceMonitor,
+		serviceMonitorPlugin,
+		prometheusRule,
+	}
+
+	for _, clusterInput := range fluentcustomresources.GetClusterInputs(getCustomResourcesLabels()) {
+		resources = append(resources, clusterInput)
+	}
+
+	for _, clusterFilter := range fluentcustomresources.GetClusterFilters(configMap.Name, getCustomResourcesLabels()) {
+		resources = append(resources, clusterFilter)
+	}
+
+	for _, clusterParser := range fluentcustomresources.GetClusterParsers(getCustomResourcesLabels()) {
+		resources = append(resources, clusterParser)
+	}
+
+	serializedResources, err := registry.AddAllAndSerialize(resources...)
+	if err != nil {
+		return err
+	}
+
+	return managedresources.CreateForSeedWithLabels(ctx, f.client, f.namespace, managedResourceName, false, map[string]string{v1beta1constants.LabelCareConditionType: v1beta1constants.ObservabilityComponentsHealthy}, serializedResources)
+}
+
+func (f *fluentBit) Destroy(ctx context.Context) error {
+	return managedresources.DeleteForSeed(ctx, f.client, f.namespace, managedResourceName)
+}
+
+var timeoutWaitForManagedResources = 2 * time.Minute
+
+func (f *fluentBit) Wait(ctx context.Context) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeoutWaitForManagedResources)
+	defer cancel()
+
+	return managedresources.WaitUntilHealthy(timeoutCtx, f.client, f.namespace, managedResourceName)
+}
+
+func (f *fluentBit) WaitCleanup(ctx context.Context) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeoutWaitForManagedResources)
+	defer cancel()
+
+	return managedresources.WaitUntilDeleted(timeoutCtx, f.client, f.namespace, managedResourceName)
+}
+
+func getLabels() map[string]string {
+	labels := map[string]string{
+		v1beta1constants.LabelApp:                             v1beta1constants.DaemonSetNameFluentBit,
+		v1beta1constants.LabelRole:                            v1beta1constants.LabelLogging,
+		v1beta1constants.GardenRole:                           v1beta1constants.GardenRoleLogging,
+		v1beta1constants.LabelNetworkPolicyToDNS:              v1beta1constants.LabelNetworkPolicyAllowed,
+		v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer: v1beta1constants.LabelNetworkPolicyAllowed,
+	}
+	return utils.MergeStringMaps(labels, getTargetNetworkPolicyLabels())
+}
+
+func getTargetNetworkPolicyLabels() map[string]string {
+	if slices.ContainsFunc(features.DefaultFeatureGate.KnownFeatures(), func(s string) bool {
+		return strings.HasPrefix(s, string(features.OpenTelemetryCollector)+"=")
+	}) && features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) {
+		return map[string]string{
+			gardenerutils.NetworkPolicyLabel("opentelemetry-collector-collector", 4317):                    v1beta1constants.LabelNetworkPolicyAllowed,
+			"networking.resources.gardener.cloud/to-all-shoots-opentelemetry-collector-collector-tcp-4317": v1beta1constants.LabelNetworkPolicyAllowed,
+		}
+	}
+
+	return map[string]string{
+		gardenerutils.NetworkPolicyLabel(valiconstants.ServiceName, valiconstants.ValiPort): v1beta1constants.LabelNetworkPolicyAllowed,
+		"networking.resources.gardener.cloud/to-all-shoots-logging-tcp-3100":                v1beta1constants.LabelNetworkPolicyAllowed,
+	}
+}
+
+func getCustomResourcesLabels() map[string]string {
+	return map[string]string{
+		v1beta1constants.LabelKeyCustomLoggingResource: v1beta1constants.LabelValueCustomLoggingResource,
+	}
+}
+
+func (f *fluentBit) getPrometheusLabel() string {
+	if f.values.IsGardenCluster {
+		return garden.Label
+	}
+
+	return aggregate.Label
+}
+
+func (f *fluentBit) getFluentBit() *fluentbitv1alpha2.FluentBit {
+	var networkPolicyFromPolicyAnnotationPrefix string
+	if f.values.IsGardenCluster {
+		networkPolicyFromPolicyAnnotationPrefix = v1beta1constants.LabelNetworkPolicyGardenScrapeTargets
+	} else {
+		networkPolicyFromPolicyAnnotationPrefix = v1beta1constants.LabelNetworkPolicySeedScrapeTargets
+	}
+
+	annotations := map[string]string{
+		resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix +
+			networkPolicyFromPolicyAnnotationPrefix +
+			resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"port":2020,"protocol":"TCP"},{"port":2021,"protocol":"TCP"}]`,
+	}
+
+	return &fluentbitv1alpha2.FluentBit{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%v-%v", v1beta1constants.DaemonSetNameFluentBit, utils.ComputeSHA256Hex(fmt.Appendf(nil, "%v%v", getLabels(), annotations))[:5]),
+			Namespace: f.namespace,
+			Labels:    getLabels(),
+		},
+		Spec: fluentbitv1alpha2.FluentBitSpec{
+			FluentBitConfigName: fluentBitConfigName,
+			EnvVars: []corev1.EnvVar{
+				{
+					Name:  "OTEL_GO_X_OBSERVABILITY",
+					Value: "true",
+				},
+			},
+			Image: f.values.Image,
+			Command: []string{
+				"/fluent-bit/bin/fluent-bit-watcher",
+				"-e",
+				"/fluent-bit/plugins/output_plugin.so",
+				"-c",
+				"/fluent-bit/config/fluent-bit.conf",
+			},
+			ContainerSecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: new(false),
+			},
+			PriorityClassName: f.values.PriorityClassName,
+			Ports: []corev1.ContainerPort{
+				{
+					Name:          "metrics-plugin",
+					ContainerPort: 2021,
+					Protocol:      "TCP",
+				},
+			},
+			Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("1Gi"),
+				},
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("150m"),
+					corev1.ResourceMemory: resource.MustParse("200Mi"),
+				},
+			},
+			ReadinessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/api/v1/metrics/prometheus",
+						Port: intstr.FromInt32(2020),
+					},
+				},
+				PeriodSeconds: 10,
+			},
+			LivenessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path: "/healthz",
+						Port: intstr.FromInt32(2021),
+					},
+				},
+				PeriodSeconds:       60,
+				InitialDelaySeconds: 120,
+			},
+			Tolerations: []corev1.Toleration{
+				{
+					Key:    "node-role.kubernetes.io/master",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "node-role.kubernetes.io/control-plane",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "runlogjournal",
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/run/log/journal",
+						},
+					},
+				},
+				{
+					Name: "varfluent",
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/var/fluentbit",
+						},
+					},
+				},
+				{
+					Name: "plugins",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+			},
+			VolumesMounts: []corev1.VolumeMount{
+				{
+					Name:      "runlogjournal",
+					MountPath: "/run/log/journal",
+				},
+				{
+					Name:      "varfluent",
+					MountPath: "/var/fluentbit",
+				},
+				{
+					Name:      "plugins",
+					MountPath: "/fluent-bit/plugins",
+				},
+			},
+			InitContainers: []corev1.Container{
+				{
+					Name:  "install-plugin",
+					Image: f.values.InitContainerImage,
+					Command: []string{
+						"cp",
+						"/source/plugins/.",
+						"/plugins",
+					},
+					SecurityContext: &corev1.SecurityContext{
+						AllowPrivilegeEscalation: new(false),
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "plugins",
+							MountPath: "/plugins",
+						},
+					},
+				},
+			},
+			RBACRules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{"extensions.gardener.cloud"},
+					Resources: []string{"clusters"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+				{
+					APIGroups: []string{"opentelemetry.io"},
+					Resources: []string{"opentelemetrycollectors"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+				{
+					APIGroups: []string{"apiextensions.k8s.io"},
+					Resources: []string{"customresourcedefinitions"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+			},
+			Service: fluentbitv1alpha2.FluentBitService{
+				Name:        v1beta1constants.DaemonSetNameFluentBit,
+				Annotations: annotations,
+				Labels:      getLabels(),
+			},
+		},
+	}
+}
+
+func (f *fluentBit) getClusterFluentBitConfig() *fluentbitv1alpha2.ClusterFluentBitConfig {
+	return &fluentbitv1alpha2.ClusterFluentBitConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fluentBitConfigName,
+			Labels: map[string]string{
+				"app.kubernetes.io/name": v1beta1constants.DaemonSetNameFluentBit,
+			},
+		},
+		Spec: fluentbitv1alpha2.FluentBitConfigSpec{
+			Service: &fluentbitv1alpha2.Service{
+				FlushSeconds: new(float64(30)),
+				Daemon:       new(false),
+				LogLevel:     "error",
+				ParsersFile:  "parsers.conf",
+				HttpServer:   new(true),
+				HttpListen:   "::",
+				HttpPort:     new(int32(2020)),
+				Storage: &fluentbitv1alpha2.Storage{
+					Path:                      "/var/fluentbit/chunks",
+					Sync:                      "normal",
+					Metrics:                   "on",
+					Checksum:                  "off",
+					MaxChunksUp:               new(int64(200)),
+					BacklogMemLimit:           "50M",
+					DeleteIrrecoverableChunks: "on",
+				},
+			},
+			InputSelector: metav1.LabelSelector{
+				MatchLabels: getCustomResourcesLabels(),
+			},
+			FilterSelector: metav1.LabelSelector{
+				MatchLabels: getCustomResourcesLabels(),
+			},
+			ParserSelector: metav1.LabelSelector{
+				MatchLabels: getCustomResourcesLabels(),
+			},
+			OutputSelector: metav1.LabelSelector{
+				MatchLabels: getCustomResourcesLabels(),
+			},
+		},
+	}
+}

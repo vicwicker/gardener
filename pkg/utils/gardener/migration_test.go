@@ -1,0 +1,33 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package gardener_test
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	. "github.com/gardener/gardener/pkg/utils/gardener"
+)
+
+var _ = Describe("Migration", func() {
+	Describe("#GetResponsibleSeedName", func() {
+		It("returns nothing if spec.seedName is not set", func() {
+			Expect(GetResponsibleSeedName(nil, nil)).To(BeEmpty())
+			Expect(GetResponsibleSeedName(nil, new("status"))).To(BeEmpty())
+		})
+
+		It("returns spec.seedName if status.seedName is not set", func() {
+			Expect(GetResponsibleSeedName(new("spec"), nil)).To(Equal("spec"))
+		})
+
+		It("returns status.seedName if the seedNames differ", func() {
+			Expect(GetResponsibleSeedName(new("spec"), new("status"))).To(Equal("status"))
+		})
+
+		It("returns the seedName if both are equal", func() {
+			Expect(GetResponsibleSeedName(new("spec"), new("spec"))).To(Equal("spec"))
+		})
+	})
+})

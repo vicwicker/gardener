@@ -1,0 +1,109 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package credentialsbinding
+
+import (
+	"context"
+	"fmt"
+
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/registry/generic"
+	"k8s.io/apiserver/pkg/storage"
+	"k8s.io/apiserver/pkg/storage/names"
+
+	"github.com/gardener/gardener/pkg/api"
+	"github.com/gardener/gardener/pkg/api/security/validation"
+	"github.com/gardener/gardener/pkg/apis/security"
+)
+
+type credentialsBindingStrategy struct {
+	runtime.ObjectTyper
+	names.NameGenerator
+}
+
+// Strategy defines the storage strategy for CredentialsBindings.
+var Strategy = credentialsBindingStrategy{api.Scheme, names.SimpleNameGenerator}
+
+func (credentialsBindingStrategy) NamespaceScoped() bool {
+	return true
+}
+
+func (c credentialsBindingStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
+	credentialsbinding := obj.(*security.CredentialsBinding)
+
+	if credentialsbinding.GetName() == "" {
+		credentialsbinding.SetName(c.GenerateName(credentialsbinding.GetGenerateName()))
+	}
+}
+
+func (credentialsBindingStrategy) PrepareForUpdate(_ context.Context, _, _ runtime.Object) {
+
+}
+
+func (credentialsBindingStrategy) Validate(_ context.Context, obj runtime.Object) field.ErrorList {
+	credentialsbinding := obj.(*security.CredentialsBinding)
+	return validation.ValidateCredentialsBinding(credentialsbinding)
+}
+
+func (credentialsBindingStrategy) Canonicalize(_ runtime.Object) {
+}
+
+func (credentialsBindingStrategy) AllowCreateOnUpdate(_ context.Context) bool {
+	return false
+}
+
+func (credentialsBindingStrategy) ValidateUpdate(_ context.Context, newObj, oldObj runtime.Object) field.ErrorList {
+	newCredentialsBinding := newObj.(*security.CredentialsBinding)
+	oldCredentialsBinding := oldObj.(*security.CredentialsBinding)
+	return validation.ValidateCredentialsBindingUpdate(newCredentialsBinding, oldCredentialsBinding)
+}
+
+func (credentialsBindingStrategy) AllowUnconditionalUpdate(_ context.Context) bool {
+	return false
+}
+
+// WarningsOnCreate returns warnings to the client performing a create.
+func (credentialsBindingStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string {
+	return nil
+}
+
+// WarningsOnUpdate returns warnings to the client performing the update.
+func (credentialsBindingStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string {
+	return nil
+}
+
+// ToSelectableFields returns a field set that represents the object.
+func ToSelectableFields(credentialsBinding *security.CredentialsBinding) fields.Set {
+	// The purpose of allocation with a given number of elements is to reduce
+	// amount of allocations needed to create the fields.Set. If you add any
+	// field here or the number of object-meta related fields changes, this should
+	// be adjusted.
+	credentialsBindingSpecificFieldsSet := make(fields.Set, 3)
+	credentialsBindingSpecificFieldsSet[security.CredentialsBindingCredentialsRefName] = credentialsBinding.CredentialsRef.Name
+	credentialsBindingSpecificFieldsSet[security.CredentialsBindingCredentialsRefNamespace] = credentialsBinding.CredentialsRef.Namespace
+	credentialsBindingSpecificFieldsSet[security.CredentialsBindingCredentialsRefKind] = credentialsBinding.CredentialsRef.Kind
+	return generic.AddObjectMetaFieldsSet(credentialsBindingSpecificFieldsSet, &credentialsBinding.ObjectMeta, true)
+}
+
+// GetAttrs returns labels and fields of a given object for filtering purposes.
+func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
+	credentialsBinding, ok := obj.(*security.CredentialsBinding)
+	if !ok {
+		return nil, nil, fmt.Errorf("not a CredentialsBinding")
+	}
+	return credentialsBinding.Labels, ToSelectableFields(credentialsBinding), nil
+}
+
+// MatchCredentialsBinding returns a generic matcher for a given label and field selector.
+func MatchCredentialsBinding(label labels.Selector, field fields.Selector) storage.SelectionPredicate {
+	return storage.SelectionPredicate{
+		Label:    label,
+		Field:    field,
+		GetAttrs: GetAttrs,
+	}
+}

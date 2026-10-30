@@ -1,0 +1,15 @@
+apiVersion: core.gardener.cloud/v1
+kind: ControllerDeployment
+metadata:
+  name: provider-local
+helm:
+  ociRepository:
+    ref: local-skaffold/gardener-extension-provider-local/charts/extension:v0.0.0
+  values:
+    imageVectorOverwrite:
+      images:
+      - name: cloud-controller-manager-local
+        ref: local-skaffold/cloud-controller-manager-local
+      - name: machine-controller-manager-provider-local
+        ref: local-skaffold/machine-controller-manager-provider-local
+injectGardenKubeconfig: true

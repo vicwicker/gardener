@@ -1,0 +1,328 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: virtual-garden-etcd-main-backup-local
+  namespace: garden
+type: Opaque
+stringData:
+  hostPath: "/etc/gardener/local-backupbuckets"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garden-dns-local
+  namespace: garden
+type: Opaque
+---
+apiVersion: operator.gardener.cloud/v1alpha1
+kind: Garden
+metadata:
+  name: local
+spec:
+  dns:
+    providers:
+    - name: primary
+      type: local
+    # providerConfig:
+    #   <some-provider-specific-config-for-the-dns-records>
+      secretRef:
+        name: garden-dns-local
+# extensions:
+# - type: foobar
+#   providerConfig:
+#     <some-provider-specific-config-for-extension>
+  runtimeCluster:
+    ingress:
+      domains:
+      - name: ingress.runtime-garden.local.gardener.cloud
+        provider: primary
+      controller:
+        kind: nginx
+      # providerConfig:
+      #   <some-optional-config-for-the-nginx-ingress-controller>
+    networking:
+      # Those CIDRs have been chosen to match with the kind Cluster configuration (see dev-setup/kind/cluster/base/cluster.yaml).
+      # Generally, they have to match the CIDRs of the runtime cluster.
+      ipFamilies:
+      - IPv4
+      nodes:
+      - 172.18.0.0/24
+      pods:
+      # Subnet for automatic pod IP assignment (calico default IPPool) in the kind cluster.
+      - 10.1.0.0/16
+      services:
+      - 10.2.0.0/16
+    provider:
+      region: local
+      zones:
+      - "0"
+      - "1"
+      - "2"
+    settings:
+    # loadBalancerServices:
+    #   annotations:
+    #     foo: bar
+    #   externalTrafficPolicy: Local
+    #   proxyProtocol:
+    #     allowed: true
+      verticalPodAutoscaler:
+        enabled: true
+      # featureGates:
+      #   SomeKubernetesFeature: true
+      # maxAllowed:
+      #   cpu: 8
+      #   memory: 32Gi
+      topologyAwareRouting:
+        enabled: false
+  # volume:
+  #   minimumSize: 20Gi
+  virtualCluster:
+  # controlPlane:
+  #   highAvailability: {}
+    dns:
+      domains:
+      - name: virtual-garden.local.gardener.cloud
+        provider: primary
+    etcd:
+      main:
+        backup:
+          provider: local
+    #     region: local
+    #     bucketName: gardener-operator # if not provided, gardener-operator generates a name
+    #     providerConfig:
+    #       <some-provider-specific-config-for-the-backup-buckets>
+          secretRef:
+            name: virtual-garden-etcd-main-backup-local
+        storage:
+          capacity: 25Gi
+    #     className: default
+    #   autoscaling:
+    #     minAllowed:
+    #       cpu: "2"
+    #       memory: 6Gi
+      events:
+        storage:
+          capacity: 10Gi
+    #     className: default
+    #   autoscaling:
+    #     minAllowed:
+    #       cpu: "1"
+    #       memory: 3Gi
+    kubernetes:
+      version: 1.33.0
+    # kubeAPIServer:
+    #   eventTTL: 1h
+    #   featureGates:
+    #     SomeKubernetesFeature: true
+    #   runtimeConfig:
+    #     scheduling.k8s.io/v1alpha1: true
+    #   structuredAuthentication:
+    #     configMapName: name-of-configmap-containing-authentication-config
+    #   structuredAuthorization:
+    #     configMapName: name-of-configmap-containing-authorization-config
+    #     kubeconfigs:
+    #     - authorizerName: name-of-authorizer-in-authorization-config
+    #       secretName: name-of-a-secret-containing-kubeconfig-for-authorizer
+    #   admissionPlugins:
+    #   - name: PodNodeSelector
+    #     disabled: false
+    #     config:
+    #       podNodeSelectorPluginConfig:
+    #         clusterDefaultNodeSelector: <node-selectors-labels>
+    #         namespace1: <node-selectors-labels>
+    #         namespace2: <node-selectors-labels>
+    #     kubeconfigSecretName: name-of-secret-containing-kubeconfig-for-admission-plugin
+    #   authentication:
+    #     webhook:
+    #       kubeconfigSecretName: name-of-secret-containing-kubeconfig-for-authentication-webhook
+    #       cacheTTL: 30m
+    #       version: v1beta1
+    #   auditConfig:
+    #     auditPolicy:
+    #       configMapRef:
+    #         name: auditpolicy
+    #   auditWebhook:
+    #     kubeconfigSecretName: name-of-secret-containing-kubeconfig-for-audit-webhook
+    #     batchMaxSize: 1337
+    #     version: audit.k8s.io/v1
+    #   watchCacheSizes: # See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+    #     resources:
+    #     - resource: secrets
+    #       size: 500
+    #     - apiGroup: apps
+    #       resource: deployments
+    #       size: 500
+    #   requests:
+    #     maxNonMutatingInflight: 400
+    #     maxMutatingInflight: 200
+    #   enableAnonymousAuthentication: false # Deprecated, will be removed in a future version of gardener. Use anonymous authentication configuration instead, see: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration
+    #   serviceAccountConfig:
+    #     issuer: foo
+    #     acceptedIssuers:
+    #     - foo1
+    #     - foo2
+    #     extendTokenExpiration: true
+    #     maxTokenExpiration: 45d
+    #   logging:
+    #     verbosity: 2
+    #     httpAccessVerbosity: 3
+    #   defaultNotReadyTolerationSeconds: 300
+    #   defaultUnreachableTolerationSeconds: 300
+    #   encryptionConfig: # See https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config
+    #     resources: # secrets are always encrypted
+    #     - configmaps
+    #     - customresource.fancyoperator.io
+    #     provider:
+    #       type: "aescbc"
+    #   autoscaling:
+    #     minAllowed:
+    #       cpu: "1"
+    #       memory: 3Gi
+    #   sni:
+    #     secretName: name-of-secret-containing-tls-cert-and-key
+    #     domainPatterns:
+    #     - foo.example.com
+    #   resourcesToStoreInETCDEvents:
+    #   - group: networking.k8s.io
+    #     resources: networkpolicies
+    # kubeControllerManager:
+    #   featureGates:
+    #     SomeKubernetesFeature: true
+    #   certificateSigningDuration: 48h
+    gardener:
+      clusterIdentity: local
+      gardenerAPIServer: {}
+    #   admissionPlugins:
+    #   - name: ShootDNSRewriting
+    #     disabled: false
+    #     config:
+    #       apiVersion: shootdnsrewriting.admission.gardener.cloud
+    #       kind: Configuration
+    #       commonSuffixes:
+    #       - foo
+    #     kubeconfigSecretName: name-of-secret-containing-kubeconfig-for-admission-plugin
+    #   auditConfig:
+    #     auditPolicy:
+    #       configMapRef:
+    #         name: auditpolicy
+    #   auditWebhook:
+    #     kubeconfigSecretName: name-of-secret-containing-kubeconfig-for-audit-webhook
+    #     batchMaxSize: 1337
+    #     version: audit.k8s.io/v1
+    #   featureGates:
+    #     SomeGardenerFeature: true
+    #   goAwayChance: 0.001
+    #   shootAdminKubeconfigMaxExpiration: 24h
+    #   logging:
+    #     verbosity: 2
+    #     httpAccessVerbosity: 3
+    #   encryptionConfig: # See https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config
+    #     resources:
+    #     - shoots.core.gardener.cloud
+    #     - managedseeds.seedmanagement.gardener.cloud
+    #     provider:
+    #       type: "aescbc"
+    #   requests:
+    #     maxNonMutatingInflight: 400
+    #     maxMutatingInflight: 200
+    #   watchCacheSizes: # See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+    #     default: 100
+    #     resources:
+    #     - apiGroup: core.gardener.cloud
+    #       resource: shoots
+    #       size: 500
+    # gardenerAdmissionController:
+    #   featureGates:
+    #     SomeGardenerFeature: true
+    #   logLevel: info # either {debug,info,error}
+    #   resourceAdmissionConfiguration:
+    #    operationMode: block # either {block,log}
+    #    limits:
+    #    - apiGroups: ["core.gardener.cloud"]
+    #      apiVersions: ["*"]
+    #      resources: ["shoots"]
+    #      size: 100k
+    #    - apiGroups: ["core.gardener.cloud"]
+    #      apiVersions: ["*"]
+    #      resources: ["projects"]
+    #      count: 200
+    #    unrestrictedSubjects:
+    #    - kind: Group
+    #      name: gardener.cloud:system:seeds
+    #      apiGroup: rbac.authorization.k8s.io
+    # gardenerControllerManager:
+    #   defaultProjectQuotas:
+    #   - config:
+    #       apiVersion: v1
+    #       kind: ResourceQuota
+    #       spec:
+    #         hard:
+    #           count/shoots.core.gardener.cloud: "100"
+    #           count/secretbindings.core.gardener.cloud: "10"
+    #           count/secrets: "400"
+    #     projectSelector: {}
+    #   featureGates:
+    #     SomeGardenerFeature: true
+    #   logLevel: info # either {debug,info,error}
+    # gardenerScheduler:
+    #   featureGates:
+    #     SomeGardenerFeature: true
+    #   logLevel: info # either {debug,info,error}
+    #   strategy: SameRegion # either {SameRegion,MinimalDistance}
+      gardenerDashboard: {}
+    #   logLevel: info # either {trace,debug,info,warn,error}
+    #   enableTokenLogin: true
+    #   frontendConfigMapRef:
+    #     name: gardener-dashboard-frontend
+    #   assetsConfigMapRef:
+    #     name: gardener-dashboard-assets
+    #   gitHub:
+    #     apiURL: https://api.github.com
+    #     organisation: kubernetes-dev
+    #     repository: issues-dev
+    #     secretRef:
+    #       name: gardener-dashboard-github
+    #     pollInterval: 15m
+    #   oidcConfig:
+    #     clientIDPublic: client-id
+    #     issuerURL: https://identity.example.com
+    #     sessionLifetime: 12h
+    #     additionalScopes: [ profile, offline_access ]
+    #     secretRef:
+    #       name: gardener-dashboard-oidc
+    #     certificateAuthoritySecretRef:
+    #       name: gardener-dashboard-oidc-ca
+    #   terminal:
+    #     allowedHosts:
+    #     - "*.seed.local.gardener.cloud"
+    #     container:
+    #       image: busybox:latest
+    #       description: A nice container for debugging purposes
+    #   domain:
+    #     name: dashboard.local.gardener.cloud
+    #     provider: primary
+    #   tlsSecretName: gardener-dashboard-tls
+    #   propagateCAFromSNI: false # set to true when SNI CA is not in client trust stores
+      gardenerDiscoveryServer:
+      # domain:
+      #   name: discovery.local.gardener.cloud
+      #   provider: primary
+      # tlsSecretName: gardener-discovery-server-tls
+    # gardenerResourceManager:
+    #   additionalTargetNamespaces:
+    #   - my-custom-namespace
+    maintenance:
+      timeWindow:
+        begin: 220000+0100
+        end: 230000+0100
+    networking:
+      services:
+      - 100.64.0.0/13
+# List resources referenced by providerConfig and other sections
+# resources:
+# - name: foobar-secret
+#   resourceRef:
+#     apiVersion: v1
+#     kind: Secret
+#     name: my-foobar-secret

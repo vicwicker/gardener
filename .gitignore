@@ -1,0 +1,56 @@
+/args
+/bin
+/hack/tools/bin
+/.kube-secrets
+/tmp/*
+/local
+/dev
+
+*.test
+*.coverprofile
+*.html
+.vscode
+.idea
+.DS_Store
+*~
+
+.cache_concourse
+./gardener-apiserver
+./gardener-controller-manager
+TODO
+.vagrant
+config.ign.merged
+config.img
+config.vmdk
+
+/test/framework/resources/charts/*
+/test/framework/resources/repository/cache
+/test/framework/resources/shoots
+
+hack/tools/logcheck/pkg/logcheck/testdata/src/github.com/go-logr/logr
+hack/tools/logcheck/pkg/logcheck/testdata/src/sigs.k8s.io/controller-runtime/pkg/log
+
+.golangci.yaml
+# Virtual go & fuse
+.virtualgo
+.fuse_hidden*
+
+# GitGuardian
+.cache_ggshield
+
+# gosec
+gosec-report.sarif
+
+# go workspace
+go.work.sum
+
+# AI coding agents
+# Claude
+.claude/
+/skills-lock.json
+
+# Cursor
+.cursor/
+
+# GitHub Copilot
+.copilot/

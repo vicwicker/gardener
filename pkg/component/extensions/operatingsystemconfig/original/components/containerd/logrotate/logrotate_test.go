@@ -1,0 +1,93 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package logrotate_test
+
+import (
+	"strings"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/containerd"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/containerd/logrotate"
+)
+
+var _ = Describe("Logrotate", func() {
+	Describe("#Config", func() {
+		Context("containerd container runtime", func() {
+			It("should return the expected units and files in", func() {
+				var (
+					prefix       = containerd.ContainerRuntime
+					pathConfig   = "/bar/baz"
+					pathLogFiles = strings.Builder{}
+				)
+
+				pathLogFiles.WriteString("/var/log/")
+				pathLogFiles.WriteString(containerd.ContainerRuntime)
+				pathLogFiles.WriteString("/*.log")
+
+				podLogDir := "/var/log/" + containerd.ContainerRuntime
+
+				units, files := logrotate.Config(pathConfig, pathLogFiles.String(), prefix)
+
+				serviceUnit := extensionsv1alpha1.Unit{
+					Name:   prefix + "-logrotate.service",
+					Enable: new(true),
+					Content: new(`[Unit]
+Description=Rotate and Compress System Logs
+StartLimitBurst=5
+StartLimitIntervalSec=30
+[Service]
+ExecStart=/usr/sbin/logrotate -s /var/lib/` + prefix + `-logrotate.status ` + pathConfig + `
+ExecStartPost=/bin/sh -c 'find ` + podLogDir + ` -name "*.log.*" -mtime +14 -delete 2>&1 || [ ! -d ` + podLogDir + ` ]'
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target`),
+					FilePaths: []string{pathConfig},
+				}
+
+				timerUnit := extensionsv1alpha1.Unit{
+					Name:    prefix + "-logrotate.timer",
+					Command: new(extensionsv1alpha1.CommandStart),
+					Enable:  new(true),
+					Content: new(`[Unit]
+Description=Log Rotation once a day
+[Timer]
+OnCalendar=daily
+AccuracySec=1min
+RandomizedDelaySec=4h
+Persistent=true
+[Install]
+WantedBy=multi-user.target`),
+				}
+
+				serviceConfigFile := extensionsv1alpha1.File{
+					Path:        pathConfig,
+					Permissions: new(int32(0644)),
+					Content: extensionsv1alpha1.FileContent{
+						Inline: &extensionsv1alpha1.FileContentInline{
+							Data: pathLogFiles.String() + ` {
+    rotate 14
+    copytruncate
+    missingok
+    compress
+    daily
+    dateext
+    dateformat -%Y%m%d-%s
+    create 0644 root root
+}
+`,
+						},
+					},
+				}
+
+				Expect(units).To(ConsistOf(serviceUnit, timerUnit))
+				Expect(files).To(ConsistOf(serviceConfigFile))
+			})
+		})
+	})
+})

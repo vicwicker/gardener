@@ -1,0 +1,154 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package pkg
+
+import (
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle"
+	"k8s.io/apiserver/pkg/admission/plugin/policy/mutating"
+	"k8s.io/apiserver/pkg/admission/plugin/policy/validating"
+	"k8s.io/apiserver/pkg/admission/plugin/resourcequota"
+	mutatingwebhook "k8s.io/apiserver/pkg/admission/plugin/webhook/mutating"
+	validatingwebhook "k8s.io/apiserver/pkg/admission/plugin/webhook/validating"
+)
+
+const (
+	// PluginNameBastion is the name of the Bastion admission plugin.
+	PluginNameBastion = "Bastion"
+	// PluginNameControllerRegistrationResources is the name of the ControllerRegistrationResources admission plugin.
+	PluginNameControllerRegistrationResources = "ControllerRegistrationResources"
+	// PluginNameCustomVerbAuthorizer is the name of the CustomVerbAuthorizer admission plugin.
+	PluginNameCustomVerbAuthorizer = "CustomVerbAuthorizer"
+	// PluginNameDeletionConfirmation is the name of the DeletionConfirmation admission plugin.
+	PluginNameDeletionConfirmation = "DeletionConfirmation"
+	// PluginNameExtensionLabels is the name of the ExtensionLabels admission plugin.
+	PluginNameExtensionLabels = "ExtensionLabels"
+	// PluginNameExtensionValidator is the name of the ExtensionValidator admission plugin.
+	PluginNameExtensionValidator = "ExtensionValidator"
+	// PluginNameFinalizerRemoval is the name of the FinalizerRemoval admission plugin.
+	PluginNameFinalizerRemoval = "FinalizerRemoval"
+	// PluginNameResourceReferenceManager is the name of the ResourceReferenceManager admission plugin.
+	PluginNameResourceReferenceManager = "ResourceReferenceManager"
+	// PluginNameManagedSeedShoot is the name of the ManagedSeedShoot admission plugin.
+	PluginNameManagedSeedShoot = "ManagedSeedShoot"
+	// PluginNameManagedSeed is the name of the ManagedSeed admission plugin.
+	PluginNameManagedSeed = "ManagedSeed"
+	// PluginNameNamespacedCloudProfileValidator is the name of the NamespacedCloudProfileValidator admission plugin.
+	PluginNameNamespacedCloudProfileValidator = "NamespacedCloudProfileValidator"
+	// PluginNameProjectMutator is the name of the ProjectMutator admission plugin.
+	PluginNameProjectMutator = "ProjectMutator"
+	// PluginNameSeedValidator is the name of the SeedValidator admission plugin.
+	PluginNameSeedValidator = "SeedValidator"
+	// PluginNameSeedMutator is the name of the SeedMutator admission plugin.
+	PluginNameSeedMutator = "SeedMutator"
+	// PluginNameShootDNS is the name of the ShootDNS admission plugin.
+	PluginNameShootDNS = "ShootDNS"
+	// PluginNameShootDNSRewriting is the name of the ShootDNSRewriting admission plugin.
+	PluginNameShootDNSRewriting = "ShootDNSRewriting"
+	// PluginNameShootExposureClass is the name of the ShootExposureClass admission plugin.
+	PluginNameShootExposureClass = "ShootExposureClass"
+	// PluginNameShootManagedSeed is the name of the ShootManagedSeed admission plugin.
+	PluginNameShootManagedSeed = "ShootManagedSeed"
+	// PluginNameShootNodeLocalDNSEnabledByDefault is the name of the ShootNodeLocalDNSEnabledByDefault admission plugin.
+	PluginNameShootNodeLocalDNSEnabledByDefault = "ShootNodeLocalDNSEnabledByDefault"
+	// PluginNameShootQuotaValidator is the name of the ShootQuotaValidator admission plugin.
+	PluginNameShootQuotaValidator = "ShootQuotaValidator"
+	// PluginNameShootTolerationRestriction is the name of the ShootTolerationRestriction admission plugin.
+	PluginNameShootTolerationRestriction = "ShootTolerationRestriction"
+	// PluginNameShootValidator is the name of the ShootValidator admission plugin.
+	PluginNameShootValidator = "ShootValidator"
+	// PluginNameShootMutator is the name of the ShootMutator admission plugin.
+	PluginNameShootMutator = "ShootMutator"
+	// PluginNameShootVPAEnabledByDefault is the name of the ShootVPAEnabledByDefault admission plugin.
+	PluginNameShootVPAEnabledByDefault = "ShootVPAEnabledByDefault"
+	// PluginNameShootResourceReservation is the name of the ShootResourceReservation admission plugin.
+	PluginNameShootResourceReservation = "ShootResourceReservation"
+	// PluginNameBackupBucketValidator is the name of the BackupBucketValidator admission plugin.
+	PluginNameBackupBucketValidator = "BackupBucketValidator"
+)
+
+// AllOrderedPluginNames returns the names of all plugins in order.
+func AllOrderedPluginNames() []string {
+	return []string{
+		lifecycle.PluginName,                        // NamespaceLifecycle
+		PluginNameResourceReferenceManager,          // ResourceReferenceManager
+		PluginNameExtensionValidator,                // ExtensionValidator
+		PluginNameExtensionLabels,                   // ExtensionLabels
+		PluginNameShootTolerationRestriction,        // ShootTolerationRestriction
+		PluginNameShootExposureClass,                // ShootExposureClass
+		PluginNameShootDNS,                          // ShootDNS
+		PluginNameShootManagedSeed,                  // ShootManagedSeed
+		PluginNameShootNodeLocalDNSEnabledByDefault, // ShootNodeLocalDNSEnabledByDefault
+		PluginNameShootDNSRewriting,                 // ShootDNSRewriting
+		PluginNameShootQuotaValidator,               // ShootQuotaValidator
+		PluginNameShootMutator,                      // ShootMutator
+		PluginNameShootValidator,                    // ShootValidator
+		PluginNameSeedValidator,                     // SeedValidator
+		PluginNameSeedMutator,                       // SeedMutator
+		PluginNameControllerRegistrationResources,   // ControllerRegistrationResources
+		PluginNameNamespacedCloudProfileValidator,   // NamespacedCloudProfileValidator
+		PluginNameProjectMutator,                    // ProjectMutator
+		PluginNameDeletionConfirmation,              // DeletionConfirmation
+		PluginNameFinalizerRemoval,                  // FinalizerRemoval
+		PluginNameCustomVerbAuthorizer,              // CustomVerbAuthorizer
+		PluginNameShootVPAEnabledByDefault,          // ShootVPAEnabledByDefault
+		PluginNameShootResourceReservation,          // ShootResourceReservation
+		PluginNameManagedSeed,                       // ManagedSeed
+		PluginNameManagedSeedShoot,                  // ManagedSeedShoot
+		PluginNameBastion,                           // Bastion
+		PluginNameBackupBucketValidator,             // BackupBucketValidator
+
+		// new admission plugins should generally be inserted above here
+		// webhook, and resourcequota plugins must go at the end
+
+		mutating.PluginName,          // MutatingAdmissionPolicy
+		mutatingwebhook.PluginName,   // MutatingAdmissionWebhook
+		validating.PluginName,        // ValidatingAdmissionPolicy
+		validatingwebhook.PluginName, // ValidatingAdmissionWebhook
+
+		// This plugin must remain the last one in the list since it updates the quota usage
+		// which can only happen reliably if previous plugins permitted the request.
+		resourcequota.PluginName, // ResourceQuota
+	}
+}
+
+// DefaultOnPlugins is the set of admission plugins that are enabled by default.
+func DefaultOnPlugins() sets.Set[string] {
+	return sets.New[string](
+		lifecycle.PluginName,                      // NamespaceLifecycle
+		PluginNameResourceReferenceManager,        // ResourceReferenceManager
+		PluginNameExtensionValidator,              // ExtensionValidator
+		PluginNameExtensionLabels,                 // ExtensionLabels
+		PluginNameShootTolerationRestriction,      // ShootTolerationRestriction
+		PluginNameShootExposureClass,              // ShootExposureClass
+		PluginNameShootDNS,                        // ShootDNS
+		PluginNameShootManagedSeed,                // ShootManagedSeed
+		PluginNameShootResourceReservation,        // ShootResourceReservation
+		PluginNameShootQuotaValidator,             // ShootQuotaValidator
+		PluginNameShootMutator,                    // ShootMutator
+		PluginNameShootValidator,                  // ShootValidator
+		PluginNameShootVPAEnabledByDefault,        // ShootVPAEnabledByDefault
+		PluginNameSeedValidator,                   // SeedValidator
+		PluginNameSeedMutator,                     // SeedMutator
+		PluginNameControllerRegistrationResources, // ControllerRegistrationResources
+		PluginNameNamespacedCloudProfileValidator, // NamespacedCloudProfileValidator
+		PluginNameProjectMutator,                  // ProjectMutator
+		PluginNameDeletionConfirmation,            // DeletionConfirmation
+		PluginNameFinalizerRemoval,                // FinalizerRemoval
+		PluginNameCustomVerbAuthorizer,            // CustomVerbAuthorizer
+		PluginNameManagedSeed,                     // ManagedSeed
+		PluginNameManagedSeedShoot,                // ManagedSeedShoot
+		PluginNameBastion,                         // Bastion
+		PluginNameBackupBucketValidator,           // BackupBucketValidator
+		// TODO(vpnachev): Enable the MutatingAdmissionPolicy admission plugin by default
+		// once the minimum supported virtual-garden-kube-apiserver version is 1.36,
+		// where the admissionregistration.k8s.io/v1 MutatingAdmissionPolicy(Binding) APIs are GA.
+		// mutating.PluginName,          // MutatingAdmissionPolicy
+		mutatingwebhook.PluginName,   // MutatingAdmissionWebhook
+		validatingwebhook.PluginName, // ValidatingAdmissionWebhook
+		validating.PluginName,        // ValidatingAdmissionPolicy
+		resourcequota.PluginName,     // ResourceQuota
+	)
+}

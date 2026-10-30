@@ -1,0 +1,310 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package botanist
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
+	clientcmdlatest "k8s.io/client-go/tools/clientcmd/api/latest"
+	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
+	resourcemanagerconstants "github.com/gardener/gardener/pkg/component/gardener/resourcemanager/constants"
+	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
+	"github.com/gardener/gardener/pkg/component/shared"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
+)
+
+// DefaultKubeAPIServer returns a deployer for the kube-apiserver.
+func (b *Botanist) DefaultKubeAPIServer(ctx context.Context) (kubeapiserver.Interface, error) {
+	var (
+		vpnConfig = kubeapiserver.VPNConfig{
+			Enabled: false,
+		}
+	)
+
+	if !b.Shoot.IsWorkerless && !b.Shoot.IsSelfHosted() {
+		vpnConfig.Enabled = true
+		vpnConfig.HighAvailabilityEnabled = b.Shoot.VPNHighAvailabilityEnabled
+		vpnConfig.HighAvailabilityNumberOfSeedServers = b.Shoot.VPNHighAvailabilityNumberOfSeedServers
+		vpnConfig.HighAvailabilityNumberOfShootClients = b.Shoot.VPNHighAvailabilityNumberOfShootClients
+		// Pod/service/node network CIDRs are set on deployment to handle dynamic network CIDRs
+		vpnConfig.IPFamilies = b.Seed.GetInfo().Spec.Networks.IPFamilies
+		vpnConfig.AutoMTU = b.Shoot.VPNAutoMTU
+	}
+
+	return shared.NewKubeAPIServer(
+		ctx,
+		b.SeedClientSet,
+		b.GardenClient,
+		b.Shoot.ControlPlaneNamespace,
+		b.Shoot.GetInfo().ObjectMeta,
+		b.Shoot.RuntimeKubernetesVersion,
+		b.Shoot.KubernetesVersion,
+		b.SecretsManager,
+		"",
+		b.Shoot.GetInfo().Spec.Kubernetes.KubeAPIServer,
+		b.computeKubeAPIServerAutoscalingConfig(),
+		vpnConfig,
+		v1beta1constants.PriorityClassNameShootControlPlane500,
+		b.Shoot.IsWorkerless,
+		b.Shoot.RunsControlPlane(),
+		b.ShootUsesIstioTLSTermination(),
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+}
+
+func (b *Botanist) computeKubeAPIServerAutoscalingConfig() kubeapiserver.AutoscalingConfig {
+	var (
+		scaleDownDisabled = false
+		// kube-apiserver is a control plane component of type "server".
+		// The HA webhook sets at least 2 replicas to components of type "server" (w/o HA or with w/ HA).
+		// Ref https://github.com/gardener/gardener/blob/master/docs/development/high-availability-of-components.md#control-plane-components.
+		// That's why minReplicas is set to 2.
+		minReplicas int32 = 2
+		maxReplicas int32 = 6
+		minAllowed  corev1.ResourceList
+	)
+
+	if apiServerConfig := b.Shoot.GetInfo().Spec.Kubernetes.KubeAPIServer; apiServerConfig != nil && apiServerConfig.Autoscaling != nil {
+		minAllowed = apiServerConfig.Autoscaling.MinAllowed
+	}
+	if v1beta1helper.IsHAControlPlaneConfigured(b.Shoot.GetInfo()) {
+		minReplicas = 3
+	}
+	if metav1.HasAnnotation(b.Shoot.GetInfo().ObjectMeta, v1beta1constants.ShootAlphaControlPlaneScaleDownDisabled) {
+		minReplicas = 4
+		scaleDownDisabled = true
+	}
+
+	return kubeapiserver.AutoscalingConfig{
+		APIServerResources: corev1.ResourceRequirements{
+			Requests: kubernetesutils.MaximumResourcesFromResourceList(
+				corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("250m"),
+					corev1.ResourceMemory: resource.MustParse("500Mi"),
+				},
+				minAllowed,
+			),
+		},
+		MinReplicas:       minReplicas,
+		MaxReplicas:       maxReplicas,
+		ScaleDownDisabled: scaleDownDisabled,
+		MinAllowed:        minAllowed,
+	}
+}
+
+func (b *Botanist) computeKubeAPIServerServerCertificateConfig() kubeapiserver.ServerCertificateConfig {
+	var (
+		ipAddresses = []net.IP{}
+		dnsNames    = []string{
+			b.Shoot.GetInfo().Status.TechnicalID,
+		}
+	)
+
+	if b.Shoot.Networks != nil {
+		ipAddresses = append(ipAddresses, b.Shoot.Networks.APIServer...)
+	}
+
+	if b.Shoot.InternalClusterDomain != nil {
+		dnsNames = append(dnsNames, v1beta1helper.GetAPIServerDomain(*b.Shoot.InternalClusterDomain))
+	}
+
+	if b.Shoot.ExternalClusterDomain != nil {
+		dnsNames = append(dnsNames, *(b.Shoot.GetInfo().Spec.DNS.Domain), v1beta1helper.GetAPIServerDomain(*b.Shoot.ExternalClusterDomain))
+	}
+
+	return kubeapiserver.ServerCertificateConfig{
+		ExtraIPAddresses: ipAddresses,
+		ExtraDNSNames:    dnsNames,
+	}
+}
+
+func (b *Botanist) computeKubeAPIServerSNIConfig() kubeapiserver.SNIConfig {
+	var config kubeapiserver.SNIConfig
+
+	if b.ShootUsesDNS() {
+		config.Enabled = true
+		config.AdvertiseAddress = b.APIServerClusterIP
+	}
+
+	// Add control plane wildcard certificate to TLS SNI config if it is available.
+	if b.ControlPlaneWildcardCert != nil {
+		config.TLS = append(config.TLS, kubeapiserver.TLSSNIConfig{SecretName: &b.ControlPlaneWildcardCert.Name, DomainPatterns: []string{b.ComputeKubeAPIServerHost()}})
+	}
+
+	return config
+}
+
+// DeployKubeAPIServer deploys the Kubernetes API server.
+func (b *Botanist) DeployKubeAPIServer(ctx context.Context) error {
+	externalHostname := b.Shoot.ComputeOutOfClusterAPIServerAddress(true)
+	serviceAccountConfig, err := b.computeKubeAPIServerServiceAccountConfig(externalHostname)
+	if err != nil {
+		return err
+	}
+
+	caSecret, found := b.SecretsManager.Get(v1beta1constants.SecretNameCACluster)
+	if !found {
+		return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameCACluster)
+	}
+
+	kubeconfig, err := runtime.Encode(clientcmdlatest.Codec, kubernetesutils.NewKubeconfig(
+		"authorization-webhook",
+		clientcmdv1.Cluster{
+			Server:                   fmt.Sprintf("https://%s/webhooks/auth/nodeagent", resourcemanagerconstants.ServiceName),
+			CertificateAuthorityData: caSecret.Data[secretsutils.DataKeyCertificateBundle],
+		},
+		clientcmdv1.AuthInfo{},
+	))
+	if err != nil {
+		return fmt.Errorf("failed generating authorization webhook kubeconfig: %w", err)
+	}
+
+	b.Shoot.Components.ControlPlane.KubeAPIServer.AppendAuthorizationWebhook(
+		kubeapiserver.AuthorizationWebhook{
+			Name:       "node-agent-authorizer",
+			Kubeconfig: kubeconfig,
+			WebhookConfiguration: apiserverv1beta1.WebhookConfiguration{
+				// Set TTL to a very low value since it cannot be set to 0 because of defaulting.
+				// See https://github.com/kubernetes/apiserver/blob/3658357fea9fa8b36173d072f2d548f135049e05/pkg/apis/apiserver/v1beta1/defaults.go#L29-L36
+				// TODO(rfranzke): Use `Cache{Una,A}uthorizedRequests` instead of `AuthorizedTTL` and
+				//  `UnauthorizedTTL` once Kubernetes 1.34 is the lowest supported version.
+				//  More info: https://github.com/kubernetes/kubernetes/pull/129237
+				AuthorizedTTL:                            metav1.Duration{Duration: 1 * time.Nanosecond},
+				UnauthorizedTTL:                          metav1.Duration{Duration: 1 * time.Nanosecond},
+				Timeout:                                  metav1.Duration{Duration: 10 * time.Second},
+				FailurePolicy:                            apiserverv1beta1.FailurePolicyDeny,
+				SubjectAccessReviewVersion:               "v1",
+				MatchConditionSubjectAccessReviewVersion: "v1",
+				MatchConditions: []apiserverv1beta1.WebhookMatchCondition{{
+					// Only intercept request node-agents
+					Expression: fmt.Sprintf("'%s' in request.groups", v1beta1constants.NodeAgentsGroup),
+				}},
+			},
+		}, b.Logger)
+
+	var seedPods *net.IPNet
+	if b.Seed != nil && b.Seed.GetInfo().Spec.Networks.Pods != "" {
+		_, seedPods, err = net.ParseCIDR(b.Seed.GetInfo().Spec.Networks.Pods)
+		if err != nil {
+			return fmt.Errorf("failed to parse seed pod network CIDR %q: %w", b.Seed.GetInfo().Spec.Networks.Pods, err)
+		}
+	}
+
+	if err := shared.DeployKubeAPIServer(
+		ctx,
+		b.SeedClientSet.Client(),
+		b.Shoot.ControlPlaneNamespace,
+		b.Shoot.Components.ControlPlane.KubeAPIServer,
+		serviceAccountConfig,
+		b.computeKubeAPIServerServerCertificateConfig(),
+		b.computeKubeAPIServerSNIConfig(),
+		externalHostname,
+		b.Shoot.Networks.Nodes,
+		b.Shoot.Networks.Services,
+		b.Shoot.Networks.Pods,
+		seedPods,
+		b.Shoot.ResourcesToEncrypt,
+		b.Shoot.EncryptedResources,
+		b.Shoot.EncryptionProviderToUse,
+		v1beta1helper.GetShootETCDEncryptionKeyRotationPhase(b.Shoot.GetInfo().Status.Credentials),
+		b.Shoot.HibernationEnabled,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (b *Botanist) computeKubeAPIServerServiceAccountConfig(externalHostname string) (kubeapiserver.ServiceAccountConfig, error) {
+	var config *gardencorev1beta1.ServiceAccountConfig
+	if b.Shoot.GetInfo().Spec.Kubernetes.KubeAPIServer != nil && b.Shoot.GetInfo().Spec.Kubernetes.KubeAPIServer.ServiceAccountConfig != nil {
+		config = b.Shoot.GetInfo().Spec.Kubernetes.KubeAPIServer.ServiceAccountConfig.DeepCopy()
+	}
+
+	shouldManageIssuer := v1beta1helper.HasManagedIssuer(b.Shoot.GetInfo())
+	canManageIssuer := b.Shoot.ServiceAccountIssuerHostname != nil
+	if shouldManageIssuer && !canManageIssuer {
+		return kubeapiserver.ServiceAccountConfig{}, errors.New("shoot requires managed issuer, but gardener does not have shoot service account hostname configured")
+	}
+
+	var jwksURI *string
+	if shouldManageIssuer && canManageIssuer {
+		if config == nil {
+			config = &gardencorev1beta1.ServiceAccountConfig{}
+		}
+		config.Issuer = new(gardenerutils.ComputeManagedServiceAccountIssuerURL(*b.Shoot.ServiceAccountIssuerHostname, b.Garden.Project.Name, string(b.Shoot.GetInfo().UID)))
+		jwksURI = new(gardenerutils.ComputeManagedServiceAccountIssuerURL(*b.Shoot.ServiceAccountIssuerHostname, b.Garden.Project.Name, string(b.Shoot.GetInfo().UID)) + "/jwks")
+	}
+
+	serviceAccountConfig := kubeapiserver.ComputeKubeAPIServerServiceAccountConfig(
+		config,
+		externalHostname,
+		v1beta1helper.GetShootServiceAccountKeyRotationPhase(b.Shoot.GetInfo().Status.Credentials),
+	)
+	serviceAccountConfig.JWKSURI = jwksURI
+
+	return serviceAccountConfig, nil
+}
+
+// DeleteKubeAPIServer deletes the kube-apiserver deployment in the Seed cluster which holds the Shoot's control plane.
+func (b *Botanist) DeleteKubeAPIServer(ctx context.Context) error {
+	// invalidate shoot client here before deleting API server
+	if err := b.ShootClientMap.InvalidateClient(keys.ForShoot(b.Shoot.GetInfo())); err != nil {
+		return err
+	}
+	b.ShootClientSet = nil
+
+	b.Shoot.Components.ControlPlane.KubeAPIServer.SetSNIConfig(b.computeKubeAPIServerSNIConfig())
+
+	return b.Shoot.Components.ControlPlane.KubeAPIServer.Destroy(ctx)
+}
+
+// WakeUpKubeAPIServer creates a service and ensures API Server is scaled up
+func (b *Botanist) WakeUpKubeAPIServer(ctx context.Context) error {
+	if err := b.Shoot.Components.ControlPlane.KubeAPIServerService.Deploy(ctx); err != nil {
+		return err
+	}
+	if err := b.Shoot.Components.ControlPlane.KubeAPIServerService.Wait(ctx); err != nil {
+		return err
+	}
+	if err := b.DeployKubeAPIServer(ctx); err != nil {
+		return err
+	}
+	if b.ShootUsesDNS() {
+		if err := b.DeployKubeAPIServerSNI(ctx); err != nil {
+			return err
+		}
+	}
+	if err := kubernetesutils.ScaleDeployment(ctx, b.SeedClientSet.Client(), client.ObjectKey{Namespace: b.Shoot.ControlPlaneNamespace, Name: v1beta1constants.DeploymentNameKubeAPIServer}, 1); err != nil {
+		return err
+	}
+	return b.Shoot.Components.ControlPlane.KubeAPIServer.Wait(ctx)
+}
+
+// ScaleKubeAPIServerToOne scales kube-apiserver replicas to one.
+func (b *Botanist) ScaleKubeAPIServerToOne(ctx context.Context) error {
+	b.Shoot.Components.ControlPlane.KubeAPIServer.SetAutoscalingReplicas(new(int32(1)))
+	return kubernetesutils.ScaleDeployment(ctx, b.SeedClientSet.Client(), client.ObjectKey{Namespace: b.Shoot.ControlPlaneNamespace, Name: v1beta1constants.DeploymentNameKubeAPIServer}, 1)
+}

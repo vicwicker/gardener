@@ -1,0 +1,408 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package customverbauthorizer
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+
+	rbacv1 "k8s.io/api/rbac/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apiserver/pkg/admission"
+	"k8s.io/apiserver/pkg/authentication/serviceaccount"
+	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
+
+	"github.com/gardener/gardener/pkg/api/core/helper"
+	"github.com/gardener/gardener/pkg/apis/core"
+	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
+	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
+	plugin "github.com/gardener/gardener/plugin/pkg"
+)
+
+const (
+	// CustomVerbModifyProjectTolerationsWhitelist is a constant for the custom verb that allows modifying the
+	// `.spec.tolerations.whitelist` field in `Project` resources.
+	CustomVerbModifyProjectTolerationsWhitelist = "modify-spec-tolerations-whitelist"
+	// CustomVerbProjectManageMembers is a constant for the custom verb that allows to manage human users or
+	// groups subjects in the `.spec.members` field in `Project` resources.
+	CustomVerbProjectManageMembers = "manage-members"
+
+	// CustomVerbNamespacedCloudProfileModifyKubernetes is a constant for the custom verb that allows modifying the
+	// `.spec.kubernetes` field in `NamespacedCloudProfile` resources.
+	CustomVerbNamespacedCloudProfileModifyKubernetes = "modify-spec-kubernetes"
+	// CustomVerbNamespacedCloudProfileModifyMachineImages is a constant for the custom verb that allows modifying the
+	// `.spec.machineImages` field in `NamespacedCloudProfile` resources.
+	CustomVerbNamespacedCloudProfileModifyMachineImages = "modify-spec-machineimages"
+	// CustomVerbNamespacedCloudProfileModifyProviderConfig is a constant for the custom verb that allows modifying the
+	// `.spec.providerConfig` field in `NamespacedCloudProfile` resources.
+	CustomVerbNamespacedCloudProfileModifyProviderConfig = "modify-spec-providerconfig"
+
+	// CustomVerbShootMarkSelfHosted is a constant for the custom verb that allows setting the
+	// `.spec.provider.workers[].controlPlane` field in the `Shoot` spec which marks it as 'self-hosted shoot cluster'.
+	CustomVerbShootMarkSelfHosted = "mark-self-hosted"
+)
+
+// Register registers a plugin.
+func Register(plugins *admission.Plugins) {
+	plugins.Register(plugin.PluginNameCustomVerbAuthorizer, NewFactory)
+}
+
+// NewFactory creates a new PluginFactory.
+func NewFactory(_ io.Reader) (admission.Interface, error) {
+	return New()
+}
+
+// CustomVerbAuthorizer contains an admission handler and listers.
+type CustomVerbAuthorizer struct {
+	*admission.Handler
+
+	authorizer authorizer.Authorizer
+	readyFunc  admission.ReadyFunc
+}
+
+var (
+	_          = admissioninitializer.WantsAuthorizer(&CustomVerbAuthorizer{})
+	_          = admissioninitializer.WantsCoreInformerFactory(&CustomVerbAuthorizer{})
+	readyFuncs []admission.ReadyFunc
+)
+
+// New creates a new CustomVerbAuthorizer admission plugin.
+func New() (*CustomVerbAuthorizer, error) {
+	return &CustomVerbAuthorizer{
+		Handler: admission.NewHandler(admission.Create, admission.Update),
+	}, nil
+}
+
+// AssignReadyFunc assigns the ready function to the admission handler.
+func (c *CustomVerbAuthorizer) AssignReadyFunc(f admission.ReadyFunc) {
+	c.readyFunc = f
+	c.SetReadyFunc(f)
+}
+
+// SetCoreInformerFactory gets Lister from SharedInformerFactory.
+func (c *CustomVerbAuthorizer) SetCoreInformerFactory(f gardencoreinformers.SharedInformerFactory) {
+	cloudProfileInformer := f.Core().V1beta1().CloudProfiles()
+
+	readyFuncs = append(readyFuncs, cloudProfileInformer.Informer().HasSynced)
+}
+
+// SetAuthorizer gets the authorizer.
+func (c *CustomVerbAuthorizer) SetAuthorizer(authorizer authorizer.Authorizer) {
+	c.authorizer = authorizer
+}
+
+// ValidateInitialization checks whether the plugin was correctly initialized.
+func (c *CustomVerbAuthorizer) ValidateInitialization() error {
+	return nil
+}
+
+var _ admission.ValidationInterface = (*CustomVerbAuthorizer)(nil)
+
+// Validate makes admissions decisions based on custom verbs.
+func (c *CustomVerbAuthorizer) Validate(ctx context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {
+	// Wait until the caches have been synced
+	if c.readyFunc == nil {
+		c.AssignReadyFunc(func() bool {
+			for _, readyFunc := range readyFuncs {
+				if !readyFunc() {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	if !c.WaitForReady() {
+		return admission.NewForbidden(a, errors.New("not yet ready to handle request"))
+	}
+
+	switch a.GetKind().GroupKind() {
+	case core.Kind("NamespacedCloudProfile"):
+		return c.admitNamespacedCloudProfiles(ctx, a)
+	case core.Kind("Project"):
+		return c.admitProjects(ctx, a)
+	case core.Kind("Shoot"):
+		return c.admitShoots(ctx, a)
+	}
+
+	return nil
+}
+
+func (c *CustomVerbAuthorizer) admitProjects(ctx context.Context, a admission.Attributes) error {
+	var (
+		oldObj = &core.Project{}
+		obj    *core.Project
+		ok     bool
+	)
+
+	obj, ok = a.GetObject().(*core.Project)
+	if !ok {
+		return apierrors.NewBadRequest("could not convert resource into Project object")
+	}
+
+	if a.GetOperation() == admission.Update {
+		oldObj, ok = a.GetOldObject().(*core.Project)
+		if !ok {
+			return apierrors.NewBadRequest("could not convert old resource into Project object")
+		}
+	}
+
+	if mustCheckProjectTolerationsWhitelist(oldObj.Spec.Tolerations, obj.Spec.Tolerations) {
+		return c.authorize(ctx, a, CustomVerbModifyProjectTolerationsWhitelist, "modify .spec.tolerations.whitelist")
+	}
+
+	if mustCheckProjectMembers(oldObj.Spec.Members, obj.Spec.Members, obj.Spec.Owner, a.GetUserInfo()) {
+		return c.authorize(ctx, a, CustomVerbProjectManageMembers, "manage human users or groups in .spec.members")
+	}
+
+	if mustCheckProjectOwner(oldObj.Spec.Owner, obj.Spec.Owner, a.GetUserInfo()) {
+		return c.authorize(ctx, a, CustomVerbProjectManageMembers, "manage owner in .spec.owner")
+	}
+
+	return nil
+}
+
+func (c *CustomVerbAuthorizer) admitNamespacedCloudProfiles(ctx context.Context, a admission.Attributes) error {
+	var (
+		oldObj = &core.NamespacedCloudProfile{}
+		obj    *core.NamespacedCloudProfile
+		ok     bool
+	)
+
+	obj, ok = a.GetObject().(*core.NamespacedCloudProfile)
+	if !ok {
+		return apierrors.NewBadRequest("could not convert resource into NamespacedCloudProfile object")
+	}
+
+	if a.GetOperation() == admission.Update {
+		oldObj, ok = a.GetOldObject().(*core.NamespacedCloudProfile)
+		if !ok {
+			return apierrors.NewBadRequest("could not convert old resource into NamespacedCloudProfile object")
+		}
+	}
+
+	if mustCheckKubernetes(oldObj.Spec.Kubernetes, obj.Spec.Kubernetes) {
+		err := c.authorize(ctx, a, CustomVerbNamespacedCloudProfileModifyKubernetes, "modify .spec.kubernetes")
+		if err != nil {
+			return err
+		}
+	}
+
+	if mustCheckMachineImages(oldObj.Spec.MachineImages, obj.Spec.MachineImages) {
+		err := c.authorize(ctx, a, CustomVerbNamespacedCloudProfileModifyMachineImages, "modify .spec.machineImages")
+		if err != nil {
+			return err
+		}
+	}
+
+	if mustCheckProviderConfig(oldObj.Spec.ProviderConfig, obj.Spec.ProviderConfig) {
+		err := c.authorize(ctx, a, CustomVerbNamespacedCloudProfileModifyProviderConfig, "modify .spec.providerConfig")
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *CustomVerbAuthorizer) admitShoots(ctx context.Context, a admission.Attributes) error {
+	var (
+		oldObj = &core.Shoot{}
+		obj    *core.Shoot
+		ok     bool
+	)
+
+	obj, ok = a.GetObject().(*core.Shoot)
+	if !ok {
+		return apierrors.NewBadRequest("could not convert resource into Shoot object")
+	}
+
+	if a.GetOperation() == admission.Update {
+		oldObj, ok = a.GetOldObject().(*core.Shoot)
+		if !ok {
+			return apierrors.NewBadRequest("could not convert old resource into Shoot object")
+		}
+	}
+
+	if mustCheckIfShootIsSelfHosted(oldObj, obj) {
+		return c.authorize(ctx, a, CustomVerbShootMarkSelfHosted, "modify .spec.provider.workers[].controlPlane")
+	}
+
+	return nil
+}
+
+func (c *CustomVerbAuthorizer) authorize(ctx context.Context, a admission.Attributes, verb, operation string) error {
+	var (
+		userInfo  = a.GetUserInfo()
+		resource  = a.GetResource()
+		namespace = a.GetNamespace()
+		name      = a.GetName()
+	)
+
+	decision, _, err := c.authorizer.Authorize(ctx, authorizer.AttributesRecord{
+		User:            userInfo,
+		APIGroup:        resource.Group,
+		Resource:        resource.Resource,
+		Namespace:       namespace,
+		Name:            name,
+		Verb:            verb,
+		ResourceRequest: true,
+	})
+	if err != nil {
+		return err
+	}
+	if decision != authorizer.DecisionAllow {
+		return admission.NewForbidden(a, fmt.Errorf("user %q is not allowed to %s for %q", userInfo.GetName(), operation, resource.Resource))
+	}
+
+	return nil
+}
+
+func mustCheckProjectTolerationsWhitelist(oldTolerations, tolerations *core.ProjectTolerations) bool {
+	if apiequality.Semantic.DeepEqual(oldTolerations, tolerations) {
+		return false
+	}
+	if oldTolerations == nil && tolerations != nil {
+		return !apiequality.Semantic.DeepEqual(nil, tolerations.Whitelist)
+	}
+	if oldTolerations != nil && tolerations == nil {
+		return !apiequality.Semantic.DeepEqual(oldTolerations.Whitelist, nil)
+	}
+	return !apiequality.Semantic.DeepEqual(oldTolerations.Whitelist, tolerations.Whitelist)
+}
+
+func mustCheckProjectOwner(oldOwner *rbacv1.Subject, owner *rbacv1.Subject, userInfo user.Info) bool {
+	// allow to set owner initially
+	if oldOwner == nil && owner != nil {
+		return false
+	}
+
+	// allow owner to change owner
+	if userIsOwner(userInfo, oldOwner) {
+		return false
+	}
+
+	return !apiequality.Semantic.DeepEqual(oldOwner, owner)
+}
+
+func mustCheckProjectMembers(oldMembers, members []core.ProjectMember, owner *rbacv1.Subject, userInfo user.Info) bool {
+	if apiequality.Semantic.DeepEqual(oldMembers, members) {
+		return false
+	}
+
+	// If the user submitting this admission request is the owner then it will be/is bound to the `manage-members`
+	// custom verb anyway, so let's allow him to add/remove human users.
+	if userIsOwner(userInfo, owner) {
+		return false
+	}
+
+	var oldNonServiceAccounts, newNonServiceAccounts = findNonServiceAccountsWithRoles(oldMembers), findNonServiceAccountsWithRoles(members)
+	// Remove owner subject from `members` list to always allow it to be added
+	if owner != nil && !isServiceAccountSubject(*owner) {
+		ownerKey := memberSubjectKey(*owner)
+		removeEntriesWithMember(oldNonServiceAccounts, ownerKey)
+		removeEntriesWithMember(newNonServiceAccounts, ownerKey)
+	}
+
+	return !oldNonServiceAccounts.Equal(newNonServiceAccounts)
+}
+
+// membership is a data structure representing project member with one of its roles.
+// Project members with multiple roles can create a membership for each role.
+// Members with no roles associated, can create a membership with empty role.
+type membership struct {
+	member string
+	role   string
+}
+
+func findNonServiceAccountsWithRoles(members []core.ProjectMember) sets.Set[membership] {
+	result := sets.New[membership]()
+
+	for _, member := range members {
+		if !isServiceAccountSubject(member.Subject) {
+			memberKey := memberSubjectKey(member.Subject)
+			// Create a unique key that includes both subject and roles
+			for _, role := range member.Roles {
+				result.Insert(membership{member: memberKey, role: role})
+			}
+			// If no roles are specified, still create an entry with empty role
+			if len(member.Roles) == 0 {
+				result.Insert(membership{member: memberKey, role: ""})
+			}
+		}
+	}
+
+	return result
+}
+
+func isServiceAccountSubject(subject rbacv1.Subject) bool {
+	// Service account groups, e.g. (subject.Kind == "Group" && strings.HasPrefix(subject.Name, serviceaccount.ServiceAccountGroupPrefix))
+	// are not considered as service account subjects, otherwise it would allow project admins to manage also service account groups
+	// which is not allowed (see docs/usage/project/projects.md#user-access-management).
+	var (
+		isServiceAccount              = subject.APIGroup == "" && subject.Kind == rbacv1.ServiceAccountKind
+		isServiceAccountAsUserSubject = subject.APIGroup == rbacv1.GroupName && subject.Kind == rbacv1.UserKind &&
+			strings.HasPrefix(subject.Name, serviceaccount.ServiceAccountUsernamePrefix)
+	)
+
+	return isServiceAccount || isServiceAccountAsUserSubject
+}
+
+func memberSubjectKey(subject rbacv1.Subject) string {
+	return subject.Kind + subject.Name
+}
+
+func removeEntriesWithMember(set sets.Set[membership], member string) {
+	for membership := range set {
+		if membership.member == member {
+			set.Delete(membership)
+		}
+	}
+}
+
+func userIsOwner(userInfo user.Info, owner *rbacv1.Subject) bool {
+	if owner == nil { // no explicit owner is set, i.e., the creator will be defaulted to the owner
+		return true
+	}
+
+	switch owner.Kind {
+	case rbacv1.ServiceAccountKind:
+		namespace, name, err := serviceaccount.SplitUsername(userInfo.GetName())
+		if err != nil {
+			return false
+		}
+		return owner.Name == name && owner.Namespace == namespace
+
+	case rbacv1.UserKind:
+		return owner.Name == userInfo.GetName()
+
+	case rbacv1.GroupKind:
+		return sets.New(userInfo.GetGroups()...).Has(owner.Name)
+	}
+
+	return false
+}
+
+func mustCheckKubernetes(oldKubernetes, kubernetes *core.KubernetesSettings) bool {
+	return !apiequality.Semantic.DeepEqual(oldKubernetes, kubernetes)
+}
+
+func mustCheckMachineImages(oldMachineImages, machineImages []core.MachineImage) bool {
+	return !apiequality.Semantic.DeepEqual(oldMachineImages, machineImages)
+}
+
+func mustCheckProviderConfig(oldProviderConfig, providerConfig *runtime.RawExtension) bool {
+	return !apiequality.Semantic.DeepEqual(oldProviderConfig, providerConfig)
+}
+
+func mustCheckIfShootIsSelfHosted(oldShoot, shoot *core.Shoot) bool {
+	return !apiequality.Semantic.DeepEqual(helper.ControlPlaneWorkerPoolForShoot(oldShoot.Spec.Provider.Workers), helper.ControlPlaneWorkerPoolForShoot(shoot.Spec.Provider.Workers))
+}

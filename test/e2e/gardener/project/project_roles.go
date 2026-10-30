@@ -1,0 +1,175 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package project
+
+import (
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	"github.com/gardener/gardener/pkg/utils"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+	. "github.com/gardener/gardener/test/e2e"
+	. "github.com/gardener/gardener/test/e2e/gardener"
+)
+
+var _ = Describe("Project Tests", Ordered, Label("Project", "default"), PriorityFast, func() {
+	var (
+		tc = NewProjectContext()
+
+		testUserName         string
+		testUserClient       client.Client
+		testEndpoint         *corev1.Endpoints
+		extensionClusterRole *rbacv1.ClusterRole
+	)
+
+	BeforeAll(func() {
+		tc.Init()
+
+		projectName := "test-" + utils.ComputeSHA256Hex([]byte(CurrentSpecReport().LeafNodeLocation.String()))[:5]
+
+		project := &gardencorev1beta1.Project{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: projectName,
+			},
+			Spec: gardencorev1beta1.ProjectSpec{
+				Namespace: new("garden-" + projectName),
+			},
+		}
+
+		tc.SetProject(project)
+
+		DeferCleanup(func(ctx SpecContext) {
+			Eventually(func(g Gomega) {
+				if testEndpoint != nil {
+					g.Expect(client.IgnoreNotFound(tc.GardenClient.Delete(ctx, testEndpoint))).To(Succeed())
+				}
+
+				if extensionClusterRole != nil {
+					g.Expect(client.IgnoreNotFound(tc.GardenClient.Delete(ctx, extensionClusterRole))).To(Succeed())
+				}
+
+				g.Expect(client.IgnoreNotFound(gardenerutils.ConfirmDeletion(ctx, tc.GardenClient, tc.Project))).To(Succeed())
+				g.Expect(client.IgnoreNotFound(tc.GardenClient.Delete(ctx, tc.Project))).To(Succeed())
+			}).Should(Succeed())
+		}, NodeTimeout(time.Minute))
+	})
+
+	ItShouldCreateProject(tc)
+	ItShouldWaitForProjectToBeReconciledAndReady(tc)
+
+	It("Initialize test user", func(ctx SpecContext) {
+		testUserName = tc.Project.Name
+		testUserConfig := rest.CopyConfig(tc.GardenClientSet.RESTConfig())
+		// use impersonation to simulate different user
+		// TODO: use a ServiceAccount instead
+		testUserConfig.Impersonate = rest.ImpersonationConfig{
+			UserName: testUserName,
+		}
+
+		Eventually(ctx, func(g Gomega) {
+			var err error
+			testUserClient, err = client.New(testUserConfig, client.Options{})
+			g.Expect(err).NotTo(HaveOccurred())
+		}).Should(Succeed())
+	}, SpecTimeout(time.Minute))
+
+	It("Create test Endpoint", func(ctx SpecContext) {
+		testEndpoint = &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "test-",
+			Namespace:    *tc.Project.Spec.Namespace,
+		}}
+
+		Eventually(ctx, func() error {
+			return tc.GardenClient.Create(ctx, testEndpoint)
+		}).Should(Succeed())
+	}, SpecTimeout(time.Minute))
+
+	It("Verify non-member doesn't have access to Endpoints", func(ctx SpecContext) {
+		Consistently(func(g Gomega) {
+			g.Expect(testUserClient.Get(ctx, client.ObjectKeyFromObject(testEndpoint), testEndpoint)).To(BeForbiddenError())
+		}).Should(Succeed())
+	}, SpecTimeout(time.Minute))
+
+	It("Create Extension Role", func(ctx SpecContext) {
+		// use dedicated role name per test run
+		extensionClusterRole = &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "gardener.cloud:extension:aggregate-to-test",
+				Labels: map[string]string{
+					"rbac.gardener.cloud/aggregate-to-extension-role": "e2e-test",
+				},
+			},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"endpoints"},
+				Verbs:     []string{"get"},
+			}},
+		}
+
+		Eventually(ctx, func() error {
+			return tc.GardenClient.Create(ctx, extensionClusterRole)
+		}).Should(Succeed())
+	}, SpecTimeout(time.Minute))
+
+	It("Add new member with extension role", func(ctx SpecContext) {
+		Eventually(ctx, tc.GardenKomega.Update(tc.Project, func() {
+			tc.Project.Spec.Members = append(tc.Project.Spec.Members, gardencorev1beta1.ProjectMember{
+				Subject: rbacv1.Subject{
+					APIGroup: rbacv1.GroupName,
+					Kind:     rbacv1.UserKind,
+					Name:     testUserName,
+				},
+				Role: "extension:e2e-test",
+			})
+		})).Should(Succeed())
+	}, SpecTimeout(time.Minute))
+
+	It("Verify new member has access to Endpoints", func(ctx SpecContext) {
+		Eventually(func(g Gomega) {
+			g.Expect(testUserClient.Get(ctx, client.ObjectKeyFromObject(testEndpoint), testEndpoint)).To(Succeed())
+		}).Should(Succeed())
+	}, SpecTimeout(time.Minute))
+
+	Describe("Self-hosted shoot extension ServiceAccount restrictions", Ordered, func() {
+		It("Verify non-gardenlet users cannot create a ServiceAccount with the reserved prefix", func(ctx SpecContext) {
+			reservedSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      "extension-shoot--test--foo",
+				Namespace: *tc.Project.Spec.Namespace,
+			}}
+
+			Expect(testUserClient.Create(ctx, reservedSA)).To(BeForbiddenError())
+		}, SpecTimeout(time.Minute))
+
+		It("Verify non-gardenlet users cannot request a token for a reserved-prefix ServiceAccount", func(ctx SpecContext) {
+			// The webhook fires before the API server checks whether the ServiceAccount exists,
+			// so we can use a non-existent SA to test the token subresource restriction.
+			reservedSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      "extension-shoot--test--nonexistent",
+				Namespace: *tc.Project.Spec.Namespace,
+			}}
+
+			tokenRequest := &authenticationv1.TokenRequest{
+				Spec: authenticationv1.TokenRequestSpec{
+					ExpirationSeconds: new(int64(600)),
+				},
+			}
+
+			Expect(testUserClient.SubResource("token").Create(ctx, reservedSA, tokenRequest)).To(BeForbiddenError())
+		}, SpecTimeout(time.Minute))
+	})
+
+	ItShouldDeleteProject(tc)
+	ItShouldWaitForProjectToBeDeleted(tc)
+})

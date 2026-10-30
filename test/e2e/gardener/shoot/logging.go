@@ -1,0 +1,83 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package shoot
+
+import (
+	"k8s.io/apimachinery/pkg/labels"
+	utilrand "k8s.io/apimachinery/pkg/util/rand"
+
+	. "github.com/gardener/gardener/test/e2e/gardener"
+	"github.com/gardener/gardener/test/e2e/gardener/seed"
+	. "github.com/gardener/gardener/test/e2e/gardener/shoot/internal/observability"
+)
+
+var (
+	valiLabels = map[string]string{
+		"app":  "vali",
+		"role": "logging",
+	}
+	randomLength   = 11
+	shootLogsCount = 100
+	loggerAppName  = "logger-app.yaml.tpl"
+)
+
+// ShootLogging checks that the logging stack for shoots works as expected.
+// It deploys two logger applications: one with Gardener labels and one without.
+// It's expected that the one with Gardener labels has its logs collected in Vali by
+// the log shipper (valitail). While the one without label does not.
+// Function is exposed so that it can be called from the context of another
+// e2e test. This is done so that we can minimize the number of shoot clusters
+// that we create.
+func ShootLogging(tc *ShootContext) {
+	ItShouldWaitForShootToBeReconciledAndHealthy(tc)
+	ItShouldInitializeShootClient(tc)
+	ItShouldGetResponsibleSeed(tc)
+	seed.ItShouldInitializeSeedClient(tc.SeedContext)
+	ItShouldComputeControlPlaneNamespace(tc)
+
+	gardenerLoggerAppLabel := "gardener-logger"
+	gardenerLoggerName := "gardener-logger" + "-" + utilrand.String(randomLength)
+	nonGardenerLoggerAppLabel := "non-gardener-logger"
+	nonGardenerLoggerName := nonGardenerLoggerAppLabel + "-" + utilrand.String(randomLength)
+
+	loggerParams := map[string]any{
+		"LoggerName":          gardenerLoggerName,
+		"HelmDeployNamespace": "kube-system",
+		"AppLabel":            gardenerLoggerAppLabel,
+		"LogsCount":           shootLogsCount,
+		"LogsDuration":        "20s",
+		"AdditionalLabels": map[string]string{
+			"origin":                              "gardener",
+			"gardener.cloud/role":                 "system-component",
+			"resources.gardener.cloud/managed-by": "gardener",
+		},
+	}
+	ItShouldRenderAndDeployTemplateToShoot(tc, loggerAppName, loggerParams)
+
+	loggerParams = map[string]any{
+		"LoggerName":          nonGardenerLoggerName,
+		"HelmDeployNamespace": "kube-system",
+		"AppLabel":            nonGardenerLoggerAppLabel,
+		"LogsCount":           shootLogsCount,
+		"LogsDuration":        "20s",
+	}
+	ItShouldRenderAndDeployTemplateToShoot(tc, loggerAppName, loggerParams)
+
+	gardenerLoggerLabels := labels.SelectorFromSet(map[string]string{
+		"app": gardenerLoggerAppLabel,
+	})
+	ItShouldWaitForPodsInShootToBeReady(tc, "kube-system", gardenerLoggerLabels)
+
+	nonGardenerLoggerLabels := labels.SelectorFromSet(map[string]string{
+		"app": nonGardenerLoggerAppLabel,
+	})
+	ItShouldWaitForPodsInShootToBeReady(tc, "kube-system", nonGardenerLoggerLabels)
+
+	ItShouldWaitForLogsCountWithLabelToBeInVali(tc, valiLabels, "pod_name", gardenerLoggerAppLabel+".*", shootLogsCount)
+	ItShouldWaitForLogsWithLabelToNotBeInVali(tc, valiLabels, "pod_name", nonGardenerLoggerAppLabel+".*")
+
+	ItShouldWaitForLogsWithLabelToBeInVali(tc, valiLabels, "unit", "containerd.service")
+	ItShouldWaitForLogsWithLabelToBeInVali(tc, valiLabels, "unit", "kubelet.service")
+}

@@ -1,0 +1,584 @@
+// SPDX-FileCopyrightText: Contributors to the Gardener project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package shoot_test
+
+import (
+	"context"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	gomegatypes "github.com/onsi/gomega/types"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	. "github.com/gardener/gardener/pkg/api/core/shoot"
+	"github.com/gardener/gardener/pkg/apis/core"
+)
+
+var _ = Describe("Warnings", func() {
+	Describe("#GetWarnings", func() {
+		var (
+			ctx                         = context.Background()
+			shoot                       *core.Shoot
+			credentialsRotationInterval = time.Hour
+		)
+
+		BeforeEach(func() {
+			shoot = &core.Shoot{
+				Spec: core.ShootSpec{
+					Kubernetes: core.Kubernetes{
+						Version: "1.31.1",
+					},
+					Provider: core.Provider{
+						Workers: []core.Worker{{Name: "test"}},
+					},
+				},
+			}
+		})
+
+		It("should return nil when shoot is nil", func() {
+			Expect(GetWarnings(ctx, nil, nil, credentialsRotationInterval, nil)).To(BeEmpty())
+		})
+
+		It("should return nil when shoot does not have any problematic configuration", func() {
+			Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(BeEmpty())
+		})
+
+		Context("credentials rotation", func() {
+			BeforeEach(func() {
+				shoot.CreationTimestamp = metav1.Time{Time: time.Now().Add(-credentialsRotationInterval * 2)}
+			})
+
+			It("should not return a warning when credentials rotation is due in case shoot is too young", func() {
+				shoot.CreationTimestamp = metav1.Now()
+				Expect(GetWarnings(ctx, shoot, shoot, credentialsRotationInterval, nil)).To(BeEmpty())
+			})
+
+			It("should return a warning when credentials rotation is due", func() {
+				Expect(GetWarnings(ctx, shoot, shoot, credentialsRotationInterval, nil)).To(ContainElement(ContainSubstring("you should consider rotating the shoot credentials")))
+			})
+
+			DescribeTable("warnings for specific credentials rotations",
+				func(matcher gomegatypes.GomegaMatcher, mutateShoot func(*core.Shoot), mutateRotation func(rotation *core.ShootCredentialsRotation)) {
+					if mutateShoot != nil {
+						mutateShoot(shoot)
+					}
+
+					rotation := &core.ShootCredentialsRotation{
+						CertificateAuthorities: &core.CARotation{},
+						SSHKeypair:             &core.ShootSSHKeypairRotation{},
+						Observability:          &core.ObservabilityRotation{},
+						ServiceAccountKey:      &core.ServiceAccountKeyRotation{},
+						ETCDEncryptionKey:      &core.ETCDEncryptionKeyRotation{},
+					}
+					mutateRotation(rotation)
+					shoot.Status.Credentials = &core.ShootCredentials{Rotation: rotation}
+
+					Expect(GetWarnings(ctx, shoot, shoot, credentialsRotationInterval, nil)).To(matcher)
+				},
+
+				Entry("ca nil", ContainElement(ContainSubstring("you should consider rotating the certificate authorities")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.CertificateAuthorities = nil
+					},
+				),
+				Entry("ca last initiated too long ago", ContainElement(ContainSubstring("you should consider rotating the certificate authorities")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.CertificateAuthorities.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval * 2)}
+					},
+				),
+				Entry("ca last initiated not too long ago", Not(ContainElement(ContainSubstring("you should consider rotating the certificate authorities"))), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.CertificateAuthorities.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+					},
+				),
+				Entry("ca completion is due (never completed yet)", ContainElement(ContainSubstring("the certificate authorities rotation initiation was finished more than")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.CertificateAuthorities.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.CertificateAuthorities.LastCompletionTriggeredTime = nil
+					},
+				),
+				Entry("ca completion is due (current rotation not completed)", ContainElement(ContainSubstring("the certificate authorities rotation initiation was finished more than")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.CertificateAuthorities.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.CertificateAuthorities.LastCompletionTriggeredTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval)}
+					},
+				),
+				Entry("ca completion is not due (current rotation not completed)", Not(ContainElement(ContainSubstring("the certificate authorities rotation initiation was finished more than"))), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.CertificateAuthorities.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.CertificateAuthorities.LastCompletionTriggeredTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 3)}
+					},
+				),
+
+				Entry("etcdEncryptionKey nil", ContainElement(ContainSubstring("you should consider rotating the ETCD encryption key")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ETCDEncryptionKey = nil
+					},
+				),
+				Entry("etcdEncryptionKey last initiated too long ago", ContainElement(ContainSubstring("you should consider rotating the ETCD encryption key")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ETCDEncryptionKey.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval * 2)}
+					},
+				),
+				Entry("etcdEncryptionKey last initiated not too long ago", Not(ContainElement(ContainSubstring("you should consider rotating the ETCD encryption key"))), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ETCDEncryptionKey.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+					},
+				),
+				Entry("etcdEncryptionKey completion is due (never completed yet)", ContainElement(ContainSubstring("the ETCD encryption key rotation initiation was finished more than")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ETCDEncryptionKey.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.ETCDEncryptionKey.LastCompletionTriggeredTime = nil
+					},
+				),
+				Entry("etcdEncryptionKey completion is due (current rotation not completed)", ContainElement(ContainSubstring("the ETCD encryption key rotation initiation was finished more than")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ETCDEncryptionKey.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.ETCDEncryptionKey.LastCompletionTriggeredTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval)}
+					},
+				),
+				Entry("etcdEncryptionKey completion is not due (current rotation not completed)", Not(ContainElement(ContainSubstring("the ETCD encryption key rotation initiation was finished more than"))), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ETCDEncryptionKey.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.ETCDEncryptionKey.LastCompletionTriggeredTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 3)}
+					},
+				),
+
+				Entry("observability nil", ContainElement(ContainSubstring("you should consider rotating the observability passwords")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.Observability = nil
+					},
+				),
+				Entry("observability last initiated too long ago", ContainElement(ContainSubstring("you should consider rotating the observability passwords")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.Observability.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval * 2)}
+					},
+				),
+				Entry("observability last initiated too long ago but shoot purpose is testing", Not(ContainElement(ContainSubstring("you should consider rotating the observability passwords"))),
+					func(shoot *core.Shoot) {
+						p := core.ShootPurposeTesting
+						shoot.Spec.Purpose = &p
+					},
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.Observability.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval * 2)}
+					},
+				),
+				Entry("observability last initiated not too long ago", Not(ContainElement(ContainSubstring("you should consider rotating the observability passwords"))), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.Observability.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+					},
+				),
+
+				Entry("serviceAccountKey nil", ContainElement(ContainSubstring("you should consider rotating the ServiceAccount token signing key")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ServiceAccountKey = nil
+					},
+				),
+				Entry("serviceAccountKey last initiated too long ago", ContainElement(ContainSubstring("you should consider rotating the ServiceAccount token signing key")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ServiceAccountKey.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval * 2)}
+					},
+				),
+				Entry("serviceAccountKey last initiated not too long ago", Not(ContainElement(ContainSubstring("you should consider rotating the ServiceAccount token signing key"))), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ServiceAccountKey.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+					},
+				),
+				Entry("serviceAccountKey completion is due (never completed yet)", ContainElement(ContainSubstring("the ServiceAccount token signing key rotation initiation was finished more than")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ServiceAccountKey.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.ServiceAccountKey.LastCompletionTriggeredTime = nil
+					},
+				),
+				Entry("serviceAccountKey completion is due (current rotation not completed)", ContainElement(ContainSubstring("the ServiceAccount token signing key rotation initiation was finished more than")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ServiceAccountKey.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.ServiceAccountKey.LastCompletionTriggeredTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval)}
+					},
+				),
+				Entry("serviceAccountKey completion is not due (current rotation not completed)", Not(ContainElement(ContainSubstring("the ServiceAccount token signing key rotation initiation was finished more than"))), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.ServiceAccountKey.LastInitiationFinishedTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+						rotation.ServiceAccountKey.LastCompletionTriggeredTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 3)}
+					},
+				),
+
+				Entry("sshKeypair nil", ContainElement(ContainSubstring("you should consider rotating the SSH keypair")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.SSHKeypair = nil
+					},
+				),
+				Entry("sshKeypair last initiated too long ago", ContainElement(ContainSubstring("you should consider rotating the SSH keypair")), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.SSHKeypair.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval * 2)}
+					},
+				),
+				Entry("sshKeypair last initiated not too long ago", Not(ContainElement(ContainSubstring("you should consider rotating the SSH keypair"))), nil,
+					func(rotation *core.ShootCredentialsRotation) {
+						rotation.SSHKeypair.LastInitiationTime = &metav1.Time{Time: time.Now().Add(-credentialsRotationInterval / 2)}
+					},
+				),
+				Entry("ssh is disabled for shoot with workers", Not(ContainElement(ContainSubstring("you should consider rotating the SSH keypair"))), func(shoot *core.Shoot) {
+					shoot.Spec.Provider.WorkersSettings = &core.WorkersSettings{
+						SSHAccess: &core.SSHAccess{
+							Enabled: false,
+						},
+					}
+				}, func(rotation *core.ShootCredentialsRotation) {
+					rotation.SSHKeypair = nil
+				},
+				),
+				Entry("workerless shoot", Not(ContainElement(ContainSubstring("you should consider rotating the SSH keypair"))), func(shoot *core.Shoot) {
+					shoot.Spec.Provider.Workers = nil
+				}, func(rotation *core.ShootCredentialsRotation) {
+					rotation.SSHKeypair = nil
+				},
+				),
+			)
+		})
+
+		It("should warn when rotate-etcd-encryption-key-start operation annotation is set", func() {
+			shoot.Annotations = map[string]string{
+				"gardener.cloud/operation": "rotate-etcd-encryption-key-start",
+			}
+			Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(ContainElement(Equal("you are setting the operation annotation to rotate-etcd-encryption-key-start. This annotation has been deprecated and is forbidden to be set starting from Kubernetes 1.34. Instead, use the rotate-etcd-encryption-key annotation, which performs a full rotation of the ETCD encryption key.")))
+		})
+
+		It("should warn when rotate-etcd-encryption-key-complete operation annotation is set", func() {
+			shoot.Annotations = map[string]string{
+				"gardener.cloud/operation": "rotate-etcd-encryption-key-complete",
+			}
+			Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(ContainElement(Equal("you are setting the operation annotation to rotate-etcd-encryption-key-complete. This annotation has been deprecated and is forbidden to be set starting from Kubernetes 1.34. Instead, use the rotate-etcd-encryption-key annotation, which performs a full rotation of the ETCD encryption key.")))
+		})
+
+		DescribeTable("spec.secretBindingName",
+			func(secretBindingName *string, matcher gomegatypes.GomegaMatcher) {
+				shoot.Spec.SecretBindingName = secretBindingName
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(matcher)
+			},
+
+			Entry("should return a warning when secretBindingName is set", new("my-secret-binding"),
+				ContainElement(Equal("spec.secretBindingName is deprecated and will be disallowed starting with Kubernetes 1.34. For migration instructions, see: https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/secretbinding-to-credentialsbinding-migration.md"))),
+			Entry("should not return a warning when secretBindingName is not set", nil, BeEmpty()),
+		)
+
+		Context("spec.cloudProfileName", func() {
+			It("should return a warning when cloudProfileName is set and the Kubernetes version is >= v1.33", func() {
+				shoot.Spec.Kubernetes.Version = "1.33.1"
+				shoot.Spec.CloudProfileName = new("local-profile")
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(ContainElement(ContainSubstring("you are setting the spec.cloudProfileName field. The field is deprecated")))
+			})
+
+			It("should not return a warning when cloudProfileName is empty and the Kubernetes version is >= v1.33", func() {
+				shoot.Spec.Kubernetes.Version = "1.33.1"
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(BeEmpty())
+			})
+		})
+
+		Describe("spec.addons", func() {
+			It("should print a warning when addons are set", func() {
+				shoot.Spec.Addons = &core.Addons{}
+
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(ContainElement(ContainSubstring("you are setting the spec.addons field. The field is deprecated and will be forbidden starting with Kubernetes 1.35.")))
+			})
+		})
+
+		Describe("spec.kubernetes.kubeProxy.mode", func() {
+			It("should print a warning when kube-proxy mode is set to 'IPVS' and the Kubernetes version is >= v1.35", func() {
+				shoot.Spec.Kubernetes.Version = "1.35.0"
+				shoot.Spec.Kubernetes.KubeProxy = &core.KubeProxyConfig{
+					Enabled: new(true),
+					Mode:    new(core.ProxyModeIPVS),
+				}
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(ContainElement(ContainSubstring("you are using IPVS mode for kube-proxy")))
+			})
+
+			It("should not print a warning when kube-proxy mode is set to 'IPVS' and the Kubernetes version is < v1.35", func() {
+				shoot.Spec.Kubernetes.Version = "1.34.0"
+				shoot.Spec.Kubernetes.KubeProxy = &core.KubeProxyConfig{
+					Enabled: new(true),
+					Mode:    new(core.ProxyModeIPVS),
+				}
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(BeEmpty())
+			})
+
+			It("should print a warning when kube-proxy mode is switched to 'IPVS' for Kubernetes versions < 1.35", func() {
+				shoot.Spec.Kubernetes.Version = "1.34.0"
+				shoot.Spec.Kubernetes.KubeProxy = &core.KubeProxyConfig{
+					Enabled: new(true),
+					Mode:    new(core.ProxyModeIPVS),
+				}
+				oldShoot := shoot.DeepCopy()
+				oldShoot.Spec.Kubernetes.KubeProxy = &core.KubeProxyConfig{
+					Enabled: new(true),
+					Mode:    new(core.ProxyModeIPTables),
+				}
+
+				Expect(GetWarnings(ctx, shoot, oldShoot, credentialsRotationInterval, nil)).To(ContainElement(ContainSubstring("you have switched to IPVS mode for kube-proxy")))
+			})
+		})
+
+		Describe("spec.kubernetes.kubeScheduler.kubeMaxPDVols", func() {
+			It("should print a warning when kubeMaxPDVols is set", func() {
+				shoot.Spec.Kubernetes.KubeScheduler = &core.KubeSchedulerConfig{
+					KubeMaxPDVols: new("20"),
+				}
+
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(ContainElement(ContainSubstring("you are setting the spec.kubernetes.kubeScheduler.kubeMaxPDVols field")))
+			})
+		})
+
+		DescribeTable("spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				shoot.Spec.Kubernetes.KubeAPIServer = kubeAPIServerConfig
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when enableAnonymousAuthentication is nil",
+				&core.KubeAPIServerConfig{EventTTL: nil},
+				BeEmpty(),
+			),
+			Entry("should return a warning when enableAnonymousAuthentication is set",
+				&core.KubeAPIServerConfig{EnableAnonymousAuthentication: new(true)},
+				ContainElement(Equal("you are setting the spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication field. The field is deprecated. Please use anonymous authentication configuration instead. See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration")),
+			),
+		)
+
+		DescribeTable("spec.kubernetes.kubeAPIServer.watchCacheSizes.default",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				shoot.Spec.Kubernetes.KubeAPIServer = kubeAPIServerConfig
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when watchCacheSizes is nil",
+				&core.KubeAPIServerConfig{WatchCacheSizes: nil},
+				BeEmpty(),
+			),
+			Entry("should not return a warning when watchCacheSizes.default is nil",
+				&core.KubeAPIServerConfig{WatchCacheSizes: &core.WatchCacheSizes{Default: nil}},
+				BeEmpty(),
+			),
+			Entry("should return a warning when watchCacheSizes.default is set",
+				&core.KubeAPIServerConfig{WatchCacheSizes: &core.WatchCacheSizes{Default: new(int32(50))}},
+				ContainElement(Equal("you are setting the spec.kubernetes.kubeAPIServer.watchCacheSizes.default field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.35. The cache size is automatically sized by the kube-apiserver.")),
+			),
+		)
+
+		DescribeTable("spec.dns.providers[].secretName",
+			func(dns *core.DNS, matcher gomegatypes.GomegaMatcher) {
+				shoot.Spec.DNS = dns
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(matcher)
+			},
+			Entry("should not return a warning when dns is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when dns.providers is nil",
+				&core.DNS{Providers: nil},
+				BeEmpty(),
+			),
+			Entry("should not return a warning when secretName is not set",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: nil}}},
+				BeEmpty(),
+			),
+			Entry("should return a warning when secretName is set",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: new("secret")}}},
+				ContainElement(Equal("you are setting the spec.dns.providers[0].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[0].credentialsRef instead.")),
+			),
+		)
+
+		Describe("spec.provider.workers[].machineControllerManagerSettings.autoPreserveFailedMachineMax", func() {
+			It("should return a warning when autoPreserveFailedMachineMax is less than the number of zones", func() {
+				shoot.Spec.Provider.Workers = []core.Worker{{
+					Name:  "test",
+					Zones: []string{"zone1", "zone2", "zone3"},
+					MachineControllerManagerSettings: &core.MachineControllerManagerSettings{
+						AutoPreserveFailedMachineMax: new(int32(2)),
+					},
+				}}
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(ContainElement(ContainSubstring("machineControllerManagerSettings.autoPreserveFailedMachineMax")))
+			})
+
+			It("should not return a warning when autoPreserveFailedMachineMax equals the number of zones", func() {
+				shoot.Spec.Provider.Workers = []core.Worker{{
+					Name:  "test",
+					Zones: []string{"zone1", "zone2"},
+					MachineControllerManagerSettings: &core.MachineControllerManagerSettings{
+						AutoPreserveFailedMachineMax: new(int32(2)),
+					},
+				}}
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(BeEmpty())
+			})
+
+			It("should not return a warning when autoPreserveFailedMachineMax is zero", func() {
+				shoot.Spec.Provider.Workers = []core.Worker{{
+					Name:  "test",
+					Zones: []string{"zone1", "zone2", "zone3"},
+					MachineControllerManagerSettings: &core.MachineControllerManagerSettings{
+						AutoPreserveFailedMachineMax: new(int32(0)),
+					},
+				}}
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(BeEmpty())
+			})
+
+			It("should not return a warning when autoPreserveFailedMachineMax is greater than the number of zones", func() {
+				shoot.Spec.Provider.Workers = []core.Worker{{
+					Name:  "test",
+					Zones: []string{"zone1"},
+					MachineControllerManagerSettings: &core.MachineControllerManagerSettings{
+						AutoPreserveFailedMachineMax: new(int32(2)),
+					},
+				}}
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, nil)).To(BeEmpty())
+			})
+		})
+
+		It("should not return a suppressed secretName warning", func() {
+			shoot.Spec.DNS = &core.DNS{
+				Providers: []core.DNSProvider{
+					{
+						SecretName:     new("synced-secret"),
+						CredentialsRef: dnsSecretCredentialsRef("synced-secret"),
+					},
+				},
+			}
+
+			Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval, []int{0})).To(BeEmpty())
+		})
+	})
+
+	Describe("#GetKubeAPIServerWarnings", func() {
+		DescribeTable("enableAnonymousAuthentication",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				Expect(GetKubeAPIServerWarnings(kubeAPIServerConfig, field.NewPath("kubeAPIServer"))).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when enableAnonymousAuthentication is nil",
+				&core.KubeAPIServerConfig{EventTTL: nil},
+				BeEmpty(),
+			),
+			Entry("should return a warning when enableAnonymousAuthentication is set",
+				&core.KubeAPIServerConfig{EnableAnonymousAuthentication: new(true)},
+				ContainElement(Equal("you are setting the kubeAPIServer.enableAnonymousAuthentication field. The field is deprecated. Please use anonymous authentication configuration instead. See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration")),
+			),
+		)
+
+		DescribeTable("watchCacheSizes.default",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				Expect(GetKubeAPIServerWarnings(kubeAPIServerConfig, field.NewPath("kubeAPIServer"))).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when watchCacheSizes is nil",
+				&core.KubeAPIServerConfig{WatchCacheSizes: nil},
+				BeEmpty(),
+			),
+			Entry("should not return a warning when watchCacheSizes.default is nil",
+				&core.KubeAPIServerConfig{WatchCacheSizes: &core.WatchCacheSizes{Default: nil}},
+				BeEmpty(),
+			),
+			Entry("should return a warning when watchCacheSizes.default is set",
+				&core.KubeAPIServerConfig{WatchCacheSizes: &core.WatchCacheSizes{Default: new(int32(50))}},
+				ContainElement(Equal("you are setting the kubeAPIServer.watchCacheSizes.default field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.35. The cache size is automatically sized by the kube-apiserver.")),
+			),
+		)
+	})
+
+	Describe("#GetDNSProviderWarnings", func() {
+		DescribeTable("providers[].secretName",
+			func(dns *core.DNS, fldPath *field.Path, matcher gomegatypes.GomegaMatcher) {
+				Expect(GetDNSProviderWarnings(dns, fldPath, nil)).To(matcher)
+			},
+
+			Entry("should not return a warning when dns.providers is nil",
+				&core.DNS{Providers: nil},
+				field.NewPath("spec", "dns"),
+				BeEmpty(),
+			),
+			Entry("should not return a warning when dns.providers is empty",
+				&core.DNS{Providers: []core.DNSProvider{}},
+				field.NewPath("spec", "dns"),
+				BeEmpty(),
+			),
+			Entry("should not return a warning when secretName is not set",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: nil}}},
+				field.NewPath("spec", "dns"),
+				BeEmpty(),
+			),
+			Entry("should return a warning when secretName is set for a single provider",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: new("secret")}}},
+				field.NewPath("spec", "dns"),
+				ContainElement(Equal("you are setting the spec.dns.providers[0].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[0].credentialsRef instead.")),
+			),
+			Entry("should return warnings when secretName is set for multiple providers",
+				&core.DNS{Providers: []core.DNSProvider{
+					{SecretName: new("secret1")},
+					{SecretName: new("secret2")},
+				}},
+				field.NewPath("spec", "dns"),
+				And(
+					ContainElement(Equal("you are setting the spec.dns.providers[0].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[0].credentialsRef instead.")),
+					ContainElement(Equal("you are setting the spec.dns.providers[1].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[1].credentialsRef instead.")),
+				),
+			),
+			Entry("should return warning only for provider with secretName set",
+				&core.DNS{Providers: []core.DNSProvider{
+					{SecretName: nil},
+					{SecretName: new("secret")},
+				}},
+				field.NewPath("spec", "dns"),
+				And(
+					ContainElement(Equal("you are setting the spec.dns.providers[1].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[1].credentialsRef instead.")),
+					Not(ContainElement(ContainSubstring("spec.dns.providers[0].secretName"))),
+				),
+			),
+			Entry("should use custom field path in warning message",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: new("secret")}}},
+				field.NewPath("custom", "path"),
+				ContainElement(Equal("you are setting the custom.path.providers[0].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use custom.path.providers[0].credentialsRef instead.")),
+			),
+		)
+
+		It("should not return warnings for suppressed provider indexes", func() {
+			dns := &core.DNS{
+				Providers: []core.DNSProvider{
+					{
+						SecretName:     new("synced-secret"),
+						CredentialsRef: dnsSecretCredentialsRef("synced-secret"),
+					},
+					{SecretName: new("secret")},
+				},
+			}
+
+			Expect(GetDNSProviderWarnings(dns, field.NewPath("spec", "dns"), []int{0})).To(ConsistOf(Equal("you are setting the spec.dns.providers[1].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[1].credentialsRef instead.")))
+		})
+	})
+})
+
+func dnsSecretCredentialsRef(name string) *autoscalingv1.CrossVersionObjectReference {
+	return &autoscalingv1.CrossVersionObjectReference{
+		APIVersion: "v1",
+		Kind:       "Secret",
+		Name:       name,
+	}
+}
