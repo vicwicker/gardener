@@ -57,16 +57,18 @@ func (h *health) Check(
 	managedResources, err := h.listManagedResources(ctx)
 	if err != nil {
 		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
 		return conditions.ConvertToSlice()
 	}
 
 	prometheuses, err := h.listPrometheuses(ctx)
 	if err != nil {
-		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
 		return conditions.ConvertToSlice()
 	}
 
-	conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, h.checkSystemComponents(ctx, conditions.systemComponentsHealthy, managedResources, prometheuses), nil)
+	conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, h.checkSystemComponents(conditions.systemComponentsHealthy, managedResources), nil)
+	conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, managedResources, prometheuses), nil)
 	conditions.emergencyStopShootReconciliations = v1beta1helper.NewConditionOrError(h.clock, conditions.emergencyStopShootReconciliations, h.checkEmergencyStopShootReconciliations(conditions.emergencyStopShootReconciliations), nil)
 	return conditions.ConvertToSlice()
 }
@@ -94,9 +96,21 @@ func (h *health) listPrometheuses(ctx context.Context) (*monitoringv1.Prometheus
 	return prometheusList, nil
 }
 
-func (h *health) checkSystemComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
+func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
 	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
-		return managedResource.Spec.Class != nil
+		return managedResource.Spec.Class != nil &&
+			managedResource.Labels[v1beta1constants.LabelCareConditionType] != string(gardencorev1beta1.SeedObservabilityComponentsHealthy)
+	}, nil, nil); exitCondition != nil {
+		return exitCondition
+	}
+
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
+}
+
+func (h *health) checkObservabilityComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+		return managedResource.Spec.Class != nil &&
+			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.SeedObservabilityComponentsHealthy)
 	}, nil, nil); exitCondition != nil {
 		return exitCondition
 	}
@@ -111,7 +125,7 @@ func (h *health) checkSystemComponents(ctx context.Context, condition gardencore
 		}
 	}
 
-	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
+	return new(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy."))
 }
 
 func (h *health) checkEmergencyStopShootReconciliations(condition gardencorev1beta1.Condition) *gardencorev1beta1.Condition {
