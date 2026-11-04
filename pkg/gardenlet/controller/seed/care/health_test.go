@@ -366,7 +366,6 @@ var _ = Describe("Seed health", func() {
 
 				Expect(conditions.ConvertToSlice()).To(ConsistOf(
 					beConditionOfTypeWithStatusReasonAndMessage(gardencorev1beta1.SeedSystemComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
-					beConditionOfTypeWithStatusReasonAndMessage(gardencorev1beta1.SeedEmergencyStopShootReconciliations, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 				))
 			})
 
@@ -374,7 +373,7 @@ var _ = Describe("Seed health", func() {
 				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{
 					Conditions: []gardencorev1beta1.Condition{
 						{Type: "SeedSystemComponentsHealthy"},
-						{Type: "EmergencyStopShootReconciliations"},
+						{Type: "EmergencyStopShootReconciliations", Status: gardencorev1beta1.ConditionFalse},
 						{Type: "Foo"},
 					},
 				})
@@ -389,6 +388,30 @@ var _ = Describe("Seed health", func() {
 		Describe("#ConvertToSlice", func() {
 			It("should return the expected conditions", func() {
 				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{})
+
+				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
+					OfType("SeedSystemComponentsHealthy"),
+				))
+			})
+
+			It("should not return EmergencyStopShootReconciliations if its status is unknown", func() {
+				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{
+					Conditions: []gardencorev1beta1.Condition{
+						{Type: "EmergencyStopShootReconciliations", Status: gardencorev1beta1.ConditionUnknown},
+					},
+				})
+
+				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
+					OfType("SeedSystemComponentsHealthy"),
+				))
+			})
+
+			It("should return EmergencyStopShootReconciliations if its status is false", func() {
+				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{
+					Conditions: []gardencorev1beta1.Condition{
+						{Type: "EmergencyStopShootReconciliations", Status: gardencorev1beta1.ConditionFalse},
+					},
+				})
 
 				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
 					OfType("SeedSystemComponentsHealthy"),
