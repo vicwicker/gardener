@@ -18,6 +18,8 @@ import (
 )
 
 var _ = Describe("Shoot Conditions controller tests", func() {
+	const seedObservabilityComponentsHealthyInShoot = gardencorev1beta1.ConditionType("Seed" + string(gardencorev1beta1.SeedObservabilityComponentsHealthy))
+
 	var (
 		shoot       *gardencorev1beta1.Shoot
 		managedSeed *seedmanagementv1alpha1.ManagedSeed
@@ -147,6 +149,7 @@ var _ = Describe("Shoot Conditions controller tests", func() {
 				Not(ContainCondition(OfType(gardencorev1beta1.SeedExtensionsReady))),
 				Not(ContainCondition(OfType(gardencorev1beta1.GardenletReady))),
 				Not(ContainCondition(OfType(gardencorev1beta1.SeedSystemComponentsHealthy))),
+				Not(ContainCondition(OfType(seedObservabilityComponentsHealthyInShoot))),
 			))
 		})
 
@@ -167,6 +170,7 @@ var _ = Describe("Shoot Conditions controller tests", func() {
 				Not(ContainCondition(OfType(gardencorev1beta1.SeedExtensionsReady))),
 				Not(ContainCondition(OfType(gardencorev1beta1.GardenletReady))),
 				Not(ContainCondition(OfType(gardencorev1beta1.SeedSystemComponentsHealthy))),
+				Not(ContainCondition(OfType(seedObservabilityComponentsHealthyInShoot))),
 			))
 		})
 	})
@@ -199,6 +203,7 @@ var _ = Describe("Shoot Conditions controller tests", func() {
 				{Type: gardencorev1beta1.SeedExtensionsReady, Status: gardencorev1beta1.ConditionProgressing},
 				{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionProgressing},
 				{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionProgressing},
+				{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionProgressing},
 				{Type: gardencorev1beta1.ConditionType("custom"), Status: gardencorev1beta1.ConditionProgressing},
 			}
 
@@ -216,6 +221,7 @@ var _ = Describe("Shoot Conditions controller tests", func() {
 				ContainCondition(OfType(gardencorev1beta1.SeedExtensionsReady)),
 				ContainCondition(OfType(gardencorev1beta1.GardenletReady)),
 				ContainCondition(OfType(gardencorev1beta1.SeedSystemComponentsHealthy)),
+				ContainCondition(OfType(gardencorev1beta1.SeedObservabilityComponentsHealthy)),
 				ContainCondition(OfType("custom")),
 			))
 
@@ -228,6 +234,7 @@ var _ = Describe("Shoot Conditions controller tests", func() {
 				ContainCondition(OfType(gardencorev1beta1.SeedExtensionsReady)),
 				ContainCondition(OfType(gardencorev1beta1.GardenletReady)),
 				ContainCondition(OfType(gardencorev1beta1.SeedSystemComponentsHealthy)),
+				ContainCondition(OfType(seedObservabilityComponentsHealthyInShoot)),
 				ContainCondition(OfType("custom")),
 			))
 
@@ -252,6 +259,7 @@ var _ = Describe("Shoot Conditions controller tests", func() {
 				ContainCondition(OfType(gardencorev1beta1.SeedExtensionsReady)),
 				ContainCondition(OfType(gardencorev1beta1.GardenletReady)),
 				ContainCondition(OfType(gardencorev1beta1.SeedSystemComponentsHealthy)),
+				ContainCondition(OfType(seedObservabilityComponentsHealthyInShoot)),
 				ContainCondition(OfType("custom")),
 			))
 		})
