@@ -151,7 +151,7 @@ var _ = Describe("Replica", func() {
 				},
 			}
 		}
-		seed = func(deletionTimestamp *metav1.Time, gardenletReady, backupBucketsReady, seedSystemComponentsHealthy bool) *gardencorev1beta1.Seed {
+		seed = func(deletionTimestamp *metav1.Time, gardenletReady, backupBucketsReady, seedSystemComponentsHealthy, seedObservabilityComponentsHealthy bool) *gardencorev1beta1.Seed {
 			var conditions []gardencorev1beta1.Condition
 			if gardenletReady {
 				conditions = append(conditions, gardencorev1beta1.Condition{
@@ -168,6 +168,12 @@ var _ = Describe("Replica", func() {
 			if seedSystemComponentsHealthy {
 				conditions = append(conditions, gardencorev1beta1.Condition{
 					Type:   gardencorev1beta1.SeedSystemComponentsHealthy,
+					Status: gardencorev1beta1.ConditionTrue,
+				})
+			}
+			if seedObservabilityComponentsHealthy {
+				conditions = append(conditions, gardencorev1beta1.Condition{
+					Type:   gardencorev1beta1.SeedObservabilityComponentsHealthy,
 					Status: gardencorev1beta1.ConditionTrue,
 				})
 			}
@@ -249,11 +255,13 @@ var _ = Describe("Replica", func() {
 				managedSeed(nil, true, false), seed, false)
 			Expect(replica.IsSeedReady()).To(Equal(seedReady))
 		},
-		Entry("should return false", seed(nil, false, false, false), false),
-		Entry("should return true", seed(nil, true, false, true), true),
-		Entry("should return true", seed(nil, true, true, true), true),
-		Entry("should return false", seed(nil, true, true, false), false),
-		Entry("should return false", seed(&now, true, true, true), false),
+		Entry("should return false when no condition is true", seed(nil, false, false, false, false), false),
+		Entry("should return false when observability components are not healthy", seed(nil, true, false, true, false), false),
+		Entry("should return false when observability components are not healthy and backup buckets are ready", seed(nil, true, true, true, false), false),
+		Entry("should return false when system components are not healthy", seed(nil, true, true, false, true), false),
+		Entry("should return true when all conditions are true and backup buckets are not present", seed(nil, true, false, true, true), true),
+		Entry("should return true when all conditions are true", seed(nil, true, true, true, true), true),
+		Entry("should return false when the seed is being deleted", seed(&now, true, true, true, true), false),
 	)
 
 	DescribeTable("#GetShootHealthStatus",
