@@ -214,16 +214,17 @@ func (r *Reconciler) updateStatusOperationSuccess(ctx context.Context, seed *gar
 	patch := client.StrategicMergeFrom(seed.DeepCopy())
 
 	if setConditionsToProgressing {
-		// Set the status of SeedSystemComponentsHealthy condition to Progressing so that the Seed does not immediately
-		// become ready after being successfully reconciled in case the system components got updated. The
-		// SeedSystemComponentsHealthy condition will be set to either True, False or Progressing by the seed care
-		// reconciler depending on the health of the system components after the necessary checks are completed.
+		// Set the status of SeedSystemComponentsHealthy and SeedObservabilityComponentsHealthy conditions to Progressing
+		// so that the Seed does not immediately become ready after being successfully reconciled in case the components
+		// got updated. These conditions will be set to either True, False or Progressing by the seed care reconciler
+		// depending on the health of the components after the necessary checks are completed.
 		for i, cond := range seed.Status.Conditions {
 			switch cond.Type {
 			case gardencorev1beta1.SeedBackupBucketsReady,
 				gardencorev1beta1.SeedExtensionsReady,
 				gardencorev1beta1.GardenletReady,
-				gardencorev1beta1.SeedSystemComponentsHealthy:
+				gardencorev1beta1.SeedSystemComponentsHealthy,
+				gardencorev1beta1.SeedObservabilityComponentsHealthy:
 				if cond.Status != gardencorev1beta1.ConditionFalse {
 					seed.Status.Conditions[i].Status = gardencorev1beta1.ConditionProgressing
 					seed.Status.Conditions[i].LastUpdateTime = metav1.Now()
