@@ -31,6 +31,15 @@ const (
 	replicaName = name + "-42"
 )
 
+// seedConditionsHealthy selects which seed conditions are set to True when building a test seed. The zero value leaves
+// every condition unset, so each test names only the conditions it wants healthy.
+type seedConditionsHealthy struct {
+	gardenletReady          bool
+	backupBucketsReady      bool
+	systemComponents        bool
+	observabilityComponents bool
+}
+
 var _ = Describe("Replica", func() {
 	var (
 		fakeClient client.Client
@@ -151,23 +160,29 @@ var _ = Describe("Replica", func() {
 				},
 			}
 		}
-		seed = func(deletionTimestamp *metav1.Time, gardenletReady, backupBucketsReady, seedSystemComponentsHealthy bool) *gardencorev1beta1.Seed {
+		seed = func(deletionTimestamp *metav1.Time, healthy seedConditionsHealthy) *gardencorev1beta1.Seed {
 			var conditions []gardencorev1beta1.Condition
-			if gardenletReady {
+			if healthy.gardenletReady {
 				conditions = append(conditions, gardencorev1beta1.Condition{
 					Type:   gardencorev1beta1.GardenletReady,
 					Status: gardencorev1beta1.ConditionTrue,
 				})
 			}
-			if backupBucketsReady {
+			if healthy.backupBucketsReady {
 				conditions = append(conditions, gardencorev1beta1.Condition{
 					Type:   gardencorev1beta1.SeedBackupBucketsReady,
 					Status: gardencorev1beta1.ConditionTrue,
 				})
 			}
-			if seedSystemComponentsHealthy {
+			if healthy.systemComponents {
 				conditions = append(conditions, gardencorev1beta1.Condition{
 					Type:   gardencorev1beta1.SeedSystemComponentsHealthy,
+					Status: gardencorev1beta1.ConditionTrue,
+				})
+			}
+			if healthy.observabilityComponents {
+				conditions = append(conditions, gardencorev1beta1.Condition{
+					Type:   gardencorev1beta1.SeedObservabilityComponentsHealthy,
 					Status: gardencorev1beta1.ConditionTrue,
 				})
 			}
@@ -249,11 +264,13 @@ var _ = Describe("Replica", func() {
 				managedSeed(nil, true, false), seed, false)
 			Expect(replica.IsSeedReady()).To(Equal(seedReady))
 		},
-		Entry("should return false", seed(nil, false, false, false), false),
-		Entry("should return true", seed(nil, true, false, true), true),
-		Entry("should return true", seed(nil, true, true, true), true),
-		Entry("should return false", seed(nil, true, true, false), false),
-		Entry("should return false", seed(&now, true, true, true), false),
+		Entry("should return false when no condition is true", seed(nil, seedConditionsHealthy{}), false),
+		Entry("should return false when observability components are not healthy", seed(nil, seedConditionsHealthy{gardenletReady: true, systemComponents: true}), false),
+		Entry("should return false when observability components are not healthy and backup buckets are ready", seed(nil, seedConditionsHealthy{gardenletReady: true, backupBucketsReady: true, systemComponents: true}), false),
+		Entry("should return false when system components are not healthy", seed(nil, seedConditionsHealthy{gardenletReady: true, backupBucketsReady: true, observabilityComponents: true}), false),
+		Entry("should return true when all conditions are true and backup buckets are not present", seed(nil, seedConditionsHealthy{gardenletReady: true, systemComponents: true, observabilityComponents: true}), true),
+		Entry("should return true when all conditions are true", seed(nil, seedConditionsHealthy{gardenletReady: true, backupBucketsReady: true, systemComponents: true, observabilityComponents: true}), true),
+		Entry("should return false when the seed is being deleted", seed(&now, seedConditionsHealthy{gardenletReady: true, backupBucketsReady: true, systemComponents: true, observabilityComponents: true}), false),
 	)
 
 	DescribeTable("#GetShootHealthStatus",

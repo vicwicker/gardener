@@ -471,6 +471,7 @@ var _ = Describe("Add", func() {
 			newSeed.Status.Conditions = []gardencorev1beta1.Condition{
 				{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 				{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+				{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 				{Type: gardencorev1beta1.SeedBackupBucketsReady, Status: gardencorev1beta1.ConditionTrue},
 			}
 			Expect(pred.Create(event.CreateEvent{Object: newSeed})).To(BeFalse())
@@ -528,11 +529,13 @@ var _ = Describe("Add", func() {
 			oldSeed.Status.Conditions = []gardencorev1beta1.Condition{
 				{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 				{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+				{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 				{Type: gardencorev1beta1.SeedBackupBucketsReady, Status: gardencorev1beta1.ConditionTrue},
 			}
 			newSeed.Status.Conditions = []gardencorev1beta1.Condition{
 				{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 				{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+				{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 				{Type: gardencorev1beta1.SeedBackupBucketsReady, Status: gardencorev1beta1.ConditionTrue},
 			}
 			managedSeedSet.Status.PendingReplica = &seedmanagementv1alpha1.PendingReplica{
