@@ -68,6 +68,7 @@ func (c *convertor) ConvertToTable(_ context.Context, obj runtime.Object, _ runt
 		backupBucketCondition := helper.GetCondition(seed.Status.Conditions, core.SeedBackupBucketsReady)
 		extensionsReadyCondition := helper.GetCondition(seed.Status.Conditions, core.SeedExtensionsReady)
 		seedSystemComponentsHealthyCondition := helper.GetCondition(seed.Status.Conditions, core.SeedSystemComponentsHealthy)
+		seedObservabilityComponentsHealthyCondition := helper.GetCondition(seed.Status.Conditions, core.SeedObservabilityComponentsHealthy)
 
 		cells = append(cells, seed.Name)
 		if gardenletReadyCondition != nil && gardenletReadyCondition.Status == core.ConditionUnknown {
@@ -75,7 +76,8 @@ func (c *convertor) ConvertToTable(_ context.Context, obj runtime.Object, _ runt
 		} else if (gardenletReadyCondition == nil || gardenletReadyCondition.Status != core.ConditionTrue) ||
 			(backupBucketCondition != nil && backupBucketCondition.Status != core.ConditionTrue) ||
 			(extensionsReadyCondition == nil || extensionsReadyCondition.Status == core.ConditionFalse || extensionsReadyCondition.Status == core.ConditionUnknown) ||
-			(seedSystemComponentsHealthyCondition != nil && (seedSystemComponentsHealthyCondition.Status == core.ConditionFalse || seedSystemComponentsHealthyCondition.Status == core.ConditionUnknown)) {
+			(seedSystemComponentsHealthyCondition != nil && (seedSystemComponentsHealthyCondition.Status == core.ConditionFalse || seedSystemComponentsHealthyCondition.Status == core.ConditionUnknown)) ||
+			(seedObservabilityComponentsHealthyCondition != nil && (seedObservabilityComponentsHealthyCondition.Status == core.ConditionFalse || seedObservabilityComponentsHealthyCondition.Status == core.ConditionUnknown)) {
 			cells = append(cells, "NotReady")
 		} else {
 			cells = append(cells, "Ready")
