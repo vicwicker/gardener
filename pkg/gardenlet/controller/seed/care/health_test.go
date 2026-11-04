@@ -360,37 +360,13 @@ var _ = Describe("Seed health", func() {
 	})
 
 	Describe("SeedConditions", func() {
-		Describe("#NewSeedConditions", func() {
-			It("should initialize all conditions", func() {
-				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{})
-
-				Expect(conditions.ConvertToSlice()).To(ConsistOf(
-					beConditionOfTypeWithStatusReasonAndMessage(gardencorev1beta1.SeedSystemComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
-				))
-			})
-
-			It("should only initialize missing conditions", func() {
-				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{
-					Conditions: []gardencorev1beta1.Condition{
-						{Type: "SeedSystemComponentsHealthy"},
-						{Type: "EmergencyStopShootReconciliations", Status: gardencorev1beta1.ConditionFalse},
-						{Type: "Foo"},
-					},
-				})
-
-				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
-					OfType("SeedSystemComponentsHealthy"),
-					OfType("EmergencyStopShootReconciliations"),
-				))
-			})
-		})
-
 		Describe("#ConvertToSlice", func() {
-			It("should return the expected conditions", func() {
+			It("should return the system and observability conditions initialized when the status is empty", func() {
 				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{})
 
 				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
-					OfType("SeedSystemComponentsHealthy"),
+					beConditionOfTypeWithStatusReasonAndMessage(gardencorev1beta1.SeedSystemComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
+					beConditionOfTypeWithStatusReasonAndMessage(gardencorev1beta1.SeedObservabilityComponentsHealthy, "Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 				))
 			})
 
@@ -403,10 +379,11 @@ var _ = Describe("Seed health", func() {
 
 				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
 					OfType("SeedSystemComponentsHealthy"),
+					OfType("ObservabilityComponentsHealthy"),
 				))
 			})
 
-			It("should return EmergencyStopShootReconciliations if its status is false", func() {
+			It("should return EmergencyStopShootReconciliations if its status is not unknown", func() {
 				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{
 					Conditions: []gardencorev1beta1.Condition{
 						{Type: "EmergencyStopShootReconciliations", Status: gardencorev1beta1.ConditionFalse},
@@ -415,7 +392,23 @@ var _ = Describe("Seed health", func() {
 
 				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
 					OfType("SeedSystemComponentsHealthy"),
+					OfType("ObservabilityComponentsHealthy"),
 					OfType("EmergencyStopShootReconciliations"),
+				))
+			})
+
+			It("should ignore conditions that are not seed conditions", func() {
+				conditions := NewSeedConditions(fakeClock, gardencorev1beta1.SeedStatus{
+					Conditions: []gardencorev1beta1.Condition{
+						{Type: "SeedSystemComponentsHealthy"},
+						{Type: "ObservabilityComponentsHealthy"},
+						{Type: "Foo"},
+					},
+				})
+
+				Expect(conditions.ConvertToSlice()).To(HaveExactElements(
+					OfType("SeedSystemComponentsHealthy"),
+					OfType("ObservabilityComponentsHealthy"),
 				))
 			})
 		})
@@ -426,6 +419,7 @@ var _ = Describe("Seed health", func() {
 
 				Expect(conditions.ConditionTypes()).To(HaveExactElements(
 					gardencorev1beta1.ConditionType("SeedSystemComponentsHealthy"),
+					gardencorev1beta1.ConditionType("ObservabilityComponentsHealthy"),
 					gardencorev1beta1.ConditionType("EmergencyStopShootReconciliations"),
 				))
 			})
