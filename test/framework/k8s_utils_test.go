@@ -328,6 +328,12 @@ func appendSeedConditionsToShoot(shoot *gardencorev1beta1.Shoot) {
 			Status: gardencorev1beta1.ConditionTrue,
 		},
 		{
+			// On a shoot that acts as a seed, the seed's ObservabilityComponentsHealthy condition is copied with the
+			// "Seed" prefix to avoid colliding with the shoot's own ObservabilityComponentsHealthy condition.
+			Type:   gardencorev1beta1.ConditionType("Seed" + string(gardencorev1beta1.SeedObservabilityComponentsHealthy)),
+			Status: gardencorev1beta1.ConditionTrue,
+		},
+		{
 			Type:   gardencorev1beta1.SeedExtensionsReady,
 			Status: gardencorev1beta1.ConditionTrue,
 		},
