@@ -52,6 +52,7 @@ Seed conditions:
 | `BackupBucketsReady` | Whether all backup buckets for the seed are healthy |
 | `ExtensionsReady` | Whether all extensions installed in the seed are ready |
 | `SeedSystemComponentsHealthy` | Health of system components running in the seed |
+| `ObservabilityComponentsHealthy` | Health of observability components running in the seed |
 
 ### Introducing New Condition Types
 
