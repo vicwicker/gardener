@@ -392,10 +392,17 @@ This reconciler checks whether the seed system components (deployed by the "main
 It checks the `.status.conditions` of the backing `ManagedResource` created in the `garden` namespace of the seed cluster.
 A `ManagedResource` is considered "healthy" if the conditions `ResourcesApplied=ResourcesHealthy=True` and `ResourcesProgressing=False`.
 
-If all `ManagedResource`s are healthy, then the `SeedSystemComponentsHealthy` condition of the `Seed` will be set to `True`.
+The reconciler reports the health of the seed components in two separate conditions.
+The `SeedSystemComponentsHealthy` condition covers the system components, and the `ObservabilityComponentsHealthy` condition covers the observability components (for example Prometheus, Alertmanager, Plutono, Vali, fluent-bit and kube-state-metrics).
+A `ManagedResource` is attributed to the `ObservabilityComponentsHealthy` condition when its `care.gardener.cloud/condition-type` label is set to `ObservabilityComponentsHealthy`, and to the `SeedSystemComponentsHealthy` condition otherwise.
+The `ObservabilityComponentsHealthy` condition additionally reflects the result of the Prometheus health checks.
+
+If all `ManagedResource`s attributed to a condition are healthy, then that condition of the `Seed` will be set to `True`.
 Otherwise, it will be set to `False`.
 
-If at least one `ManagedResource` is unhealthy and there is threshold configuration for the conditions (in `.controllers.seedCare.conditionThresholds`), then the status of the `SeedSystemComponentsHealthy` condition will be set:
+Unlike `SeedSystemComponentsHealthy`, the `ObservabilityComponentsHealthy` condition does not gate shoot operations, so a transient observability issue does not block reconciliations of the shoots hosted on the seed.
+
+If at least one `ManagedResource` is unhealthy and there is threshold configuration for the conditions (in `.controllers.seedCare.conditionThresholds`), then the status of the affected condition will be set:
 
 - to `Progressing` if it was `True` before.
 - to `Progressing` if it was `Progressing` before and the `lastUpdateTime` of the condition does not exceed the configured threshold duration yet.
@@ -407,9 +414,12 @@ Only if the unhealthiness persists for at least the configured threshold duratio
 In order to compute the condition statuses, this reconciler considers `ManagedResource`s (in the `garden` and `istio-system` namespace) and their status, see [this document](resource-manager.md#conditions) for more information.
 The following table explains which `ManagedResource`s are considered for which condition type:
 
-| Condition Type                | `ManagedResource`s are considered when |
-|-------------------------------|----------------------------------------|
-| `SeedSystemComponentsHealthy` | `.spec.class` is set                   |
+| Condition Type                   | `ManagedResource`s are considered when                                                                 |
+|----------------------------------|--------------------------------------------------------------------------------------------------------|
+| `ObservabilityComponentsHealthy` | `.spec.class` is set and the `care.gardener.cloud/condition-type` label equals `ObservabilityComponentsHealthy` |
+| `SeedSystemComponentsHealthy`    | `.spec.class` is set and the `care.gardener.cloud/condition-type` label does not equal `ObservabilityComponentsHealthy` |
+
+For managed seeds, the `ObservabilityComponentsHealthy` condition is copied to the backing shoot with the `Seed` prefix (`SeedObservabilityComponentsHealthy`) to avoid colliding with the shoot's own `ObservabilityComponentsHealthy` condition.
 
 ##### Constraints
 
