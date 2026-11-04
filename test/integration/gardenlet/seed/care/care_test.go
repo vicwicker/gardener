@@ -21,6 +21,7 @@ import (
 
 	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/seed/care"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
@@ -140,10 +141,13 @@ var _ = Describe("Seed Care controller tests", func() {
 	})
 
 	Context("when ManagedResources for the Seed exist", func() {
-		managedResourceName := "foo"
+		var (
+			managedResourceName              = "mr-system"
+			observabilityManagedResourceName = "mr-observability"
+		)
 
 		BeforeEach(func() {
-			By("Create ManagedResource")
+			By("Create system component ManagedResource")
 			managedResource := &resourcesv1alpha1.ManagedResource{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      managedResourceName,
@@ -157,13 +161,29 @@ var _ = Describe("Seed Care controller tests", func() {
 			Expect(testClient.Create(ctx, managedResource)).To(Succeed())
 			log.Info("Created ManagedResource for test", "managedResource", client.ObjectKeyFromObject(managedResource))
 
+			By("Create observability component ManagedResource")
+			observabilityManagedResource := &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      observabilityManagedResourceName,
+					Namespace: testNamespace.Name,
+					Labels:    map[string]string{v1beta1constants.LabelCareConditionType: string(gardencorev1beta1.SeedObservabilityComponentsHealthy)},
+				},
+				Spec: resourcesv1alpha1.ManagedResourceSpec{
+					Class:      new("seed"),
+					SecretRefs: []corev1.LocalObjectReference{{Name: "foo-secret"}},
+				},
+			}
+			Expect(testClient.Create(ctx, observabilityManagedResource)).To(Succeed())
+			log.Info("Created ManagedResource for test", "managedResource", client.ObjectKeyFromObject(observabilityManagedResource))
+
 			DeferCleanup(func() {
-				By("Delete ManagedResource")
+				By("Delete ManagedResources")
 				Expect(testClient.Delete(ctx, &resourcesv1alpha1.ManagedResource{ObjectMeta: metav1.ObjectMeta{Name: managedResourceName, Namespace: testNamespace.Name}})).To(Succeed())
+				Expect(testClient.Delete(ctx, &resourcesv1alpha1.ManagedResource{ObjectMeta: metav1.ObjectMeta{Name: observabilityManagedResourceName, Namespace: testNamespace.Name}})).To(Succeed())
 			})
 		})
 
-		It("should set condition to False because some ManagedResource statuses are outdated", func() {
+		It("should set the conditions to False because some ManagedResource statuses are outdated", func() {
 			By("Expect SeedSystemComponentsHealthy condition to be False")
 			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
 				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(seed), seed)).To(Succeed())
@@ -174,10 +194,22 @@ var _ = Describe("Seed Care controller tests", func() {
 				WithReason("OutdatedStatus"),
 				WithMessageSubstrings("observed generation of managed resource"),
 			))
+
+			By("Expect SeedObservabilityComponentsHealthy condition to be False")
+			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(seed), seed)).To(Succeed())
+				return seed.Status.Conditions
+			}).Should(ContainCondition(
+				OfType(gardencorev1beta1.SeedObservabilityComponentsHealthy),
+				WithStatus(gardencorev1beta1.ConditionFalse),
+				WithReason("OutdatedStatus"),
+				WithMessageSubstrings("observed generation of managed resource"),
+			))
 		})
 
-		It("should set condition to True because all ManagedResource statuses are healthy", func() {
+		It("should set the conditions to True because all ManagedResource statuses are healthy", func() {
 			updateManagedResourceStatusToHealthy(managedResourceName)
+			updateManagedResourceStatusToHealthy(observabilityManagedResourceName)
 
 			By("Expect SeedSystemComponentsHealthy condition to be True")
 			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
@@ -188,6 +220,17 @@ var _ = Describe("Seed Care controller tests", func() {
 				WithStatus(gardencorev1beta1.ConditionTrue),
 				WithReason("SystemComponentsRunning"),
 				WithMessageSubstrings("All system components are healthy."),
+			))
+
+			By("Expect SeedObservabilityComponentsHealthy condition to be True")
+			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(seed), seed)).To(Succeed())
+				return seed.Status.Conditions
+			}).Should(ContainCondition(
+				OfType(gardencorev1beta1.SeedObservabilityComponentsHealthy),
+				WithStatus(gardencorev1beta1.ConditionTrue),
+				WithReason("ObservabilityComponentsRunning"),
+				WithMessageSubstrings("All observability components are healthy."),
 			))
 		})
 
