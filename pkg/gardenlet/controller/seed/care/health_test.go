@@ -85,12 +85,15 @@ var _ = Describe("Seed health", func() {
 	})
 
 	Describe("#Check", func() {
-		managedResourceName := "foo"
+		var (
+			managedResourceName              = "foo"
+			observabilityManagedResourceName = "foo-observability"
+		)
 
 		Context("When all managed resources are deployed successfully", func() {
 			JustBeforeEach(func() {
 				Expect(c.Create(ctx, healthyManagedResource(managedResourceName, ""))).To(Succeed())
-				Expect(c.Create(ctx, healthyManagedResource(managedResourceName+"-observability", v1beta1constants.ObservabilityComponentsHealthy))).To(Succeed())
+				Expect(c.Create(ctx, healthyManagedResource(observabilityManagedResourceName, v1beta1constants.ObservabilityComponentsHealthy))).To(Succeed())
 			})
 
 			It("should set SeedSystemComponentsHealthy and SeedObservabilityComponentsHealthy conditions to true", func() {

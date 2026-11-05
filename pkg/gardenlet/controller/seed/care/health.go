@@ -97,10 +97,12 @@ func (h *health) listPrometheuses(ctx context.Context) (*monitoringv1.Prometheus
 }
 
 func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
-	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+	isSystemComponent := func(managedResource resourcesv1alpha1.ManagedResource) bool {
 		return managedResource.Spec.Class != nil &&
 			managedResource.Labels[v1beta1constants.LabelCareConditionType] != string(gardencorev1beta1.SeedObservabilityComponentsHealthy)
-	}, nil, nil); exitCondition != nil {
+	}
+
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, isSystemComponent, nil, nil); exitCondition != nil {
 		return exitCondition
 	}
 
@@ -108,19 +110,21 @@ func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, ma
 }
 
 func (h *health) checkObservabilityComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
-	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
+	isObservabilityComponent := func(managedResource resourcesv1alpha1.ManagedResource) bool {
 		return managedResource.Spec.Class != nil &&
 			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.SeedObservabilityComponentsHealthy)
-	}, nil, nil); exitCondition != nil {
+	}
+
+	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, isObservabilityComponent, nil, nil); exitCondition != nil {
 		return exitCondition
 	}
 
-	filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
+	isHealthCheckedByGardenlet := func(prometheus *monitoringv1.Prometheus) bool {
 		return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.Gardenlet
 	}
 
 	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
-		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, isHealthCheckedByGardenlet); exitCondition != nil {
 			return exitCondition
 		}
 	}
