@@ -87,9 +87,7 @@ func (r *Reconciler) getShootSeed(ctx context.Context, shoot *gardencorev1beta1.
 }
 
 // prefixOverlappingSeedConditions returns a copy of the given seed conditions where every condition whose type collides
-// with one of the shoot condition types is prefixed with "Seed". When a shoot is a managed seed, the seed conditions are
-// merged into the shoot conditions. Prefixing the overlapping ones avoids collisions (for example the seed and the shoot
-// both have an ObservabilityComponentsHealthy condition) and keeps both conditions visible on the shoot.
+// with one of the shoot condition types is prefixed with "Seed".
 func prefixOverlappingSeedConditions(
 	shootConditionTypes []gardencorev1beta1.ConditionType,
 	seedConditions []gardencorev1beta1.Condition,
