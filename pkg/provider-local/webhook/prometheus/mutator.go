@@ -42,6 +42,8 @@ func (m *mutator) Mutate(_ context.Context, newObj, _ client.Object) error {
 		return fmt.Errorf("unexpected object, got %T wanted *monitoringv1.Prometheus", newObj)
 	}
 
+	prometheus.Spec.LogLevel = "debug"
+
 	if !additionallyMutatedPrometheusNames.Has(prometheus.Name) {
 		return nil
 	}
