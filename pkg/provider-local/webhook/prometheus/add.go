@@ -7,6 +7,7 @@ package prometheus
 import (
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -65,6 +66,7 @@ func AddToManagerWithOptions(mgr manager.Manager, opts AddOptions) (*extensionsw
 		ObjectSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 			{Key: v1beta1constants.LabelApp, Operator: metav1.LabelSelectorOpIn, Values: []string{"prometheus"}},
 			{Key: v1beta1constants.LabelRole, Operator: metav1.LabelSelectorOpIn, Values: []string{v1beta1constants.LabelMonitoring}},
+			{Key: "name", Operator: metav1.LabelSelectorOpIn, Values: sets.List(additionallyMutatedPrometheusNames)},
 		}},
 	}, nil
 }
