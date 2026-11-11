@@ -22,8 +22,8 @@ var (
 	// seedPrometheuses are managed by gardenlet in the seed cluster.
 	seedPrometheuses = sets.New("seed")
 
-	// handledPrometheusNames are the Prometheus instances this webhook reconciles.
-	handledPrometheusNames = runtimeGardenPrometheuses.Union(seedPrometheuses)
+	// additionallyMutatedPrometheusNames are the Prometheus instances this webhook reconciles.
+	additionallyMutatedPrometheusNames = runtimeGardenPrometheuses.Union(seedPrometheuses)
 )
 
 type mutator struct {
@@ -42,7 +42,7 @@ func (m *mutator) Mutate(_ context.Context, newObj, _ client.Object) error {
 		return fmt.Errorf("unexpected object, got %T wanted *monitoringv1.Prometheus", newObj)
 	}
 
-	if !handledPrometheusNames.Has(prometheus.Name) {
+	if !additionallyMutatedPrometheusNames.Has(prometheus.Name) {
 		return nil
 	}
 
