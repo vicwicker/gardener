@@ -20,13 +20,16 @@ var (
 	}
 )
 
-// CheckSeed checks if the Seed is up-to-date and if its extensions have been successfully bootstrapped.
+// CheckSeed checks if the Seed is up-to-date and if its conditions report healthy.
 func CheckSeed(seed *gardencorev1beta1.Seed, identity *gardencorev1beta1.Gardener) error {
 	if err := CheckSeedIsUpToDate(seed, identity); err != nil {
 		return err
 	}
 
-	return checkSeedConditions(seed)
+	conditionTypes := make([]gardencorev1beta1.ConditionType, len(trueSeedConditionTypes), len(trueSeedConditionTypes)+1)
+	copy(conditionTypes, trueSeedConditionTypes)
+	conditionTypes = append(conditionTypes, gardencorev1beta1.SeedObservabilityComponentsHealthy)
+	return checkSeedConditions(seed, conditionTypes)
 }
 
 // CheckSeedIsUpToDate checks if the Seed's observed Gardener version and generation are up-to-date compared to the provided identity.
@@ -73,17 +76,17 @@ func CheckSeedForMigration(seed *gardencorev1beta1.Seed, identity *gardencorev1b
 		return fmt.Errorf("observed generation outdated (%d/%d)", seed.Status.ObservedGeneration, seed.Generation)
 	}
 
-	return checkSeedConditions(seed)
+	return checkSeedConditions(seed, trueSeedConditionTypes)
 }
 
 // checkSeedConditions checks if the .status.observedGeneration field is not outdated and if the Seed's extensions have been
 // successfully bootstrapped.
-func checkSeedConditions(seed *gardencorev1beta1.Seed) error {
-	falseConditions, err := CheckRequiredSeedConditions(seed)
-	if err != nil {
-		return err
-	}
-	for _, condition := range falseConditions {
+func checkSeedConditions(seed *gardencorev1beta1.Seed, conditionTypes []gardencorev1beta1.ConditionType) error {
+	for _, conditionType := range conditionTypes {
+		condition := v1beta1helper.GetCondition(seed.Status.Conditions, conditionType)
+		if condition == nil {
+			return requiredConditionMissing(string(conditionType))
+		}
 		if err := checkConditionState(string(condition.Type), string(gardencorev1beta1.ConditionTrue), string(condition.Status), condition.Reason, condition.Message); err != nil {
 			return err
 		}
