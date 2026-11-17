@@ -26,6 +26,7 @@ var _ = Describe("Seed", func() {
 					Conditions: []gardencorev1beta1.Condition{
 						{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 						{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+						{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 					},
 				},
 			}, &gardencorev1beta1.Gardener{}, Succeed()),
@@ -35,6 +36,7 @@ var _ = Describe("Seed", func() {
 					Conditions: []gardencorev1beta1.Condition{
 						{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 						{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+						{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 					},
 				},
 			}, &gardencorev1beta1.Gardener{ID: "thegardener"}, Succeed()),
@@ -43,6 +45,7 @@ var _ = Describe("Seed", func() {
 					Conditions: []gardencorev1beta1.Condition{
 						{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionFalse},
 						{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+						{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 					},
 				},
 			}, &gardencorev1beta1.Gardener{}, HaveOccurred()),
@@ -51,6 +54,26 @@ var _ = Describe("Seed", func() {
 					Conditions: []gardencorev1beta1.Condition{
 						{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 						{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionFalse},
+						{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+					},
+				},
+			}, &gardencorev1beta1.Gardener{}, HaveOccurred()),
+			Entry("unhealthy available condition (seed observability components healthy)", &gardencorev1beta1.Seed{
+				Status: gardencorev1beta1.SeedStatus{
+					Gardener: &gardencorev1beta1.Gardener{},
+					Conditions: []gardencorev1beta1.Condition{
+						{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
+						{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+						{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionFalse},
+					},
+				},
+			}, &gardencorev1beta1.Gardener{}, HaveOccurred()),
+			Entry("unhealthy due to missing observability components condition", &gardencorev1beta1.Seed{
+				Status: gardencorev1beta1.SeedStatus{
+					Gardener: &gardencorev1beta1.Gardener{},
+					Conditions: []gardencorev1beta1.Condition{
+						{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
+						{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 					},
 				},
 			}, &gardencorev1beta1.Gardener{}, HaveOccurred()),
@@ -61,6 +84,7 @@ var _ = Describe("Seed", func() {
 					Conditions: []gardencorev1beta1.Condition{
 						{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 						{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+						{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 					},
 				},
 			}, &gardencorev1beta1.Gardener{}, HaveOccurred()),
@@ -72,6 +96,7 @@ var _ = Describe("Seed", func() {
 					Conditions: []gardencorev1beta1.Condition{
 						{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 						{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
+						{Type: gardencorev1beta1.SeedObservabilityComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 					},
 				},
 			}, &gardencorev1beta1.Gardener{}, HaveOccurred()),
