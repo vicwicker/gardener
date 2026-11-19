@@ -93,6 +93,8 @@ controllers:
     conditionThresholds:
     - type: SeedSystemComponentsHealthy
       duration: 1m
+    - type: ObservabilityComponentsHealthy
+      duration: 1m
   managedSeed:
     concurrentSyncs: 5
     syncPeriod: 1h

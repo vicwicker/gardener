@@ -750,6 +750,12 @@ func ComputeExpectedGardenletConfiguration(
 							Duration: 1 * time.Minute,
 						},
 					},
+					{
+						Type: string(gardencorev1beta1.SeedObservabilityComponentsHealthy),
+						Duration: metav1.Duration{
+							Duration: 1 * time.Minute,
+						},
+					},
 				},
 			},
 			Shoot: &gardenletconfigv1alpha1.ShootControllerConfiguration{
