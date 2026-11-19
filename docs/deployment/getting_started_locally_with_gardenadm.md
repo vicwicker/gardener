@@ -343,7 +343,7 @@ This deploys a seed gardenlet via a `ManagedSeed` into the self-hosted shoot.
 You can wait for the `Seed` to be ready by running:
 
 ```bash
-./hack/usage/wait-for.sh seed root GardenletReady SeedSystemComponentsHealthy ExtensionsReady
+./hack/usage/wait-for.sh seed root GardenletReady SeedSystemComponentsHealthy ObservabilityComponentsHealthy ExtensionsReady
 ```
 
 Alternatively, you can run `kubectl get seed root` and wait for the `STATUS` to indicate readiness:
