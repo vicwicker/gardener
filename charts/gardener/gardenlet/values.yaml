@@ -96,6 +96,8 @@ config:
       conditionThresholds:
       - type: SeedSystemComponentsHealthy
         duration: 1m
+      - type: ObservabilityComponentsHealthy
+        duration: 1m
     shoot:
       concurrentSyncs: 20
       syncPeriod: 1h
